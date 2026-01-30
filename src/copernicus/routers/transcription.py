@@ -51,7 +51,7 @@ async def transcribe(
         raw_text=result.raw_text,
         corrected_text=result.corrected_text,
         segments=[
-            SegmentSchema(text=s.text, start_ms=s.start_ms, end_ms=s.end_ms)
+            SegmentSchema(text=s.text, start_ms=s.start_ms, end_ms=s.end_ms, confidence=s.confidence)
             for s in result.segments
         ],
         processing_time_ms=result.processing_time_ms,
@@ -80,7 +80,7 @@ async def transcribe_raw(
     return RawTranscriptionResponse(
         raw_text=result.raw_text,
         segments=[
-            SegmentSchema(text=s.text, start_ms=s.start_ms, end_ms=s.end_ms)
+            SegmentSchema(text=s.text, start_ms=s.start_ms, end_ms=s.end_ms, confidence=s.confidence)
             for s in result.segments
         ],
         processing_time_ms=result.processing_time_ms,

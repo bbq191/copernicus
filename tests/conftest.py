@@ -3,9 +3,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from copernicus.config import Settings
-from copernicus.services.asr import ASRResult, Segment
 from copernicus.services.corrector import CorrectorService
+from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.pipeline import PipelineService
 
 
@@ -20,14 +19,23 @@ def mock_pipeline() -> MagicMock:
 
 
 @pytest.fixture
-def test_app(mock_pipeline: MagicMock):
+def mock_evaluator() -> MagicMock:
+    """Create a mocked EvaluatorService for router tests."""
+    return MagicMock(spec=EvaluatorService)
+
+
+@pytest.fixture
+def test_app(mock_pipeline: MagicMock, mock_evaluator: MagicMock):
     """Create a test FastAPI app with mocked dependencies."""
     from fastapi import FastAPI
-    from copernicus.routers.transcription import router
+    from copernicus.routers.transcription import router as transcription_router
+    from copernicus.routers.evaluation import router as evaluation_router
 
     app = FastAPI()
     app.state.pipeline = mock_pipeline
-    app.include_router(router)
+    app.state.evaluator = mock_evaluator
+    app.include_router(transcription_router)
+    app.include_router(evaluation_router)
     return app
 
 

@@ -24,7 +24,15 @@ class Settings(BaseSettings):
 
     # Text correction chunking
     correction_chunk_size: int = 800
-    correction_overlap: int = 100
+    correction_overlap: int = 50
+    correction_max_concurrency: int = 3
+
+    # Confidence-based filtering
+    confidence_threshold: float = 0.95
+    confidence_run_merge_gap: int = 3
+
+    # Evaluation
+    evaluation_max_text_chars: int = 25000
 
     # Hotwords file (optional)
     hotwords_file: Path | None = None

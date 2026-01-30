@@ -15,6 +15,7 @@ def mock_settings() -> Settings:
         llm_temperature=0.1,
         correction_chunk_size=800,
         correction_overlap=100,
+        correction_max_concurrency=3,
     )
 
 
@@ -51,6 +52,43 @@ class TestCorrect:
         result = await corrector.correct("原始文本")
         # Should fall back to raw text
         assert result == "原始文本"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chunks(self, corrector: CorrectorService):
+        """Verify multiple chunks are processed concurrently."""
+        mock_choice = MagicMock()
+        mock_choice.message.content = "corrected"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        corrector._client.chat.completions.create = AsyncMock(return_value=mock_response)
+        corrector._chunk_size = 10
+        corrector._overlap = 2
+
+        text = "这是一段需要分块处理的较长文本，用来测试并发处理是否正常工作。"
+        await corrector.correct(text)
+
+        assert corrector._client.chat.completions.create.call_count > 1
+
+
+class TestCorrectSegments:
+    @pytest.mark.asyncio
+    async def test_empty_list(self, corrector: CorrectorService):
+        result = await corrector.correct_segments([])
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_corrects_each_segment(self, corrector: CorrectorService):
+        mock_choice = MagicMock()
+        mock_choice.message.content = "纠正文本"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        corrector._client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        result = await corrector.correct_segments(["段落一", "段落二"])
+        assert result == ["纠正文本", "纠正文本"]
+        assert corrector._client.chat.completions.create.call_count == 2
 
 
 class TestIsReachable:

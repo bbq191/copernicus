@@ -1,4 +1,5 @@
-from copernicus.utils.text import chunk_text, merge_chunks
+from copernicus.services.asr import Segment
+from copernicus.utils.text import chunk_text, group_segments, merge_chunks
 
 
 class TestChunkText:
@@ -48,3 +49,44 @@ class TestMergeChunks:
         result = merge_chunks(chunks, overlap=5)
         # overlap > len(chunk), so skip entire second chunk
         assert result == "AB"
+
+
+class TestGroupSegments:
+    def test_empty_segments(self):
+        assert group_segments([]) == []
+
+    def test_single_segment(self):
+        segs = [Segment(text="hello", start_ms=0, end_ms=100)]
+        groups = group_segments(segs, chunk_size=800)
+        assert len(groups) == 1
+        assert groups[0] == segs
+
+    def test_groups_within_chunk_size(self):
+        segs = [
+            Segment(text="a" * 400, start_ms=0, end_ms=100),
+            Segment(text="b" * 400, start_ms=100, end_ms=200),
+        ]
+        groups = group_segments(segs, chunk_size=800)
+        assert len(groups) == 1
+
+    def test_splits_when_exceeding_chunk_size(self):
+        segs = [
+            Segment(text="a" * 500, start_ms=0, end_ms=100),
+            Segment(text="b" * 500, start_ms=100, end_ms=200),
+        ]
+        groups = group_segments(segs, chunk_size=800)
+        assert len(groups) == 2
+        assert groups[0] == [segs[0]]
+        assert groups[1] == [segs[1]]
+
+    def test_multiple_groups(self):
+        segs = [
+            Segment(text="a" * 300, start_ms=0, end_ms=100),
+            Segment(text="b" * 300, start_ms=100, end_ms=200),
+            Segment(text="c" * 300, start_ms=200, end_ms=300),
+            Segment(text="d" * 300, start_ms=300, end_ms=400),
+        ]
+        groups = group_segments(segs, chunk_size=800)
+        assert len(groups) == 2
+        assert len(groups[0]) == 2
+        assert len(groups[1]) == 2

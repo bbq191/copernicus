@@ -5,6 +5,7 @@ class SegmentSchema(BaseModel):
     text: str
     start_ms: int
     end_ms: int
+    confidence: float = 0.0
 
 
 class TranscriptionResponse(BaseModel):

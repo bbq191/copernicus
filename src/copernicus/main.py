@@ -15,9 +15,10 @@ from copernicus.exceptions import CopernicusError
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.corrector import CorrectorService
+from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
-from copernicus.routers import task, transcription
+from copernicus.routers import task, transcription, evaluation
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,16 @@ async def lifespan(app: FastAPI):
         audio_service=audio_service,
         asr_service=asr_service,
         corrector_service=corrector_service,
+        confidence_threshold=settings.confidence_threshold,
+        chunk_size=settings.correction_chunk_size,
+        run_merge_gap=settings.confidence_run_merge_gap,
+        hotwords_file=settings.hotwords_file,
     )
-    app.state.task_store = TaskStore(pipeline=app.state.pipeline)
+    app.state.evaluator = EvaluatorService(settings)
+    app.state.task_store = TaskStore(
+        pipeline=app.state.pipeline,
+        evaluator=app.state.evaluator,
+    )
 
     logger.info("Copernicus service ready.")
     yield
@@ -53,6 +62,7 @@ app = FastAPI(
 
 app.include_router(transcription.router)
 app.include_router(task.router)
+app.include_router(evaluation.router)
 
 
 @app.exception_handler(CopernicusError)

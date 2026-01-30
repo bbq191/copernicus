@@ -1,0 +1,101 @@
+import asyncio
+import logging
+import uuid
+
+from copernicus.schemas.task import TaskProgress, TaskStatus
+from copernicus.schemas.transcription import SegmentSchema, TranscriptionResponse
+from copernicus.services.pipeline import PipelineService
+
+logger = logging.getLogger(__name__)
+
+
+class TaskInfo:
+    __slots__ = (
+        "task_id", "status", "current_chunk", "total_chunks",
+        "result", "error",
+    )
+
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        self.status = TaskStatus.PENDING
+        self.current_chunk = 0
+        self.total_chunks = 0
+        self.result: TranscriptionResponse | None = None
+        self.error: str | None = None
+
+    @property
+    def progress(self) -> TaskProgress:
+        if self.status == TaskStatus.PENDING:
+            percent = 0.0
+        elif self.status == TaskStatus.PROCESSING_ASR:
+            percent = 5.0
+        elif self.status == TaskStatus.CORRECTING and self.total_chunks > 0:
+            percent = 5.0 + (self.current_chunk / self.total_chunks) * 90.0
+        elif self.status == TaskStatus.COMPLETED:
+            percent = 100.0
+        else:
+            percent = 5.0 + (self.current_chunk / max(self.total_chunks, 1)) * 90.0
+        return TaskProgress(
+            current_chunk=self.current_chunk,
+            total_chunks=self.total_chunks,
+            percent=round(percent, 1),
+        )
+
+
+class TaskStore:
+    def __init__(self, pipeline: PipelineService) -> None:
+        self._pipeline = pipeline
+        self._tasks: dict[str, TaskInfo] = {}
+
+    def submit(
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None = None,
+    ) -> str:
+        task_id = uuid.uuid4().hex
+        self._tasks[task_id] = TaskInfo(task_id)
+        asyncio.create_task(self._run(task_id, audio_bytes, filename, hotwords))
+        logger.info("Task %s submitted", task_id)
+        return task_id
+
+    def get(self, task_id: str) -> TaskInfo | None:
+        return self._tasks.get(task_id)
+
+    async def _run(
+        self,
+        task_id: str,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None,
+    ) -> None:
+        task = self._tasks[task_id]
+        try:
+            task.status = TaskStatus.PROCESSING_ASR
+
+            def on_progress(current: int, total: int) -> None:
+                task.status = TaskStatus.CORRECTING
+                task.current_chunk = current
+                task.total_chunks = total
+
+            result = await self._pipeline.process(
+                audio_bytes, filename, hotwords, on_progress=on_progress
+            )
+
+            task.result = TranscriptionResponse(
+                raw_text=result.raw_text,
+                corrected_text=result.corrected_text,
+                segments=[
+                    SegmentSchema(
+                        text=s.text, start_ms=s.start_ms, end_ms=s.end_ms
+                    )
+                    for s in result.segments
+                ],
+                processing_time_ms=result.processing_time_ms,
+            )
+            task.status = TaskStatus.COMPLETED
+            logger.info("Task %s completed", task_id)
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.error = str(e)
+            logger.error("Task %s failed: %s", task_id, e)

@@ -10,6 +10,8 @@ from copernicus.schemas.transcription import (
     RawTranscriptionResponse,
     SegmentSchema,
     TranscriptionResponse,
+    TranscriptEntrySchema,
+    TranscriptResponse,
 )
 from copernicus.services.pipeline import PipelineService
 
@@ -82,6 +84,40 @@ async def transcribe_raw(
         segments=[
             SegmentSchema(text=s.text, start_ms=s.start_ms, end_ms=s.end_ms, confidence=s.confidence)
             for s in result.segments
+        ],
+        processing_time_ms=result.processing_time_ms,
+    )
+
+
+@router.post("/transcribe/transcript", response_model=TranscriptResponse)
+async def transcribe_transcript(
+    file: UploadFile = File(...),
+    hotwords: str | None = Form(default=None),
+    pipeline: PipelineService = Depends(get_pipeline),
+) -> TranscriptResponse:
+    """Upload an audio file and get speaker-segmented transcript with timestamps."""
+    audio_bytes = await file.read()
+
+    if len(audio_bytes) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    hw = await _parse_hotwords(hotwords)
+
+    try:
+        result = await pipeline.process_transcript(audio_bytes, file.filename or "upload.bin", hw)
+    except CopernicusError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return TranscriptResponse(
+        transcript=[
+            TranscriptEntrySchema(
+                timestamp=entry.timestamp,
+                timestamp_ms=entry.timestamp_ms,
+                speaker=entry.speaker,
+                text=entry.text,
+                text_corrected=entry.text_corrected,
+            )
+            for entry in result.transcript
         ],
         processing_time_ms=result.processing_time_ms,
     )

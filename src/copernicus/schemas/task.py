@@ -3,7 +3,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from copernicus.schemas.evaluation import EvaluationResponse
-from copernicus.schemas.transcription import TranscriptionResponse
+from copernicus.schemas.transcription import TranscriptionResponse, TranscriptResponse
 
 
 class TaskStatus(StrEnum):
@@ -30,5 +30,5 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     status: TaskStatus
     progress: TaskProgress
-    result: TranscriptionResponse | EvaluationResponse | None = None
+    result: TranscriptionResponse | EvaluationResponse | TranscriptResponse | None = None
     error: str | None = None

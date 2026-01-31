@@ -8,7 +8,13 @@ from copernicus.services.asr import ASRResult, Segment
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.corrector import CorrectorService, ProgressCallback
-from copernicus.utils.text import group_segments
+from copernicus.utils.text import (
+    format_timestamp,
+    group_segments,
+    merge_transcript_entries,
+    pre_merge_segments,
+    smooth_speakers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +24,21 @@ class TranscriptionResult:
     raw_text: str
     corrected_text: str
     segments: list[Segment] = field(default_factory=list)
+    processing_time_ms: float = 0.0
+
+
+@dataclass
+class TranscriptEntry:
+    timestamp: str
+    timestamp_ms: int
+    speaker: str
+    text: str
+    text_corrected: str
+
+
+@dataclass
+class TranscriptResult:
+    transcript: list[TranscriptEntry] = field(default_factory=list)
     processing_time_ms: float = 0.0
 
 
@@ -59,6 +80,10 @@ class PipelineService:
         if request_hotwords:
             combined.extend(request_hotwords)
         return combined if combined else None
+
+    # ------------------------------------------------------------------ #
+    #  Original pipeline (plain text mode)
+    # ------------------------------------------------------------------ #
 
     async def process(
         self,
@@ -219,3 +244,138 @@ class PipelineService:
             segments=asr_result.segments,
             processing_time_ms=round(elapsed_ms, 2),
         )
+
+    # ------------------------------------------------------------------ #
+    #  Transcript pipeline (speaker + timestamp mode)
+    # ------------------------------------------------------------------ #
+
+    async def process_transcript(
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> TranscriptResult:
+        """Run transcript pipeline: ASR (with timestamps) -> JSON-to-JSON LLM correction."""
+        start = time.perf_counter()
+
+        merged_hw = self._merge_hotwords(hotwords)
+        wav_path: Path = await self._audio.preprocess(audio_bytes, filename)
+
+        try:
+            asr_result: ASRResult = await asyncio.to_thread(
+                self._asr.transcribe, wav_path, merged_hw, True
+            )
+        finally:
+            self._audio.cleanup(wav_path)
+
+        segments = asr_result.segments
+        if not segments:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            return TranscriptResult(processing_time_ms=round(elapsed_ms, 2))
+
+        # Step 1: Smooth speaker diarization flicker before correction
+        smooth_speakers(segments)
+
+        # Step 2: Pre-merge fine-grained segments to reduce LLM batch count
+        raw_count = len(segments)
+        segments = pre_merge_segments(segments)
+        logger.info(
+            "ASR pre-merge: %d -> %d segments",
+            raw_count,
+            len(segments),
+        )
+
+        correction_map = await self._correct_transcript_segments(
+            segments, on_progress
+        )
+
+        # Step 3: Build raw entries
+        raw_entries: list[dict] = []
+        for i, seg in enumerate(segments):
+            speaker_label = f"Speaker {seg.speaker + 1}" if seg.speaker >= 0 else "Speaker 1"
+            corrected = correction_map.get(i, seg.text)
+            raw_entries.append({
+                "timestamp": format_timestamp(seg.start_ms),
+                "timestamp_ms": seg.start_ms,
+                "speaker": speaker_label,
+                "text": seg.text,
+                "text_corrected": corrected,
+            })
+
+        # Step 4: Merge consecutive entries from the same speaker
+        merged_entries = merge_transcript_entries(raw_entries, gap_threshold_ms=5000)
+
+        logger.info(
+            "Transcript merge: %d -> %d entries",
+            len(raw_entries),
+            len(merged_entries),
+        )
+
+        transcript: list[TranscriptEntry] = [
+            TranscriptEntry(
+                timestamp=e["timestamp"],
+                timestamp_ms=e["timestamp_ms"],
+                speaker=e["speaker"],
+                text=e["text"],
+                text_corrected=e["text_corrected"],
+            )
+            for e in merged_entries
+        ]
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        return TranscriptResult(
+            transcript=transcript,
+            processing_time_ms=round(elapsed_ms, 2),
+        )
+
+    async def _correct_transcript_segments(
+        self,
+        segments: list[Segment],
+        on_progress: ProgressCallback | None = None,
+    ) -> dict[int, str]:
+        """Apply confidence-based filtering and correct via JSON-to-JSON approach."""
+        has_confidence = any(seg.confidence > 0.0 for seg in segments)
+
+        if has_confidence:
+            skipped = sum(
+                1 for seg in segments if seg.confidence >= self._confidence_threshold
+            )
+            logger.info(
+                "Transcript confidence filter: %d/%d above threshold (%.2f)",
+                skipped,
+                len(segments),
+                self._confidence_threshold,
+            )
+            if skipped == len(segments):
+                return {i: seg.text for i, seg in enumerate(segments)}
+            needs_correction = [
+                seg.confidence < self._confidence_threshold for seg in segments
+            ]
+        else:
+            needs_correction = [True] * len(segments)
+
+        entries: list[dict] = []
+        for i, seg in enumerate(segments):
+            if needs_correction[i]:
+                entries.append({"id": i, "text": seg.text})
+
+        if not entries:
+            return {i: seg.text for i, seg in enumerate(segments)}
+
+        logger.info(
+            "Transcript: correcting %d/%d segments via JSON-to-JSON",
+            len(entries),
+            len(segments),
+        )
+
+        correction_map = await self._corrector.correct_transcript(
+            entries, on_progress=on_progress
+        )
+
+        result: dict[int, str] = {}
+        for i, seg in enumerate(segments):
+            result[i] = correction_map.get(i, seg.text)
+
+        return result

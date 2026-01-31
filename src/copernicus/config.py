@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     )
     vad_model_dir: str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
     punc_model_dir: str = "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
+    spk_model_dir: str = ""  # e.g. "iic/speech_campplus_sv_zh-cn_16k-common"
     asr_device: str = "auto"
     asr_batch_size: int = 300
 

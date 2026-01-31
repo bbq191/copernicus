@@ -4,7 +4,12 @@ import uuid
 
 from copernicus.schemas.evaluation import EvaluationResponse
 from copernicus.schemas.task import TaskProgress, TaskStatus
-from copernicus.schemas.transcription import SegmentSchema, TranscriptionResponse
+from copernicus.schemas.transcription import (
+    SegmentSchema,
+    TranscriptionResponse,
+    TranscriptEntrySchema,
+    TranscriptResponse,
+)
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.pipeline import PipelineService
 
@@ -26,7 +31,7 @@ class TaskInfo:
         self.status = TaskStatus.PENDING
         self.current_chunk = 0
         self.total_chunks = 0
-        self.result: TranscriptionResponse | EvaluationResponse | None = None
+        self.result: TranscriptionResponse | EvaluationResponse | TranscriptResponse | None = None
         self.error: str | None = None
 
     @property
@@ -88,6 +93,20 @@ class TaskStore:
             self._run_evaluation(task_id, audio_bytes, filename, hotwords)
         )
         logger.info("Task %s submitted (evaluation)", task_id)
+        return task_id
+
+    def submit_transcript(
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None = None,
+    ) -> str:
+        task_id = uuid.uuid4().hex
+        self._tasks[task_id] = TaskInfo(task_id)
+        asyncio.create_task(
+            self._run_transcript(task_id, audio_bytes, filename, hotwords)
+        )
+        logger.info("Task %s submitted (transcript)", task_id)
         return task_id
 
     def get(self, task_id: str) -> TaskInfo | None:
@@ -166,6 +185,46 @@ class TaskStore:
             )
             task.status = TaskStatus.COMPLETED
             logger.info("Task %s completed (evaluation)", task_id)
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.error = str(e)
+            logger.error("Task %s failed: %s", task_id, e)
+
+    async def _run_transcript(
+        self,
+        task_id: str,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None,
+    ) -> None:
+        task = self._tasks[task_id]
+        try:
+            task.status = TaskStatus.PROCESSING_ASR
+
+            def on_progress(current: int, total: int) -> None:
+                task.status = TaskStatus.CORRECTING
+                task.current_chunk = current
+                task.total_chunks = total
+
+            result = await self._pipeline.process_transcript(
+                audio_bytes, filename, hotwords, on_progress=on_progress
+            )
+
+            task.result = TranscriptResponse(
+                transcript=[
+                    TranscriptEntrySchema(
+                        timestamp=entry.timestamp,
+                        timestamp_ms=entry.timestamp_ms,
+                        speaker=entry.speaker,
+                        text=entry.text,
+                        text_corrected=entry.text_corrected,
+                    )
+                    for entry in result.transcript
+                ],
+                processing_time_ms=result.processing_time_ms,
+            )
+            task.status = TaskStatus.COMPLETED
+            logger.info("Task %s completed (transcript)", task_id)
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error = str(e)

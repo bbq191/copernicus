@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SegmentSchema(BaseModel):
@@ -24,3 +24,16 @@ class RawTranscriptionResponse(BaseModel):
 class HealthResponse(BaseModel):
     asr_loaded: bool
     llm_reachable: bool
+
+
+class TranscriptEntrySchema(BaseModel):
+    timestamp: str
+    timestamp_ms: int
+    speaker: str
+    text: str
+    text_corrected: str
+
+
+class TranscriptResponse(BaseModel):
+    transcript: list[TranscriptEntrySchema]
+    processing_time_ms: float

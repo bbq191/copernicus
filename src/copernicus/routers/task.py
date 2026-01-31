@@ -44,6 +44,24 @@ async def submit_task(
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 
+@router.post("/tasks/transcript", response_model=TaskSubmitResponse, status_code=202)
+async def submit_transcript_task(
+    file: UploadFile = File(...),
+    hotwords: str | None = Form(default=None),
+    store: TaskStore = Depends(get_task_store),
+) -> TaskSubmitResponse:
+    """Submit an async transcript task with timestamps and speaker labels."""
+    audio_bytes = await file.read()
+
+    if len(audio_bytes) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    hw = _parse_hotwords(hotwords)
+    task_id = store.submit_transcript(audio_bytes, file.filename or "upload.bin", hw)
+
+    return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
+
+
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(
     task_id: str,

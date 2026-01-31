@@ -71,6 +71,129 @@ def split_sentences(text: str) -> list[str]:
     return sentences if sentences else [text]
 
 
+def format_timestamp(ms: int) -> str:
+    """Convert milliseconds to MM:SS display format."""
+    total_seconds = ms // 1000
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def pre_merge_segments(
+    segments: list[Segment],
+    gap_ms: int = 500,
+) -> list[Segment]:
+    """Pre-merge fine-grained ASR segments before LLM correction.
+
+    Combines consecutive segments from the same speaker when the time gap
+    between them is small. This reduces the total segment count (e.g. from
+    1400 to ~300), which cuts the number of LLM batches and gives the model
+    better context per request.
+
+    Merged segment confidence is the weighted average by text length.
+    """
+    from copernicus.services.asr import Segment as _Seg
+
+    if not segments:
+        return []
+
+    merged: list[Segment] = []
+    cur = _Seg(
+        text=segments[0].text,
+        start_ms=segments[0].start_ms,
+        end_ms=segments[0].end_ms,
+        confidence=segments[0].confidence,
+        speaker=segments[0].speaker,
+    )
+
+    for seg in segments[1:]:
+        same_speaker = seg.speaker == cur.speaker
+        within_gap = (seg.start_ms - cur.end_ms) < gap_ms
+
+        if same_speaker and within_gap:
+            # Weighted average confidence
+            len_cur = len(cur.text)
+            len_seg = len(seg.text)
+            total_len = len_cur + len_seg
+            if total_len > 0:
+                cur.confidence = (
+                    cur.confidence * len_cur + seg.confidence * len_seg
+                ) / total_len
+            cur.text += seg.text
+            cur.end_ms = seg.end_ms
+        else:
+            merged.append(cur)
+            cur = _Seg(
+                text=seg.text,
+                start_ms=seg.start_ms,
+                end_ms=seg.end_ms,
+                confidence=seg.confidence,
+                speaker=seg.speaker,
+            )
+
+    merged.append(cur)
+    return merged
+
+
+def smooth_speakers(
+    segments: list[Segment],
+    max_duration_ms: int = 1500,
+) -> list[Segment]:
+    """Smooth speaker diarization flicker.
+
+    If a segment's speaker differs from both its predecessor and successor,
+    and the segment duration is short (below max_duration_ms), force its
+    speaker to match the surrounding context.
+    """
+    if len(segments) < 3:
+        return segments
+
+    for i in range(1, len(segments) - 1):
+        prev_spk = segments[i - 1].speaker
+        curr_spk = segments[i].speaker
+        next_spk = segments[i + 1].speaker
+        duration = segments[i].end_ms - segments[i].start_ms
+
+        if curr_spk != prev_spk and prev_spk == next_spk and duration < max_duration_ms:
+            segments[i].speaker = prev_spk
+
+    return segments
+
+
+def merge_transcript_entries(
+    entries: list[dict],
+    gap_threshold_ms: int = 2000,
+) -> list[dict]:
+    """Merge consecutive transcript entries from the same speaker.
+
+    Each entry is {"timestamp": str, "timestamp_ms": int, "speaker": str,
+    "text": str, "text_corrected": str}.
+
+    Entries are merged when the speaker is the same and the time gap between
+    the current entry's start and the previous entry's start is within the
+    threshold.
+    """
+    if not entries:
+        return []
+
+    merged: list[dict] = []
+    current = dict(entries[0])
+
+    for entry in entries[1:]:
+        same_speaker = entry["speaker"] == current["speaker"]
+        within_gap = (entry["timestamp_ms"] - current["timestamp_ms"]) < gap_threshold_ms
+
+        if same_speaker and within_gap:
+            current["text"] += entry["text"]
+            current["text_corrected"] += entry["text_corrected"]
+        else:
+            merged.append(current)
+            current = dict(entry)
+
+    merged.append(current)
+    return merged
+
+
 def group_segments(segments: list[Segment], chunk_size: int = 800) -> list[list[Segment]]:
     """Group ASR segments into chunks that fit within chunk_size characters.
 

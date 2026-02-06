@@ -24,15 +24,17 @@ class TaskInfo:
         "total_chunks",
         "result",
         "error",
+        "eval_only",
     )
 
-    def __init__(self, task_id: str) -> None:
+    def __init__(self, task_id: str, *, eval_only: bool = False) -> None:
         self.task_id = task_id
         self.status = TaskStatus.PENDING
         self.current_chunk = 0
         self.total_chunks = 0
         self.result: TranscriptionResponse | EvaluationResponse | TranscriptResponse | None = None
         self.error: str | None = None
+        self.eval_only = eval_only
 
     @property
     def progress(self) -> TaskProgress:
@@ -43,7 +45,18 @@ class TaskInfo:
         elif self.status == TaskStatus.CORRECTING and self.total_chunks > 0:
             percent = 5.0 + (self.current_chunk / self.total_chunks) * 85.0
         elif self.status == TaskStatus.EVALUATING:
-            percent = 90.0
+            if self.eval_only:
+                # 纯文本评估：进度 0% ~ 100%
+                if self.total_chunks > 0:
+                    percent = (self.current_chunk / self.total_chunks) * 100.0
+                else:
+                    percent = 0.0
+            else:
+                # 完整流水线（ASR+纠正+评估）：评估阶段占 90%~100%
+                if self.total_chunks > 0:
+                    percent = 90.0 + (self.current_chunk / self.total_chunks) * 10.0
+                else:
+                    percent = 90.0
         elif self.status == TaskStatus.COMPLETED:
             percent = 100.0
         else:
@@ -107,6 +120,16 @@ class TaskStore:
             self._run_transcript(task_id, audio_bytes, filename, hotwords)
         )
         logger.info("Task %s submitted (transcript)", task_id)
+        return task_id
+
+    def submit_text_evaluation(self, text: str) -> str:
+        """Submit text-only evaluation (no ASR needed)."""
+        if self._evaluator is None:
+            raise RuntimeError("EvaluatorService not configured")
+        task_id = uuid.uuid4().hex
+        self._tasks[task_id] = TaskInfo(task_id, eval_only=True)
+        asyncio.create_task(self._run_text_evaluation(task_id, text))
+        logger.info("Task %s submitted (text evaluation)", task_id)
         return task_id
 
     def get(self, task_id: str) -> TaskInfo | None:
@@ -174,8 +197,17 @@ class TaskStore:
             )
 
             task.status = TaskStatus.EVALUATING
+            task.current_chunk = 0
+            task.total_chunks = 0
             assert self._evaluator is not None
-            evaluation = await self._evaluator.evaluate(result.corrected_text)
+
+            def on_eval_progress(current: int, total: int) -> None:
+                task.current_chunk = current
+                task.total_chunks = total
+
+            evaluation = await self._evaluator.evaluate(
+                result.corrected_text, on_progress=on_eval_progress
+            )
 
             task.result = EvaluationResponse(
                 raw_text=result.raw_text,
@@ -187,8 +219,37 @@ class TaskStore:
             logger.info("Task %s completed (evaluation)", task_id)
         except Exception as e:
             task.status = TaskStatus.FAILED
-            task.error = str(e)
-            logger.error("Task %s failed: %s", task_id, e)
+            task.error = str(e) or type(e).__name__
+            logger.error("Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True)
+
+    async def _run_text_evaluation(self, task_id: str, text: str) -> None:
+        task = self._tasks[task_id]
+        try:
+            task.status = TaskStatus.EVALUATING
+            task.current_chunk = 0
+            task.total_chunks = 0
+            assert self._evaluator is not None
+
+            def on_eval_progress(current: int, total: int) -> None:
+                task.current_chunk = current
+                task.total_chunks = total
+
+            evaluation = await self._evaluator.evaluate(
+                text, on_progress=on_eval_progress
+            )
+
+            task.result = EvaluationResponse(
+                raw_text="",
+                corrected_text=text,
+                evaluation=evaluation,
+                processing_time_ms=0,
+            )
+            task.status = TaskStatus.COMPLETED
+            logger.info("Task %s completed (text evaluation)", task_id)
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.error = str(e) or type(e).__name__
+            logger.error("Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True)
 
     async def _run_transcript(
         self,
@@ -197,9 +258,11 @@ class TaskStore:
         filename: str,
         hotwords: list[str] | None,
     ) -> None:
+        logger.info("Task %s starting execution (transcript)", task_id)
         task = self._tasks[task_id]
         try:
             task.status = TaskStatus.PROCESSING_ASR
+            logger.info("Task %s status: PROCESSING_ASR", task_id)
 
             def on_progress(current: int, total: int) -> None:
                 task.status = TaskStatus.CORRECTING

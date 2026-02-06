@@ -2,7 +2,9 @@ import axios from "axios";
 
 const client = axios.create({
   baseURL: "/api/v1",
-  timeout: 300_000,
+  timeout: 600_000,
+  maxBodyLength: Infinity,
+  maxContentLength: Infinity,
 });
 
 client.interceptors.response.use(

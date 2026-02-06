@@ -14,6 +14,10 @@ dependencies = [
     "torch>=2.4",
     "torchaudio>=2.4",
     "httpx>=0.27",
+    "scikit-learn>=1.5",
+    "soundfile>=0.12",
+    "pycorrector>=0.5",
+    "transformers>=4.40",
 ]
 
 [project.optional-dependencies]

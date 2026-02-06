@@ -5,13 +5,14 @@ import { evaluateText } from "../../api/evaluation";
 import { MetaInfo } from "./MetaInfo";
 import { ScoreRadar } from "./ScoreRadar";
 import { AnalysisSection } from "./AnalysisSection";
-import { LoadingSpinner } from "../shared/LoadingSpinner";
 
 export function SummaryPanel() {
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
   const evaluation = useEvaluationStore((s) => s.evaluation);
   const isLoading = useEvaluationStore((s) => s.isLoading);
   const error = useEvaluationStore((s) => s.error);
+  const progress = useEvaluationStore((s) => s.progress);
+  const progressText = useEvaluationStore((s) => s.progressText);
 
   useEffect(() => {
     if (rawEntries.length === 0) return;
@@ -25,23 +26,15 @@ export function SummaryPanel() {
 
     useEvaluationStore.getState().setLoading(true);
 
-    let aborted = false;
-
     evaluateText(fullText)
       .then((result) => {
-        if (!aborted) useEvaluationStore.getState().setEvaluation(result);
+        useEvaluationStore.getState().setEvaluation(result);
       })
       .catch((err) => {
-        if (!aborted) {
-          useEvaluationStore
-            .getState()
-            .setError(err instanceof Error ? err.message : "摘要生成失败");
-        }
+        useEvaluationStore
+          .getState()
+          .setError(err instanceof Error ? err.message : "摘要生成失败");
       });
-
-    return () => {
-      aborted = true;
-    };
   }, [rawEntries]);
 
   if (rawEntries.length === 0) {
@@ -53,7 +46,24 @@ export function SummaryPanel() {
   }
 
   if (isLoading) {
-    return <LoadingSpinner text="生成摘要中..." />;
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 p-8">
+        <span className="loading loading-spinner loading-lg text-primary" />
+        <span className="text-base-content/60 text-sm">
+          {progressText || "生成摘要中..."}
+        </span>
+        <div className="w-full max-w-xs">
+          <progress
+            className="progress progress-primary w-full"
+            value={progress}
+            max={100}
+          />
+          <span className="text-xs text-base-content/40 mt-1 block text-center">
+            {Math.round(progress)}%
+          </span>
+        </div>
+      </div>
+    );
   }
 
   if (error) {

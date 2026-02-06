@@ -75,6 +75,7 @@ class PipelineService:
         self._run_merge_gap = run_merge_gap
         self._pre_merge_gap_ms = pre_merge_gap_ms
         self._global_hotwords = _load_hotwords_file(hotwords_file)
+        self._asr_lock = asyncio.Lock()
 
     def _merge_hotwords(self, request_hotwords: list[str] | None) -> list[str] | None:
         """Combine global hotwords with per-request hotwords."""
@@ -101,9 +102,10 @@ class PipelineService:
         wav_path: Path = await self._audio.preprocess(audio_bytes, filename)
 
         try:
-            asr_result: ASRResult = await asyncio.to_thread(
-                self._asr.transcribe, wav_path, merged_hw
-            )
+            async with self._asr_lock:
+                asr_result: ASRResult = await asyncio.to_thread(
+                    self._asr.transcribe, wav_path, merged_hw
+                )
             corrected_text = await self._correct_segments(asr_result, on_progress)
         finally:
             self._audio.cleanup(wav_path)
@@ -232,9 +234,10 @@ class PipelineService:
         wav_path: Path = await self._audio.preprocess(audio_bytes, filename)
 
         try:
-            asr_result: ASRResult = await asyncio.to_thread(
-                self._asr.transcribe, wav_path, merged_hw
-            )
+            async with self._asr_lock:
+                asr_result: ASRResult = await asyncio.to_thread(
+                    self._asr.transcribe, wav_path, merged_hw
+                )
         finally:
             self._audio.cleanup(wav_path)
 
@@ -259,14 +262,25 @@ class PipelineService:
         on_progress: ProgressCallback | None = None,
     ) -> TranscriptResult:
         """Run transcript pipeline: ASR (with timestamps) -> JSON-to-JSON LLM correction."""
+        logger.info("Pipeline process_transcript started for: %s", filename)
         start = time.perf_counter()
 
         merged_hw = self._merge_hotwords(hotwords)
+        logger.info("Audio preprocessing starting...")
         wav_path: Path = await self._audio.preprocess(audio_bytes, filename)
+        logger.info("Audio preprocessed to: %s", wav_path)
 
         try:
-            asr_result: ASRResult = await asyncio.to_thread(
-                self._asr.transcribe, wav_path, merged_hw, True
+            logger.info("Starting ASR transcription (sentence_timestamp=True)...")
+            async with self._asr_lock:
+                asr_result: ASRResult = await asyncio.to_thread(
+                    self._asr.transcribe, wav_path, merged_hw, True
+                )
+            logger.info(
+                "ASR completed: %d segments, %d chars, speakers: %s",
+                len(asr_result.segments),
+                len(asr_result.text),
+                sorted(set(s.speaker for s in asr_result.segments)) if asr_result.segments else "N/A",
             )
         finally:
             self._audio.cleanup(wav_path)
@@ -292,11 +306,16 @@ class PipelineService:
             segments, on_progress
         )
 
-        # Step 3: Build raw entries
+        # Step 3: Build raw entries (skip noise-filtered segments)
         raw_entries: list[dict] = []
+        noise_filtered = 0
         for i, seg in enumerate(segments):
-            speaker_label = f"Speaker {seg.speaker + 1}" if seg.speaker >= 0 else "Speaker 1"
             corrected = correction_map.get(i, seg.text)
+            # 跳过被阶段 1 过滤的纯噪声段落（空字符串）
+            if corrected == "":
+                noise_filtered += 1
+                continue
+            speaker_label = f"Speaker {seg.speaker + 1}" if seg.speaker >= 0 else "Speaker 1"
             raw_entries.append({
                 "timestamp": format_timestamp(seg.start_ms),
                 "timestamp_ms": seg.start_ms,
@@ -304,6 +323,9 @@ class PipelineService:
                 "text": seg.text,
                 "text_corrected": corrected,
             })
+
+        if noise_filtered > 0:
+            logger.info("Noise filtered: %d segments removed", noise_filtered)
 
         # Step 4: Merge consecutive entries from the same speaker
         merged_entries = merge_transcript_entries(raw_entries, gap_threshold_ms=5000)

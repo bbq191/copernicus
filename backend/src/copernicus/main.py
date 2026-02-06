@@ -1,6 +1,12 @@
 import logging
 import logging.config
+import os
 from contextlib import asynccontextmanager
+
+# 修复 Windows 下 joblib/loky 物理核心检测问题 (说话人分离聚类时触发)
+# 必须在 joblib 导入前设置，禁用物理核心检测
+os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count() or 8)
+os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 8)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,6 +23,7 @@ from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.llm import OllamaClient
 from copernicus.services.corrector import CorrectorService
+from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
@@ -34,7 +41,8 @@ async def lifespan(app: FastAPI):
 
     audio_service = AudioService(settings)
     asr_service = ASRService(settings)
-    corrector_service = CorrectorService(llm_client, settings)
+    text_corrector = TextCorrectorService(settings)
+    corrector_service = CorrectorService(llm_client, settings, text_corrector)
 
     app.state.pipeline = PipelineService(
         audio_service=audio_service,

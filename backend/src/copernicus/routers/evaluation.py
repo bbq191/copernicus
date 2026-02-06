@@ -82,3 +82,15 @@ async def evaluate_text(
     if not text.strip():
         raise HTTPException(status_code=422, detail="Text must not be empty")
     return await evaluator.evaluate(text)
+
+
+@router.post("/evaluate/text/async", response_model=TaskSubmitResponse, status_code=202)
+async def submit_text_evaluation_task(
+    text: str = Form(...),
+    store: TaskStore = Depends(get_task_store),
+) -> TaskSubmitResponse:
+    """Submit an async text evaluation task. Poll GET /tasks/{task_id} for progress."""
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="Text must not be empty")
+    task_id = store.submit_text_evaluation(text)
+    return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)

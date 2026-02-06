@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable
 
 from copernicus.services.llm import OllamaClient
+from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.config import Settings
 from copernicus.utils.text import chunk_text, merge_chunks
 
@@ -21,30 +22,111 @@ ProgressCallback = Callable[[int, int], None]
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================================
+# 阶段 1：规则预处理（快速过滤噪声和明显错误）
+# ============================================================
+
+# 纯噪声短语模式（英文 ASR 幻觉）
+_NOISE_PHRASE_RE = re.compile(
+    r"^\s*(?:the\s+)*(?:the|a|an|yeah|yes|no|ok|okay|um|uh|oh|ah|er|hmm|hm|mm)\s*[，。,.]?\s*$",
+    re.IGNORECASE,
+)
+
+# 中文语气词
+_NOISE_WORDS_CN = {"嗯", "啊", "哦", "呃", "唔", "嘿", "哈", "呵", "噢", "喔", "诶", "哎", "唉", "呀"}
+
+# 重复词模式（如 "那个那个" -> "那个"）
+_REPEAT_PATTERNS = [
+    (re.compile(r"(那个){2,}"), "那个"),
+    (re.compile(r"(这个){2,}"), "这个"),
+    (re.compile(r"(就是){2,}"), "就是"),
+    (re.compile(r"(然后){2,}"), "然后"),
+    (re.compile(r"(所以){2,}"), "所以"),
+    (re.compile(r"(但是){2,}"), "但是"),
+    (re.compile(r"(因为){2,}"), "因为"),
+    (re.compile(r"(可能){2,}"), "可能"),
+    (re.compile(r"(应该){2,}"), "应该"),
+    (re.compile(r"(终于){2,}"), "终于"),
+    (re.compile(r"(了解){2,}"), "了解"),
+    (re.compile(r"(不好意思){2,}"), "不好意思"),
+    # 语气词重复
+    (re.compile(r"(嗯){2,}"), "嗯"),
+    (re.compile(r"(啊){2,}"), "啊"),
+    (re.compile(r"(哦){2,}"), "哦"),
+    (re.compile(r"(呃){2,}"), "呃"),
+]
+
+# 英文噪声前缀清理
+_EN_NOISE_PREFIX_RE = re.compile(r"^\s*(?:the\s+)+", re.IGNORECASE)
+
+
+def preprocess_text(text: str) -> str | None:
+    """阶段 1：规则预处理，快速清理噪声和明显错误
+
+    Args:
+        text: 原始文本
+
+    Returns:
+        清理后的文本，如果是纯噪声则返回 None
+    """
+    if not text or not text.strip():
+        return None
+
+    cleaned = text.strip()
+
+    # 1. 检查是否为纯噪声短语
+    if _NOISE_PHRASE_RE.match(cleaned):
+        return None
+
+    # 2. 清理英文噪声前缀（如 "the 对他" -> "对他"）
+    cleaned = _EN_NOISE_PREFIX_RE.sub("", cleaned).strip()
+
+    # 3. 清理重复词
+    for pattern, replacement in _REPEAT_PATTERNS:
+        cleaned = pattern.sub(replacement, cleaned)
+
+    # 4. 检查清理后是否为空或纯标点
+    stripped = cleaned
+    for punc in "，。、！？；：,.!?;: ":
+        stripped = stripped.replace(punc, "")
+    if not stripped:
+        return None
+
+    # 5. 检查是否为纯语气词
+    if stripped in _NOISE_WORDS_CN or len(stripped) <= 2 and all(c in _NOISE_WORDS_CN for c in stripped):
+        return None
+
+    return cleaned
+
 SYSTEM_PROMPT = """\
 你是一个专业的文本校对工具。
 任务：接收ASR语音转写文本，输出修正后的文本。
 要求：
 1. 仅输出修正后的正文，严禁输出任何开场白、解释、修正列表或Markdown标记。
 2. 修正同音字错误（如"受权"->"授权"）。
-3. 修正标点符号，使其符合阅读习惯。
+3. 修正错误标点符号，使其符合阅读习惯。
 4. 保持原句意，不要重写或删减内容。
 5. 如果文本包含无法确定的口语，保留原样。"""
 
 TRANSCRIPT_SYSTEM_PROMPT = """\
 你是一个字幕校对专家。
 输入是一个JSON对象，entries字段包含句子ID和原始内容。
-任务：修正每个对象中 text 字段的错别字、标点符号，并轻度去除口语冗余。
+任务：修正每个对象中 text 字段的错别字，并轻度去除口语冗余。
 
 规则：
 1. 绝对严禁修改 id 字段。
 2. 绝对严禁合并或拆分句子。
-3. 修正同音字错误（如"惊济"->"经济"，"特朗谱"->"特朗普"）。
-4. 修正阿拉伯数字格式（如"二零二五"->"2025"）。
-5. 修正标点符号，使其符合阅读习惯。
-6. 去除无意义的重复口语（如"那个那个"->"那个"，"终于终于终于"->"终于"），但保持句子原意。
-7. 保持原句意，不要重写或大幅删减内容。
-8. 输出必须是包含 entries 字段的JSON对象。
+3. **方言模糊匹配**：注意常见的口音混淆，如：
+   - 平翘舌混淆 (z/zh, c/ch, s/sh) -> 例如 "姿势" 听成 "知识"，"四" 听成 "是"
+   - 鼻音混淆 (n/l, ang/an, ing/in) -> 例如 "牛奶" 听成 "刘来"，"经" 听成 "金"
+   - f/h 混淆 -> 例如 "发货" 听成 "花货"，"灰" 听成 "飞"
+4. 修正同音字错误（如"惊济"->"经济"，"特朗谱"->"特朗普"）。
+5. 修正阿拉伯数字格式（如"二零二五"->"2025"）。
+6. 保留原有标点符号，不要修改。
+7. 去除无意义的重复口语（如"那个那个"->"那个"，"终于终于终于"->"终于"），但保持句子原意。
+8. 保持原句意，不要重写或大幅删减内容。
+9. 输出必须是包含 entries 字段的JSON对象。
 
 【输入示例】
 {"entries": [{"id": 1, "text": "二零二五全球惊济概览。"}, {"id": 2, "text": "终于终于终于特朗谱把关税旋风刮到全球。"}]}
@@ -54,7 +136,12 @@ TRANSCRIPT_SYSTEM_PROMPT = """\
 
 
 class CorrectorService:
-    def __init__(self, client: OllamaClient, settings: Settings) -> None:
+    def __init__(
+        self,
+        client: OllamaClient,
+        settings: Settings,
+        text_corrector: TextCorrectorService | None = None,
+    ) -> None:
         self._client = client
         self._model = settings.llm_model_name
         self._temperature = settings.llm_temperature
@@ -62,6 +149,7 @@ class CorrectorService:
         self._overlap = settings.correction_overlap
         self._max_concurrency = settings.correction_max_concurrency
         self._num_ctx = settings.ollama_num_ctx_correction
+        self._text_corrector = text_corrector
 
     async def correct(
         self, raw_text: str, on_progress: ProgressCallback | None = None
@@ -122,18 +210,66 @@ class CorrectorService:
         batch_size: int = 15,
         on_progress: ProgressCallback | None = None,
     ) -> dict[int, str]:
-        """Correct transcript entries using JSON-to-JSON approach.
+        """两阶段纠正 transcript entries
+
+        阶段 1：规则预处理（快速清理噪声、重复词、英文幻觉）
+        阶段 2：LLM 精细纠正（启用 thinking，处理同音字等复杂错误）
 
         Each entry is {"id": int, "text": str}. Returns a mapping of id -> corrected text.
         """
         if not entries:
             return {}
 
-        batches: list[list[dict]] = []
-        for i in range(0, len(entries), batch_size):
-            batches.append(entries[i : i + batch_size])
+        # ============================================================
+        # 阶段 1：规则预处理
+        # ============================================================
+        preprocessed_entries: list[dict] = []
+        filtered_ids: set[int] = set()  # 被过滤的纯噪声条目
+
+        for entry in entries:
+            entry_id = entry["id"]
+            original_text = entry.get("text", "")
+            cleaned = preprocess_text(original_text)
+
+            if cleaned is None:
+                # 纯噪声，标记为过滤
+                filtered_ids.add(entry_id)
+            elif cleaned != original_text.strip():
+                # 有变化，使用清理后的文本
+                preprocessed_entries.append({"id": entry_id, "text": cleaned})
+            else:
+                # 无变化，保持原样
+                preprocessed_entries.append(entry)
+
+        logger.info(
+            "Phase 1 (rule-based): %d entries -> %d valid, %d filtered as noise",
+            len(entries),
+            len(preprocessed_entries),
+            len(filtered_ids),
+        )
+
+        # 如果所有条目都被过滤，直接返回空结果
+        if not preprocessed_entries:
+            return {entry["id"]: "" for entry in entries}
+
+        # ============================================================
+        # 阶段 2：pycorrector 轻量级纠错（可选）
+        # ============================================================
+        if self._text_corrector is not None:
+            preprocessed_entries = self._text_corrector.correct_entries(preprocessed_entries)
+
+        # ============================================================
+        # 阶段 3：LLM 精细纠正
+        # ============================================================
+        batches = self._create_transcript_batches(
+            preprocessed_entries, batch_size, self._chunk_size
+        )
 
         total = len(batches)
+        logger.info(
+            "Phase 3 (LLM): %d entries -> %d batches (max_entries=%d, max_chars=%d)",
+            len(preprocessed_entries), total, batch_size, self._chunk_size
+        )
         semaphore = asyncio.Semaphore(self._max_concurrency)
         completed = 0
 
@@ -156,13 +292,83 @@ class CorrectorService:
         for batch_result in batch_results:
             merged.update(batch_result)
 
+        # 为被过滤的噪声条目设置空字符串
+        for entry_id in filtered_ids:
+            merged[entry_id] = ""
+
         return merged
+
+    @staticmethod
+    def _create_transcript_batches(
+        entries: list[dict],
+        max_entries: int = 15,
+        max_chars: int = 800,
+    ) -> list[list[dict]]:
+        """创建同时满足条目数和字符数限制的批次
+
+        Args:
+            entries: 待处理的条目列表
+            max_entries: 每批最大条目数
+            max_chars: 每批最大字符数
+
+        Returns:
+            分批后的条目列表
+        """
+        batches: list[list[dict]] = []
+        current_batch: list[dict] = []
+        current_chars = 0
+
+        for entry in entries:
+            entry_chars = len(entry.get("text", ""))
+
+            # 单条条目超过字符限制：作为独立批次
+            if entry_chars > max_chars:
+                # 先提交当前批次
+                if current_batch:
+                    batches.append(current_batch)
+                    current_batch = []
+                    current_chars = 0
+                # 将超大条目作为独立批次
+                batches.append([entry])
+                continue
+
+            # 添加后会超过限制：提交当前批次
+            would_exceed_entries = len(current_batch) >= max_entries
+            would_exceed_chars = current_chars + entry_chars > max_chars
+
+            if current_batch and (would_exceed_entries or would_exceed_chars):
+                batches.append(current_batch)
+                current_batch = []
+                current_chars = 0
+
+            current_batch.append(entry)
+            current_chars += entry_chars
+
+        # 提交最后一个批次
+        if current_batch:
+            batches.append(current_batch)
+
+        return batches
 
     async def _correct_transcript_batch(self, batch: list[dict]) -> dict[int, str]:
         """Send a batch of transcript entries to LLM for JSON-to-JSON correction."""
         fallback = {item["id"]: item["text"] for item in batch}
+        batch_chars = sum(len(item.get("text", "")) for item in batch)
+        batch_ids = [item["id"] for item in batch]
+
         try:
             input_json = json.dumps({"entries": batch}, ensure_ascii=False)
+            logger.debug(
+                "Batch ids=%s, entries=%d, chars=%d",
+                batch_ids[:3] if len(batch_ids) > 3 else batch_ids,
+                len(batch),
+                batch_chars,
+            )
+            # 使用 num_predict 限制输出长度，并显式禁用 thinking
+            # 公式：输入字符 * 2（中文token转换）+ 1024（JSON 格式开销）
+            # 禁用 thinking 后输出更简洁，不需要大缓冲区
+            max_output_tokens = min(4096, batch_chars * 2 + 1024)
+
             response = await self._client.chat(
                 messages=[
                     {"role": "system", "content": TRANSCRIPT_SYSTEM_PROMPT},
@@ -170,6 +376,8 @@ class CorrectorService:
                 ],
                 num_ctx=self._num_ctx,
                 json_format=True,
+                think=False,  # 禁用 thinking 确保输出完整
+                num_predict=max_output_tokens,  # 限制输出长度
             )
             raw = response.content
             raw = _THINK_RE.sub("", raw).strip()
@@ -206,7 +414,12 @@ class CorrectorService:
             return self._extract_entries_by_regex(raw, fallback)
         except Exception as e:
             logger.warning(
-                "LLM transcript correction failed for batch, using fallback: %s", e
+                "LLM transcript correction failed for batch (ids=%s, entries=%d, chars=%d): [%s] %s",
+                batch_ids[:3] if len(batch_ids) > 3 else batch_ids,
+                len(batch),
+                batch_chars,
+                type(e).__name__,
+                e or "(no message)",
             )
             return fallback
 
@@ -247,5 +460,9 @@ class CorrectorService:
             content = response.content
             return _THINK_RE.sub("", content).strip() or text
         except Exception as e:
-            logger.warning("LLM correction failed for chunk, using raw text: %s", e)
+            logger.warning(
+                "LLM correction failed for chunk, using raw text: [%s] %s",
+                type(e).__name__,
+                e or "(no message)",
+            )
             return text

@@ -5,12 +5,11 @@ import { useTranscriptStore } from "../stores/transcriptStore";
 
 export function useAutoScroll(virtuosoRef: React.RefObject<VirtuosoHandle | null>) {
   const currentTime = usePlayerStore((s) => s.currentTime);
-  const isPlaying = usePlayerStore((s) => s.isPlaying);
   const blocks = useTranscriptStore((s) => s.mergedBlocks);
   const lastIndexRef = useRef(-1);
 
   useEffect(() => {
-    if (!isPlaying || blocks.length === 0) return;
+    if (blocks.length === 0) return;
 
     let lo = 0;
     let hi = blocks.length - 1;
@@ -33,5 +32,5 @@ export function useAutoScroll(virtuosoRef: React.RefObject<VirtuosoHandle | null
         behavior: "smooth",
       });
     }
-  }, [currentTime, isPlaying, blocks, virtuosoRef]);
+  }, [currentTime, blocks, virtuosoRef]);
 }

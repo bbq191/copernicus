@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 
+from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResponse
 from copernicus.schemas.task import TaskProgress, TaskStatus
 from copernicus.schemas.transcription import (
@@ -10,6 +11,7 @@ from copernicus.schemas.transcription import (
     TranscriptEntrySchema,
     TranscriptResponse,
 )
+from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.pipeline import PipelineService
 
@@ -25,6 +27,7 @@ class TaskInfo:
         "result",
         "error",
         "eval_only",
+        "audio_path",
     )
 
     def __init__(self, task_id: str, *, eval_only: bool = False) -> None:
@@ -32,9 +35,10 @@ class TaskInfo:
         self.status = TaskStatus.PENDING
         self.current_chunk = 0
         self.total_chunks = 0
-        self.result: TranscriptionResponse | EvaluationResponse | TranscriptResponse | None = None
+        self.result: TranscriptionResponse | EvaluationResponse | TranscriptResponse | ComplianceResponse | None = None
         self.error: str | None = None
         self.eval_only = eval_only
+        self.audio_path: str | None = None
 
     @property
     def progress(self) -> TaskProgress:
@@ -44,6 +48,11 @@ class TaskInfo:
             percent = 5.0
         elif self.status == TaskStatus.CORRECTING and self.total_chunks > 0:
             percent = 5.0 + (self.current_chunk / self.total_chunks) * 85.0
+        elif self.status == TaskStatus.AUDITING:
+            if self.total_chunks > 0:
+                percent = (self.current_chunk / self.total_chunks) * 100.0
+            else:
+                percent = 0.0
         elif self.status == TaskStatus.EVALUATING:
             if self.eval_only:
                 # 纯文本评估：进度 0% ~ 100%
@@ -73,9 +82,11 @@ class TaskStore:
         self,
         pipeline: PipelineService,
         evaluator: EvaluatorService | None = None,
+        compliance: ComplianceService | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._evaluator = evaluator
+        self._compliance = compliance
         self._tasks: dict[str, TaskInfo] = {}
 
     def submit(
@@ -130,6 +141,25 @@ class TaskStore:
         self._tasks[task_id] = TaskInfo(task_id, eval_only=True)
         asyncio.create_task(self._run_text_evaluation(task_id, text))
         logger.info("Task %s submitted (text evaluation)", task_id)
+        return task_id
+
+    def submit_compliance_audit(
+        self,
+        transcript_entries: list[dict],
+        rules_bytes: bytes,
+        rules_filename: str,
+    ) -> str:
+        """Submit compliance audit task (text-only, no ASR needed)."""
+        if self._compliance is None:
+            raise RuntimeError("ComplianceService not configured")
+        task_id = uuid.uuid4().hex
+        self._tasks[task_id] = TaskInfo(task_id, eval_only=True)
+        asyncio.create_task(
+            self._run_compliance_audit(
+                task_id, transcript_entries, rules_bytes, rules_filename
+            )
+        )
+        logger.info("Task %s submitted (compliance audit)", task_id)
         return task_id
 
     def get(self, task_id: str) -> TaskInfo | None:
@@ -292,3 +322,54 @@ class TaskStore:
             task.status = TaskStatus.FAILED
             task.error = str(e)
             logger.error("Task %s failed: %s", task_id, e)
+
+    async def _run_compliance_audit(
+        self,
+        task_id: str,
+        transcript_entries: list[dict],
+        rules_bytes: bytes,
+        rules_filename: str,
+    ) -> None:
+        import time
+
+        task = self._tasks[task_id]
+        try:
+            task.status = TaskStatus.AUDITING
+            task.current_chunk = 0
+            task.total_chunks = 0
+            assert self._compliance is not None
+
+            start = time.perf_counter()
+            rules, few_shot_examples = self._compliance.parse_rules(
+                rules_bytes, rules_filename
+            )
+
+            def on_audit_progress(current: int, total: int) -> None:
+                task.current_chunk = current
+                task.total_chunks = total
+
+            report = await self._compliance.audit(
+                rules,
+                transcript_entries,
+                few_shot_examples=few_shot_examples,
+                on_progress=on_audit_progress,
+            )
+            elapsed_ms = (time.perf_counter() - start) * 1000
+
+            task.result = ComplianceResponse(
+                rules=rules,
+                report=report,
+                processing_time_ms=elapsed_ms,
+            )
+            task.status = TaskStatus.COMPLETED
+            logger.info("Task %s completed (compliance audit)", task_id)
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.error = str(e) or type(e).__name__
+            logger.error(
+                "Task %s failed: [%s] %s",
+                task_id,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )

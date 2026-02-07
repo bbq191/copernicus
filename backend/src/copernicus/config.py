@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     evaluation_chunk_size: int = 6000       # Map 分段大小（字符），短于此直接评估
     evaluation_num_ctx: int = 8192          # 评估专用 num_ctx，控制显存占用
 
+    # Compliance Audit (Map-Reduce)
+    compliance_max_text_chars: int = 50000
+    compliance_chunk_size: int = 4000
+    compliance_num_ctx: int = 8192
+
     # Hotwords file (optional)
     hotwords_file: Path | None = None
 

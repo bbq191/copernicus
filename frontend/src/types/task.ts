@@ -1,3 +1,4 @@
+import type { ComplianceResponse } from "./compliance";
 import type { TranscriptionResponse, TranscriptResponse } from "./transcript";
 import type { EvaluationResponse } from "./evaluation";
 
@@ -6,6 +7,7 @@ export type TaskStatus =
   | "processing_asr"
   | "correcting"
   | "evaluating"
+  | "auditing"
   | "completed"
   | "failed";
 
@@ -24,6 +26,11 @@ export interface TaskStatusResponse {
   task_id: string;
   status: TaskStatus;
   progress: TaskProgress;
-  result: TranscriptionResponse | EvaluationResponse | TranscriptResponse | null;
+  result:
+    | TranscriptionResponse
+    | EvaluationResponse
+    | TranscriptResponse
+    | ComplianceResponse
+    | null;
   error: string | null;
 }

@@ -12,3 +12,7 @@ class ASRError(CopernicusError):
 
 class CorrectionError(CopernicusError):
     """Raised when LLM text correction fails."""
+
+
+class ComplianceError(CopernicusError):
+    """Raised when compliance audit fails."""

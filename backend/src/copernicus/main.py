@@ -24,10 +24,11 @@ from copernicus.services.asr import ASRService
 from copernicus.services.llm import OllamaClient
 from copernicus.services.corrector import CorrectorService
 from copernicus.services.text_corrector import TextCorrectorService
+from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
-from copernicus.routers import task, transcription, evaluation
+from copernicus.routers import compliance, task, transcription, evaluation
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,11 @@ async def lifespan(app: FastAPI):
         hotwords_file=settings.hotwords_file,
     )
     app.state.evaluator = EvaluatorService(llm_client, settings)
+    app.state.compliance = ComplianceService(llm_client, settings)
     app.state.task_store = TaskStore(
         pipeline=app.state.pipeline,
         evaluator=app.state.evaluator,
+        compliance=app.state.compliance,
     )
 
     logger.info("Copernicus service ready.")
@@ -85,6 +88,7 @@ app.add_middleware(
 app.include_router(transcription.router)
 app.include_router(task.router)
 app.include_router(evaluation.router)
+app.include_router(compliance.router)
 
 
 @app.exception_handler(CopernicusError)

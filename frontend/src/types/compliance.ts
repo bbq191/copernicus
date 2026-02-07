@@ -1,0 +1,34 @@
+export interface ComplianceRule {
+  id: number;
+  content: string;
+}
+
+export type ViolationStatus = "pending" | "confirmed" | "rejected";
+
+export interface Violation {
+  rule_id: number;
+  rule_content: string;
+  timestamp: string;
+  timestamp_ms: number;
+  end_ms: number;
+  speaker: string;
+  original_text: string;
+  reason: string;
+  severity: "high" | "medium" | "low";
+  confidence: number;
+  status: ViolationStatus;
+}
+
+export interface ComplianceReport {
+  total_rules: number;
+  total_segments_checked: number;
+  violations: Violation[];
+  summary: string;
+  compliance_score: number;
+}
+
+export interface ComplianceResponse {
+  rules: ComplianceRule[];
+  report: ComplianceReport;
+  processing_time_ms: number;
+}

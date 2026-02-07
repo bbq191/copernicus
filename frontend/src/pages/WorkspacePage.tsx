@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useTaskStore } from "../stores/taskStore";
+import { usePlayerStore } from "../stores/playerStore";
 import { useTaskPolling } from "../hooks/useTaskPolling";
 import { AppLayout } from "../components/layout/AppLayout";
 import { LoadingSpinner } from "../components/shared/LoadingSpinner";
@@ -13,12 +14,19 @@ export function WorkspacePage() {
   const status = useTaskStore((s) => s.status);
   const error = useTaskStore((s) => s.error);
   const setTask = useTaskStore((s) => s.setTask);
+  const audioSrc = usePlayerStore((s) => s.audioSrc);
+  const setAudioSrc = usePlayerStore((s) => s.setAudioSrc);
 
   useEffect(() => {
     if (taskId && taskId !== currentTaskId) {
       setTask(taskId, "pending");
     }
   }, [taskId, currentTaskId, setTask]);
+
+  useEffect(() => {
+    if (!taskId || audioSrc) return;
+    setAudioSrc(`/api/v1/tasks/${taskId}/audio`);
+  }, [taskId, audioSrc, setAudioSrc]);
 
   useTaskPolling();
 

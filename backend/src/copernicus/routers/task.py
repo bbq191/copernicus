@@ -1,6 +1,8 @@
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse
 
 from copernicus.config import settings
 from copernicus.dependencies import get_task_store
@@ -59,7 +61,39 @@ async def submit_transcript_task(
     hw = _parse_hotwords(hotwords)
     task_id = store.submit_transcript(audio_bytes, file.filename or "upload.bin", hw)
 
+    # 持久化原始音频文件供前端播放
+    filename = file.filename or "upload.bin"
+    suffix = Path(filename).suffix or ".bin"
+    audio_dir = settings.upload_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = audio_dir / f"{task_id}{suffix}"
+    audio_path.write_bytes(audio_bytes)
+
+    task = store.get(task_id)
+    if task:
+        task.audio_path = str(audio_path)
+
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
+
+
+@router.get("/tasks/{task_id}/audio")
+async def get_task_audio(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> FileResponse:
+    """Return the original uploaded audio file for playback."""
+    task = store.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not task.audio_path:
+        raise HTTPException(status_code=404, detail="Audio not available")
+
+    audio_file = Path(task.audio_path)
+    if not audio_file.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    return FileResponse(audio_file, media_type="audio/mpeg")
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)

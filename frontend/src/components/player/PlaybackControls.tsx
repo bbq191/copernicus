@@ -1,4 +1,4 @@
-import { Play, Pause, Volume2 } from "lucide-react";
+import { Play, Pause, Volume2, Repeat } from "lucide-react";
 import { usePlayerStore } from "../../stores/playerStore";
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -10,6 +10,9 @@ export function PlaybackControls() {
   const setPlaybackRate = usePlayerStore((s) => s.setPlaybackRate);
   const volume = usePlayerStore((s) => s.volume);
   const setVolume = usePlayerStore((s) => s.setVolume);
+  const loopEnabled = usePlayerStore((s) => s.loopEnabled);
+  const setLoopEnabled = usePlayerStore((s) => s.setLoopEnabled);
+  const loopRegion = usePlayerStore((s) => s.loopRegion);
 
   return (
     <div className="flex items-center gap-3">
@@ -40,6 +43,20 @@ export function PlaybackControls() {
           ))}
         </ul>
       </div>
+
+      {loopRegion && (
+        <div
+          className="tooltip tooltip-top"
+          data-tip={loopEnabled ? "关闭循环播放" : "循环播放违规片段"}
+        >
+          <button
+            className={`btn btn-ghost btn-xs gap-1 ${loopEnabled ? "text-primary" : "text-base-content/40"}`}
+            onClick={() => setLoopEnabled(!loopEnabled)}
+          >
+            <Repeat className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center gap-1 ml-auto">
         <Volume2 className="h-4 w-4 text-base-content/60" />

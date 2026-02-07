@@ -6,6 +6,7 @@ const STATUS_LABELS: Record<TaskStatus, string> = {
   processing_asr: "语音识别中...",
   correcting: "文本纠正中...",
   evaluating: "内容评估中...",
+  auditing: "合规审核中...",
   completed: "处理完成",
   failed: "处理失败",
 };

@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { Upload, FileAudio } from "lucide-react";
 import { submitTranscriptTask } from "../../api/task";
 import { useTaskStore } from "../../stores/taskStore";
-import { usePlayerStore } from "../../stores/playerStore";
 import { UploadProgress } from "./UploadProgress";
 
 export function UploadPage() {
@@ -12,13 +11,9 @@ export function UploadPage() {
   const [dragging, setDragging] = useState(false);
   const setTask = useTaskStore((s) => s.setTask);
   const taskId = useTaskStore((s) => s.taskId);
-  const setAudioSrc = usePlayerStore((s) => s.setAudioSrc);
 
   const handleFile = useCallback(
     async (file: File) => {
-      const audioUrl = URL.createObjectURL(file);
-      setAudioSrc(audioUrl);
-
       try {
         const res = await submitTranscriptTask(file);
         setTask(res.task_id, res.status);
@@ -29,7 +24,7 @@ export function UploadPage() {
         );
       }
     },
-    [navigate, setTask, setAudioSrc],
+    [navigate, setTask],
   );
 
   const onDrop = useCallback(

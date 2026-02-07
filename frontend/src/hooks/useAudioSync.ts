@@ -30,6 +30,13 @@ export function useAudioSync(audioRef: React.RefObject<HTMLAudioElement | null>)
 
     const tick = () => {
       const nowMs = el.currentTime * 1000;
+
+      // Loop region check
+      const { loopEnabled, loopRegion } = usePlayerStore.getState();
+      if (loopEnabled && loopRegion && nowMs >= loopRegion.endMs) {
+        el.currentTime = loopRegion.startMs / 1000;
+      }
+
       if (Math.abs(nowMs - lastTimeRef.current) >= 50) {
         lastTimeRef.current = nowMs;
         setCurrentTime(nowMs);

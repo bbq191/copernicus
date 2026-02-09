@@ -1,8 +1,10 @@
 import json
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from copernicus.dependencies import get_task_store
+from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.task import TaskStatus, TaskSubmitResponse
 from copernicus.services.task_store import TaskStore
 
@@ -17,6 +19,7 @@ router = APIRouter(prefix="/api/v1", tags=["compliance"])
 async def submit_compliance_audit(
     rules_file: UploadFile = File(..., description="CSV/XLSX compliance rules file"),
     transcript: str = Form(..., description="JSON array of transcript entries"),
+    parent_task_id: str | None = Form(default=None),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
     """Submit async compliance audit task.
@@ -42,6 +45,39 @@ async def submit_compliance_audit(
         transcript_entries=entries,
         rules_bytes=rules_bytes,
         rules_filename=rules_file.filename or "rules.csv",
+        parent_task_id=parent_task_id,
     )
 
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
+
+
+class ViolationStatusUpdate(BaseModel):
+    index: int
+    status: str  # "pending" | "confirmed" | "rejected"
+
+
+class ViolationBatchUpdate(BaseModel):
+    updates: list[ViolationStatusUpdate]
+
+
+@router.patch("/tasks/{task_id}/compliance/violations")
+async def update_violation_statuses(
+    task_id: str,
+    body: ViolationBatchUpdate,
+    store: TaskStore = Depends(get_task_store),
+) -> dict:
+    """Persist violation review statuses (confirmed / rejected / pending)."""
+    persistence = store.persistence
+    data = persistence.load_json(task_id, "compliance.json")
+    if data is None:
+        raise HTTPException(status_code=404, detail="compliance.json not found")
+
+    compliance = ComplianceResponse.model_validate(data)
+    violations = compliance.report.violations
+
+    for u in body.updates:
+        if 0 <= u.index < len(violations):
+            violations[u.index].status = u.status
+
+    persistence.save_json(task_id, "compliance.json", compliance)
+    return {"ok": True}

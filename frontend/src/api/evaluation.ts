@@ -12,9 +12,13 @@ const STATUS_TEXT: Record<string, string> = {
   evaluating: "生成摘要中...",
 };
 
-export async function evaluateText(text: string): Promise<EvaluationResult> {
+export async function evaluateText(
+  text: string,
+  parentTaskId?: string,
+): Promise<EvaluationResult> {
   const form = new FormData();
   form.append("text", text);
+  if (parentTaskId) form.append("parent_task_id", parentTaskId);
 
   const { data: task } = await client.post<TaskSubmitResponse>(
     "/evaluate/text/async",

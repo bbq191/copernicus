@@ -14,6 +14,7 @@ const STATUS_TEXT: Record<string, string> = {
 export async function auditCompliance(
   transcriptEntries: TranscriptEntry[],
   rulesFile: File,
+  parentTaskId?: string,
 ): Promise<ComplianceResponse> {
   const transcript = JSON.stringify(
     transcriptEntries.map((e) => ({
@@ -27,6 +28,7 @@ export async function auditCompliance(
   const form = new FormData();
   form.append("transcript", transcript);
   form.append("rules_file", rulesFile);
+  if (parentTaskId) form.append("parent_task_id", parentTaskId);
 
   const { data: task } = await client.post<TaskSubmitResponse>(
     "/compliance/audit/async",
@@ -34,6 +36,13 @@ export async function auditCompliance(
   );
 
   return pollForCompliance(task.task_id);
+}
+
+export async function persistViolationStatuses(
+  taskId: string,
+  updates: { index: number; status: string }[],
+): Promise<void> {
+  await client.patch(`/tasks/${taskId}/compliance/violations`, { updates });
 }
 
 async function pollForCompliance(taskId: string): Promise<ComplianceResponse> {

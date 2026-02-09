@@ -5,9 +5,30 @@ import type {
   Violation,
   ViolationStatus,
 } from "../types/compliance";
+import { persistViolationStatuses } from "../api/compliance";
+
+// Debounced persistence: batch status changes within 500ms into one API call
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingUpdates: Map<number, string> = new Map();
+
+function schedulePersist(index: number, status: string) {
+  pendingUpdates.set(index, status);
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    const updates = Array.from(pendingUpdates, ([i, s]) => ({ index: i, status: s }));
+    pendingUpdates = new Map();
+    // Obtain taskId from taskStore (avoid circular import via lazy import)
+    import("./taskStore").then(({ useTaskStore }) => {
+      const taskId = useTaskStore.getState().taskId;
+      if (taskId) persistViolationStatuses(taskId, updates);
+    });
+  }, 500);
+}
 
 type SeverityFilter = "all" | "high" | "medium" | "low";
 type StatusFilter = "all" | "pending" | "confirmed" | "rejected";
+
+export type RightTab = "transcript" | "violations";
 
 interface ComplianceState {
   report: ComplianceReport | null;
@@ -21,6 +42,7 @@ interface ComplianceState {
   severityFilter: SeverityFilter;
   statusFilter: StatusFilter;
   searchQuery: string;
+  activeTab: RightTab;
 
   setReport: (report: ComplianceReport, rules: ComplianceRule[]) => void;
   setLoading: (loading: boolean) => void;
@@ -32,6 +54,7 @@ interface ComplianceState {
   setSearchQuery: (q: string) => void;
   setViolationStatus: (v: Violation, status: ViolationStatus) => void;
   navigateViolation: (direction: "prev" | "next") => void;
+  setActiveTab: (tab: RightTab) => void;
   reset: () => void;
 }
 
@@ -47,13 +70,14 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
   severityFilter: "all",
   statusFilter: "all",
   searchQuery: "",
+  activeTab: "transcript",
 
   setReport: (report, rules) => {
     const withStatus: ComplianceReport = {
       ...report,
       violations: report.violations.map((v) => ({
         ...v,
-        status: "pending" as const,
+        status: v.status || ("pending" as const),
       })),
     };
     set({
@@ -92,8 +116,10 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
     const { report, selectedViolation } = get();
     if (!report) return;
     let updatedSelected = selectedViolation;
-    const violations = report.violations.map((item) => {
+    let changedIndex = -1;
+    const violations = report.violations.map((item, i) => {
       if (item === v) {
+        changedIndex = i;
         const updated = { ...item, status };
         if (selectedViolation === v) updatedSelected = updated;
         return updated;
@@ -101,6 +127,9 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
       return item;
     });
     set({ report: { ...report, violations }, selectedViolation: updatedSelected });
+    if (changedIndex >= 0) {
+      schedulePersist(changedIndex, status);
+    }
   },
 
   navigateViolation: (direction) => {
@@ -127,6 +156,8 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
     });
   },
 
+  setActiveTab: (tab) => set({ activeTab: tab }),
+
   reset: () =>
     set({
       report: null,
@@ -140,6 +171,7 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
       severityFilter: "all",
       statusFilter: "all",
       searchQuery: "",
+      activeTab: "transcript",
     }),
 }));
 

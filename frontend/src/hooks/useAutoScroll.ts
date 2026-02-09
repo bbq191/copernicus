@@ -1,36 +1,60 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
+import type { MergedBlock } from "../types/view";
 import { usePlayerStore } from "../stores/playerStore";
-import { useTranscriptStore } from "../stores/transcriptStore";
+import { findBlockIndex } from "../utils/findBlockIndex";
 
-export function useAutoScroll(virtuosoRef: React.RefObject<VirtuosoHandle | null>) {
+export function useAutoScroll(
+  virtuosoRef: React.RefObject<VirtuosoHandle | null>,
+  blocks: MergedBlock[],
+) {
   const currentTime = usePlayerStore((s) => s.currentTime);
-  const blocks = useTranscriptStore((s) => s.mergedBlocks);
   const lastIndexRef = useRef(-1);
+  const mountedRef = useRef(false);
 
-  useEffect(() => {
-    if (blocks.length === 0) return;
-
-    let lo = 0;
-    let hi = blocks.length - 1;
-    let idx = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >>> 1;
-      if (blocks[mid].startMs <= currentTime) {
-        idx = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-
-    if (idx >= 0 && idx !== lastIndexRef.current) {
-      lastIndexRef.current = idx;
+  const scrollTo = useCallback(
+    (idx: number) => {
       virtuosoRef.current?.scrollToIndex({
         index: idx,
         align: "center",
         behavior: "smooth",
       });
+    },
+    [virtuosoRef],
+  );
+
+  // On first mount (or remount), schedule a deferred scroll so Virtuoso
+  // has time to finish its internal initialisation.
+  useEffect(() => {
+    mountedRef.current = false;
+    lastIndexRef.current = -1;
+  }, [blocks]);
+
+  useEffect(() => {
+    if (blocks.length === 0) return;
+
+    const idx = findBlockIndex(blocks, currentTime);
+    if (idx < 0 || idx === lastIndexRef.current) return;
+
+    lastIndexRef.current = idx;
+
+    if (!mountedRef.current) {
+      // First scroll after mount / remount – Virtuoso may not be ready yet.
+      // Retry with increasing delays to guarantee the scroll lands.
+      mountedRef.current = true;
+      let frame: number;
+      let timer: ReturnType<typeof setTimeout>;
+      frame = requestAnimationFrame(() => {
+        scrollTo(idx);
+        // Second attempt after 150ms as safety net
+        timer = setTimeout(() => scrollTo(idx), 150);
+      });
+      return () => {
+        cancelAnimationFrame(frame);
+        clearTimeout(timer);
+      };
     }
-  }, [currentTime, blocks, virtuosoRef]);
+
+    scrollTo(idx);
+  }, [currentTime, blocks, scrollTo]);
 }

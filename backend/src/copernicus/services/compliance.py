@@ -222,6 +222,15 @@ class ComplianceService:
             len(entries),
         )
 
+        # Build timestamp -> precise ms mapping from original entries
+        ts_to_ms: dict[str, int] = {}
+        ts_to_end_ms: dict[str, int] = {}
+        for e in entries:
+            ts = e.get("timestamp", "")
+            if ts and ts not in ts_to_ms:
+                ts_to_ms[ts] = int(e.get("timestamp_ms", 0))
+                ts_to_end_ms[ts] = int(e.get("end_ms", 0))
+
         rules_text = "\n".join(f"{r.id}. {r.content}" for r in rules)
         transcript_lines = [
             f"[{e.get('timestamp', '??:??')}] [{e.get('speaker', '未知')}]: "
@@ -294,7 +303,7 @@ class ComplianceService:
                     total_chunks,
                     raw[:2000],
                 )
-                violations = _parse_violations(raw, rules)
+                violations = _parse_violations(raw, rules, ts_to_ms, ts_to_end_ms)
                 logger.info(
                     "Audit chunk %d/%d done: %d violations found",
                     chunk_index + 1,
@@ -399,10 +408,31 @@ def _extract_json_array(text: str) -> str:
     return text.strip()
 
 
+def _parse_timestamp_to_ms(ts: str) -> int:
+    """Parse MM:SS or HH:MM:SS string to milliseconds."""
+    parts = ts.strip().split(":")
+    try:
+        if len(parts) == 2:
+            return (int(parts[0]) * 60 + int(parts[1])) * 1000
+        if len(parts) == 3:
+            return (int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])) * 1000
+    except ValueError:
+        pass
+    return 0
+
+
 def _parse_violations(
-    raw: str, rules: list[ComplianceRule]
+    raw: str,
+    rules: list[ComplianceRule],
+    ts_to_ms: dict[str, int] | None = None,
+    ts_to_end_ms: dict[str, int] | None = None,
 ) -> list[Violation]:
-    """Parse LLM output into Violation list."""
+    """Parse LLM output into Violation list.
+
+    When *ts_to_ms* is provided (timestamp string -> precise ms from original
+    transcript entries), LLM-returned ``timestamp_ms`` is replaced with the
+    accurate value looked up by the ``timestamp`` string key.
+    """
     content = _extract_json_array(raw)
     data = json.loads(content)
 
@@ -431,13 +461,28 @@ def _parse_violations(
             continue
         rule_id = int(item.get("rule_id", 0))
         rule_content = item.get("rule_content", "") or rules_map.get(rule_id, "")
+        ts_str = str(item.get("timestamp", "00:00"))
+        llm_ts_ms = int(item.get("timestamp_ms", 0))
+        llm_end_ms = int(item.get("end_ms", 0))
+
+        # Resolve precise timestamp_ms from transcript entries mapping.
+        # The LLM only sees [MM:SS] strings and cannot reliably infer the
+        # original millisecond value, so we look it up from the source data.
+        if ts_to_ms and ts_str in ts_to_ms:
+            precise_ms = ts_to_ms[ts_str]
+            precise_end = ts_to_end_ms.get(ts_str, 0) if ts_to_end_ms else 0
+        else:
+            # Fallback: parse the timestamp string to approximate ms
+            precise_ms = _parse_timestamp_to_ms(ts_str) if not llm_ts_ms else llm_ts_ms
+            precise_end = llm_end_ms
+
         violations.append(
             Violation(
                 rule_id=rule_id,
                 rule_content=rule_content,
-                timestamp=str(item.get("timestamp", "00:00")),
-                timestamp_ms=int(item.get("timestamp_ms", 0)),
-                end_ms=int(item.get("end_ms", 0)),
+                timestamp=ts_str,
+                timestamp_ms=precise_ms,
+                end_ms=precise_end if precise_end else precise_ms,
                 speaker=str(item.get("speaker", "")),
                 original_text=str(item.get("original_text", "")),
                 reason=str(item.get("reason", "")),

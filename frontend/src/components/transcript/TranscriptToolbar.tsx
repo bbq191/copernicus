@@ -1,6 +1,11 @@
-import { Download, Search, Users, FileText, ToggleLeft, ToggleRight, Eye } from "lucide-react";
+import { useCallback } from "react";
+import { Download, Search, Users, FileText, ToggleLeft, ToggleRight, Eye, RefreshCw } from "lucide-react";
 import { useTranscriptStore } from "../../stores/transcriptStore";
+import { useTaskStore } from "../../stores/taskStore";
+import { useEvaluationStore } from "../../stores/evaluationStore";
+import { useComplianceStore } from "../../stores/complianceStore";
 import { useExport } from "../../hooks/useExport";
+import { rerunTranscript } from "../../api/task";
 
 interface Props {
   onOpenRename: () => void;
@@ -14,7 +19,29 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
   const speakerMap = useTranscriptStore((s) => s.speakerMap);
   const visibleSpeakers = useTranscriptStore((s) => s.visibleSpeakers);
   const toggleSpeakerVisibility = useTranscriptStore((s) => s.toggleSpeakerVisibility);
+  const taskId = useTaskStore((s) => s.taskId);
   const { isExporting, exportAs } = useExport();
+
+  const handleRerunTranscript = useCallback(async () => {
+    if (!taskId) return;
+    // reset all downstream stores
+    useTranscriptStore.getState().setRawEntries([]);
+    useEvaluationStore.getState().setError(null);
+    useEvaluationStore.getState().setLoading(false);
+    useComplianceStore.getState().reset();
+
+    try {
+      await rerunTranscript(taskId);
+      // switch workspace back to pending + enable polling
+      const store = useTaskStore.getState();
+      store.setTask(taskId, "pending");
+      store.setPollEnabled(true);
+    } catch (err) {
+      useTaskStore.getState().setError(
+        err instanceof Error ? err.message : "重新转写失败",
+      );
+    }
+  }, [taskId]);
 
   const speakers = Object.keys(speakerMap);
 
@@ -39,6 +66,42 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
           <Users className="h-4 w-4" />
           说话人
         </button>
+
+        <div className="dropdown dropdown-end">
+          <div
+            tabIndex={0}
+            role="button"
+            className="btn btn-ghost btn-sm gap-1"
+          >
+            <RefreshCw className="h-4 w-4" />
+            重新转写
+          </div>
+          <div
+            tabIndex={0}
+            className="dropdown-content z-10 card card-compact w-64 p-2 shadow bg-base-200"
+          >
+            <div className="card-body">
+              <p className="text-sm">确定重新转写吗？评估和合规审核结果将被清除。</p>
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => {
+                    const el = document.activeElement as HTMLElement;
+                    el?.blur();
+                  }}
+                >
+                  取消
+                </button>
+                <button
+                  className="btn btn-sm btn-warning"
+                  onClick={handleRerunTranscript}
+                >
+                  确认
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <div className="dropdown dropdown-end ml-auto">
           <div

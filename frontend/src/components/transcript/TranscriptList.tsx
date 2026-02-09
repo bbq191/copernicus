@@ -10,12 +10,12 @@ export function TranscriptList() {
   const visibleSpeakers = useTranscriptStore((s) => s.visibleSpeakers);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
-  useAutoScroll(virtuosoRef);
-
   const filteredBlocks = useMemo(
     () => blocks.filter((b) => visibleSpeakers.has(b.speaker)),
     [blocks, visibleSpeakers],
   );
+
+  useAutoScroll(virtuosoRef, filteredBlocks);
 
   if (blocks.length === 0) {
     return (

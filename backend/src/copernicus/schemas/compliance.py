@@ -21,6 +21,7 @@ class Violation(BaseModel):
     reason: str
     severity: str  # "high" | "medium" | "low"
     confidence: float
+    status: str = "pending"  # "pending" | "confirmed" | "rejected"
 
 
 class ComplianceReport(BaseModel):

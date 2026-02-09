@@ -1,10 +1,21 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import { RefreshCw } from "lucide-react";
 import { useEvaluationStore } from "../../stores/evaluationStore";
 import { useTranscriptStore } from "../../stores/transcriptStore";
+import { useTaskStore } from "../../stores/taskStore";
 import { evaluateText } from "../../api/evaluation";
+import { rerunEvaluation, getTaskStatus } from "../../api/task";
+import type { EvaluationResponse } from "../../types/evaluation";
 import { MetaInfo } from "./MetaInfo";
 import { ScoreRadar } from "./ScoreRadar";
 import { AnalysisSection } from "./AnalysisSection";
+
+const POLL_INTERVAL_MS = 2000;
+
+const STATUS_TEXT: Record<string, string> = {
+  pending: "排队中...",
+  evaluating: "生成摘要中...",
+};
 
 export function SummaryPanel() {
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
@@ -13,6 +24,7 @@ export function SummaryPanel() {
   const error = useEvaluationStore((s) => s.error);
   const progress = useEvaluationStore((s) => s.progress);
   const progressText = useEvaluationStore((s) => s.progressText);
+  const taskId = useTaskStore((s) => s.taskId);
 
   useEffect(() => {
     if (rawEntries.length === 0) return;
@@ -26,7 +38,7 @@ export function SummaryPanel() {
 
     useEvaluationStore.getState().setLoading(true);
 
-    evaluateText(fullText)
+    evaluateText(fullText, taskId ?? undefined)
       .then((result) => {
         useEvaluationStore.getState().setEvaluation(result);
       })
@@ -35,7 +47,39 @@ export function SummaryPanel() {
           .getState()
           .setError(err instanceof Error ? err.message : "摘要生成失败");
       });
-  }, [rawEntries]);
+  }, [rawEntries, taskId]);
+
+  const handleRerun = useCallback(async () => {
+    if (!taskId) return;
+    useEvaluationStore.getState().setLoading(true);
+
+    try {
+      const res = await rerunEvaluation(taskId);
+      const childTaskId = res.task_id;
+
+      const poll = async () => {
+        const data = await getTaskStatus(childTaskId);
+        if (data.status === "completed" && data.result) {
+          const response = data.result as EvaluationResponse;
+          useEvaluationStore.getState().setEvaluation(response.evaluation);
+          return;
+        }
+        if (data.status === "failed") {
+          useEvaluationStore.getState().setError(data.error || "评估失败");
+          return;
+        }
+        const percent = data.progress?.percent ?? 0;
+        const text = STATUS_TEXT[data.status] || "处理中...";
+        useEvaluationStore.getState().setProgress(percent, text);
+        setTimeout(poll, POLL_INTERVAL_MS);
+      };
+      poll();
+    } catch (err) {
+      useEvaluationStore
+        .getState()
+        .setError(err instanceof Error ? err.message : "重新评估失败");
+    }
+  }, [taskId]);
 
   if (rawEntries.length === 0) {
     return (
@@ -91,6 +135,14 @@ export function SummaryPanel() {
           </div>
         </>
       )}
+      <div className="divider my-0" />
+      <button
+        className="btn btn-sm btn-ghost btn-block gap-1"
+        onClick={handleRerun}
+      >
+        <RefreshCw className="h-3.5 w-3.5" />
+        重新评估
+      </button>
     </div>
   );
 }

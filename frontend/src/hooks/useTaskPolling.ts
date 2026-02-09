@@ -6,7 +6,7 @@ import type { TranscriptResponse } from "../types/transcript";
 
 const POLL_INTERVAL = 2000;
 
-export function useTaskPolling() {
+export function useTaskPolling(enabled = true) {
   const taskId = useTaskStore((s) => s.taskId);
   const status = useTaskStore((s) => s.status);
   const updateStatus = useTaskStore((s) => s.updateStatus);
@@ -15,7 +15,7 @@ export function useTaskPolling() {
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   useEffect(() => {
-    if (!taskId || status === "completed" || status === "failed") {
+    if (!enabled || !taskId || status === "completed" || status === "failed") {
       return;
     }
 
@@ -44,5 +44,5 @@ export function useTaskPolling() {
     timerRef.current = setInterval(poll, POLL_INTERVAL);
 
     return () => clearInterval(timerRef.current);
-  }, [taskId, status, updateStatus, setError, setRawEntries]);
+  }, [enabled, taskId, status, updateStatus, setError, setRawEntries]);
 }

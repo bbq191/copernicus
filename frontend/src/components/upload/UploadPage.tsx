@@ -16,7 +16,9 @@ export function UploadPage() {
     async (file: File) => {
       try {
         const res = await submitTranscriptTask(file);
-        setTask(res.task_id, res.status);
+        if (!res.existing) {
+          setTask(res.task_id, res.status);
+        }
         navigate(`/workspace/${res.task_id}`);
       } catch (err) {
         useTaskStore.getState().setError(

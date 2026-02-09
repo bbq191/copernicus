@@ -7,11 +7,10 @@ import { ViolationList } from "../compliance/ViolationList";
 import { useComplianceStore } from "../../stores/complianceStore";
 import { useAuditKeyboard } from "../../hooks/useAuditKeyboard";
 
-type Tab = "transcript" | "violations";
-
 export function RightPanel() {
   const [renameOpen, setRenameOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<Tab>("transcript");
+  const activeTab = useComplianceStore((s) => s.activeTab);
+  const setActiveTab = useComplianceStore((s) => s.setActiveTab);
   const report = useComplianceStore((s) => s.report);
 
   const violationCount = report?.violations.length ?? 0;

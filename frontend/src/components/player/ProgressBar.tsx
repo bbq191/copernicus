@@ -45,7 +45,7 @@ export function ProgressBar() {
                   ${SEVERITY_COLORS[v.severity] || SEVERITY_COLORS.low}
                   opacity-80 hover:opacity-100 hover:scale-x-150 transition-all
                   tooltip tooltip-bottom`}
-                data-tip={`${v.timestamp} ${v.reason.slice(0, 30)}${v.reason.length > 30 ? "..." : ""}`}
+                data-tip={`${formatTime(v.timestamp_ms)} ${v.reason.slice(0, 30)}${v.reason.length > 30 ? "..." : ""}`}
                 style={{ left: `${(v.timestamp_ms / duration) * 100}%` }}
                 onClick={() => handleMarkerClick(v.timestamp_ms)}
               />

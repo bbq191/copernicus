@@ -26,6 +26,7 @@ from copernicus.services.corrector import CorrectorService
 from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
+from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
 from copernicus.routers import compliance, task, transcription, evaluation
@@ -57,11 +58,14 @@ async def lifespan(app: FastAPI):
     )
     app.state.evaluator = EvaluatorService(llm_client, settings)
     app.state.compliance = ComplianceService(llm_client, settings)
+    persistence = PersistenceService(settings.upload_dir)
     app.state.task_store = TaskStore(
         pipeline=app.state.pipeline,
+        persistence=persistence,
         evaluator=app.state.evaluator,
         compliance=app.state.compliance,
     )
+    app.state.task_store.restore_from_disk()
 
     logger.info("Copernicus service ready.")
     yield

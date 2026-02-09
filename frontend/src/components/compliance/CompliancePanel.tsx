@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 import { Upload, ShieldCheck, AlertTriangle } from "lucide-react";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useComplianceStore } from "../../stores/complianceStore";
+import { useTaskStore } from "../../stores/taskStore";
 import { auditCompliance } from "../../api/compliance";
 
 export function CompliancePanel() {
@@ -21,7 +22,10 @@ export function CompliancePanel() {
       if (store.isLoading) return;
       store.setLoading(true);
 
-      auditCompliance(rawEntries, file)
+      // Read taskId from store directly to avoid stale closure
+      const currentTaskId = useTaskStore.getState().taskId;
+
+      auditCompliance(rawEntries, file, currentTaskId ?? undefined)
         .then((res) => {
           useComplianceStore.getState().setReport(res.report, res.rules);
         })

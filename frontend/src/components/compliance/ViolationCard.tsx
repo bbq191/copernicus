@@ -10,6 +10,7 @@ import {
 import type { Violation } from "../../types/compliance";
 import { usePlayerStore } from "../../stores/playerStore";
 import { useComplianceStore } from "../../stores/complianceStore";
+import { formatTime } from "../../utils/formatTime";
 
 interface Props {
   violation: Violation;
@@ -60,6 +61,7 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
   const seekAndPlay = usePlayerStore((s) => s.seekAndPlay);
   const setLoopRegion = usePlayerStore((s) => s.setLoopRegion);
   const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
+  const setActiveTab = useComplianceStore((s) => s.setActiveTab);
 
   const config = SEVERITY_CONFIG[violation.severity] || SEVERITY_CONFIG.low;
   const SeverityIcon = config.icon;
@@ -74,6 +76,7 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
     const endMs = (violation.end_ms || violation.timestamp_ms) + LOOP_PADDING_MS;
     setLoopRegion({ startMs, endMs });
     seekAndPlay(startMs);
+    setActiveTab("transcript");
   };
 
   const handleTimestampClick = (e: React.MouseEvent) => {
@@ -112,7 +115,7 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
             onClick={handleTimestampClick}
           >
             <Clock className="h-3 w-3" />
-            {violation.timestamp}
+            {formatTime(violation.timestamp_ms)}
           </button>
 
           <span className={`badge badge-sm gap-1 ${config.badge}`}>

@@ -6,10 +6,12 @@ interface TaskState {
   status: TaskStatus | null;
   progress: TaskProgress;
   error: string | null;
+  pollEnabled: boolean;
 
   setTask: (taskId: string, status: TaskStatus) => void;
   updateStatus: (status: TaskStatus, progress: TaskProgress) => void;
   setError: (error: string) => void;
+  setPollEnabled: (enabled: boolean) => void;
   reset: () => void;
 }
 
@@ -24,14 +26,17 @@ export const useTaskStore = create<TaskState>((set) => ({
   status: null,
   progress: initialProgress,
   error: null,
+  pollEnabled: false,
 
   setTask: (taskId, status) =>
-    set({ taskId, status, progress: initialProgress, error: null }),
+    set({ taskId, status, progress: initialProgress, error: null, pollEnabled: false }),
 
   updateStatus: (status, progress) => set({ status, progress }),
 
   setError: (error) => set({ error, status: "failed" }),
 
+  setPollEnabled: (enabled) => set({ pollEnabled: enabled }),
+
   reset: () =>
-    set({ taskId: null, status: null, progress: initialProgress, error: null }),
+    set({ taskId: null, status: null, progress: initialProgress, error: null, pollEnabled: false }),
 }));

@@ -10,20 +10,21 @@ export function processTranscriptForView(
   let current: MergedBlock | null = null;
 
   for (const item of rawList) {
+    const itemEnd = item.end_ms || item.timestamp_ms;
     if (
       current &&
       current.speaker === item.speaker &&
       item.timestamp_ms - current.endMs < MERGE_GAP_MS
     ) {
       current.sentences.push(item);
-      current.endMs = item.timestamp_ms;
+      current.endMs = itemEnd;
     } else {
       if (current) blocks.push(current);
       current = {
         id: `block-${blocks.length}`,
         speaker: item.speaker,
         startMs: item.timestamp_ms,
-        endMs: item.timestamp_ms,
+        endMs: itemEnd,
         sentences: [item],
       };
     }

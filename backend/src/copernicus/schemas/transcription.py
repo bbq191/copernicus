@@ -29,6 +29,7 @@ class HealthResponse(BaseModel):
 class TranscriptEntrySchema(BaseModel):
     timestamp: str
     timestamp_ms: int
+    end_ms: int = 0
     speaker: str
     text: str
     text_corrected: str

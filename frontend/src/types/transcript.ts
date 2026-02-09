@@ -8,6 +8,7 @@ export interface SegmentSchema {
 export interface TranscriptEntry {
   timestamp: string;
   timestamp_ms: number;
+  end_ms: number;
   speaker: string;
   text: string;
   text_corrected: string;

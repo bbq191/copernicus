@@ -45,12 +45,13 @@ export function TranscriptBlock({ block }: Props) {
         )}
       >
         {block.sentences.map((sent, idx) => (
-          <SentenceSpan
-            key={idx}
-            entry={sent}
-            blockId={block.id}
-            sentIdx={idx}
-          />
+          <div key={idx} className={idx > 0 ? "mt-0.5" : ""}>
+            <SentenceSpan
+              entry={sent}
+              blockId={block.id}
+              sentIdx={idx}
+            />
+          </div>
         ))}
       </div>
       <div className="chat-footer opacity-0 group-hover:opacity-50 transition-opacity text-xs mt-1">

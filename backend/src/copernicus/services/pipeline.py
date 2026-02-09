@@ -11,9 +11,10 @@ from copernicus.services.corrector import CorrectorService, ProgressCallback
 from copernicus.utils.text import (
     format_timestamp,
     group_segments,
-    merge_transcript_entries,
     pre_merge_segments,
     smooth_speakers,
+    split_corrected_by_sub_sentences,
+    split_original_by_sub_sentences,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class TranscriptionResult:
 class TranscriptEntry:
     timestamp: str
     timestamp_ms: int
+    end_ms: int
     speaker: str
     text: str
     text_corrected: str
@@ -306,7 +308,8 @@ class PipelineService:
             segments, on_progress
         )
 
-        # Step 3: Build raw entries (skip noise-filtered segments)
+        # Step 3: Build fine-grained entries by splitting merged segments
+        # back into sub-sentence granularity using preserved boundaries.
         raw_entries: list[dict] = []
         noise_filtered = 0
         for i, seg in enumerate(segments):
@@ -316,35 +319,46 @@ class PipelineService:
                 noise_filtered += 1
                 continue
             speaker_label = f"Speaker {seg.speaker + 1}" if seg.speaker >= 0 else "Speaker 1"
-            raw_entries.append({
-                "timestamp": format_timestamp(seg.start_ms),
-                "timestamp_ms": seg.start_ms,
-                "speaker": speaker_label,
-                "text": seg.text,
-                "text_corrected": corrected,
-            })
+
+            subs = seg.sub_sentences
+            if subs and len(subs) > 1:
+                corrected_subs = split_corrected_by_sub_sentences(corrected, subs)
+                original_subs = split_original_by_sub_sentences(seg.text, subs)
+                for j, csub in enumerate(corrected_subs):
+                    orig = original_subs[j] if j < len(original_subs) else csub.text
+                    raw_entries.append({
+                        "timestamp": format_timestamp(csub.start_ms),
+                        "timestamp_ms": csub.start_ms,
+                        "end_ms": csub.end_ms,
+                        "speaker": speaker_label,
+                        "text": orig,
+                        "text_corrected": csub.text,
+                    })
+            else:
+                raw_entries.append({
+                    "timestamp": format_timestamp(seg.start_ms),
+                    "timestamp_ms": seg.start_ms,
+                    "end_ms": seg.end_ms,
+                    "speaker": speaker_label,
+                    "text": seg.text,
+                    "text_corrected": corrected,
+                })
 
         if noise_filtered > 0:
             logger.info("Noise filtered: %d segments removed", noise_filtered)
 
-        # Step 4: Merge consecutive entries from the same speaker
-        merged_entries = merge_transcript_entries(raw_entries, gap_threshold_ms=5000)
-
-        logger.info(
-            "Transcript merge: %d -> %d entries",
-            len(raw_entries),
-            len(merged_entries),
-        )
+        logger.info("Fine-grained entries: %d", len(raw_entries))
 
         transcript: list[TranscriptEntry] = [
             TranscriptEntry(
                 timestamp=e["timestamp"],
                 timestamp_ms=e["timestamp_ms"],
+                end_ms=e["end_ms"],
                 speaker=e["speaker"],
                 text=e["text"],
                 text_corrected=e["text_corrected"],
             )
-            for e in merged_entries
+            for e in raw_entries
         ]
 
         elapsed_ms = (time.perf_counter() - start) * 1000

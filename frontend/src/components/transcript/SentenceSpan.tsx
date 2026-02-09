@@ -22,7 +22,8 @@ export function SentenceSpan({ entry, blockId, sentIdx }: Props) {
     editedTexts[editKey] ??
     (textMode === "corrected" ? entry.text_corrected : entry.text);
 
-  const isActive = currentTime >= entry.timestamp_ms;
+  const endMs = entry.end_ms || entry.timestamp_ms + 5000;
+  const isActive = currentTime >= entry.timestamp_ms && currentTime < endMs;
 
   const highlighted =
     searchQuery && rawText.includes(searchQuery) ? true : false;
@@ -30,9 +31,9 @@ export function SentenceSpan({ entry, blockId, sentIdx }: Props) {
   return (
     <span
       className={classNames(
-        "cursor-pointer transition-colors duration-150 px-0.5 rounded",
+        "inline cursor-pointer transition-colors duration-150 px-0.5 rounded",
         "hover:bg-yellow-200/30",
-        isActive && "font-semibold",
+        isActive && "font-semibold bg-primary/10",
         highlighted && "bg-warning/30 ring-1 ring-warning",
       )}
       title={formatTime(entry.timestamp_ms)}
@@ -41,6 +42,15 @@ export function SentenceSpan({ entry, blockId, sentIdx }: Props) {
         seekTo(entry.timestamp_ms);
       }}
     >
+      <time
+        className="text-[10px] opacity-40 mr-0.5 select-none font-normal"
+        onClick={(e) => {
+          e.stopPropagation();
+          seekTo(entry.timestamp_ms);
+        }}
+      >
+        {formatTime(entry.timestamp_ms)}
+      </time>
       {rawText}
     </span>
   );

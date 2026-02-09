@@ -449,6 +449,7 @@ class TaskStore:
                     TranscriptEntrySchema(
                         timestamp=entry.timestamp,
                         timestamp_ms=entry.timestamp_ms,
+                        end_ms=entry.end_ms,
                         speaker=entry.speaker,
                         text=entry.text,
                         text_corrected=entry.text_corrected,

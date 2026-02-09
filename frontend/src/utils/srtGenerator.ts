@@ -9,8 +9,9 @@ export function generateSrt(
 
   entries.forEach((entry, idx) => {
     const startMs = entry.timestamp_ms;
-    const endMs =
-      idx + 1 < entries.length
+    const endMs = entry.end_ms
+      ? entry.end_ms
+      : idx + 1 < entries.length
         ? entries[idx + 1].timestamp_ms
         : startMs + 5000;
     const text = mode === "corrected" ? entry.text_corrected : entry.text;

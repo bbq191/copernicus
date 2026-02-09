@@ -12,12 +12,22 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class SubSentence:
+    """Original ASR sentence boundary preserved through pre-merge."""
+
+    text: str
+    start_ms: int = 0
+    end_ms: int = 0
+
+
+@dataclass
 class Segment:
     text: str
     start_ms: int = 0
     end_ms: int = 0
     confidence: float = 0.0
     speaker: int = -1
+    sub_sentences: list[SubSentence] = field(default_factory=list)
 
 
 @dataclass

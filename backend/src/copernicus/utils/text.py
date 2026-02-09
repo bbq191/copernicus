@@ -4,7 +4,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from copernicus.services.asr import Segment
+    from copernicus.services.asr import Segment, SubSentence
 
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 50) -> list[str]:
@@ -91,11 +91,16 @@ def pre_merge_segments(
     better context per request.
 
     Merged segment confidence is the weighted average by text length.
+    Each merged segment preserves original sentence boundaries in
+    ``sub_sentences`` for later fine-grained splitting.
     """
-    from copernicus.services.asr import Segment as _Seg
+    from copernicus.services.asr import Segment as _Seg, SubSentence
 
     if not segments:
         return []
+
+    def _to_sub(seg: Segment) -> SubSentence:
+        return SubSentence(text=seg.text, start_ms=seg.start_ms, end_ms=seg.end_ms)
 
     merged: list[Segment] = []
     cur = _Seg(
@@ -104,6 +109,7 @@ def pre_merge_segments(
         end_ms=segments[0].end_ms,
         confidence=segments[0].confidence,
         speaker=segments[0].speaker,
+        sub_sentences=[_to_sub(segments[0])],
     )
 
     for seg in segments[1:]:
@@ -121,6 +127,7 @@ def pre_merge_segments(
                 ) / total_len
             cur.text += seg.text
             cur.end_ms = seg.end_ms
+            cur.sub_sentences.append(_to_sub(seg))
         else:
             merged.append(cur)
             cur = _Seg(
@@ -129,6 +136,7 @@ def pre_merge_segments(
                 end_ms=seg.end_ms,
                 confidence=seg.confidence,
                 speaker=seg.speaker,
+                sub_sentences=[_to_sub(seg)],
             )
 
     merged.append(cur)
@@ -192,6 +200,96 @@ def merge_transcript_entries(
 
     merged.append(current)
     return merged
+
+
+def split_corrected_by_sub_sentences(
+    corrected_text: str,
+    sub_sentences: list[SubSentence],
+) -> list[SubSentence]:
+    """Split LLM-corrected text back into sub-sentence granularity.
+
+    Uses punctuation-based splitting and proportionally maps each fragment
+    to the original sub-sentence time span.
+
+    Returns a list of SubSentence with corrected text and estimated
+    start_ms / end_ms.
+    """
+    from copernicus.services.asr import SubSentence as _Sub
+
+    if not sub_sentences or not corrected_text.strip():
+        return [_Sub(text=corrected_text, start_ms=0, end_ms=0)]
+
+    if len(sub_sentences) == 1:
+        return [
+            _Sub(
+                text=corrected_text,
+                start_ms=sub_sentences[0].start_ms,
+                end_ms=sub_sentences[0].end_ms,
+            )
+        ]
+
+    # Split corrected text by sentence-ending punctuation
+    fragments = split_sentences(corrected_text)
+    if not fragments:
+        fragments = [corrected_text]
+
+    # Compute total time span from original sub-sentences
+    total_start = sub_sentences[0].start_ms
+    total_end = sub_sentences[-1].end_ms
+    total_duration = max(total_end - total_start, 1)
+
+    # Proportionally allocate time by character length
+    total_chars = sum(len(f) for f in fragments)
+    if total_chars == 0:
+        total_chars = 1
+
+    result: list[SubSentence] = []
+    cursor_ms = total_start
+
+    for i, frag in enumerate(fragments):
+        ratio = len(frag) / total_chars
+        duration = round(total_duration * ratio)
+        frag_start = cursor_ms
+        frag_end = cursor_ms + duration if i < len(fragments) - 1 else total_end
+        result.append(_Sub(text=frag, start_ms=frag_start, end_ms=frag_end))
+        cursor_ms = frag_end
+
+    return result
+
+
+def split_original_by_sub_sentences(
+    original_text: str,
+    sub_sentences: list[SubSentence],
+) -> list[str]:
+    """Split original (pre-correction) text using sub-sentence boundaries.
+
+    Since original text was built by concatenating sub-sentence texts, we
+    can split by prefix matching. Falls back to punctuation splitting on
+    mismatch.
+    """
+    if len(sub_sentences) <= 1:
+        return [original_text]
+
+    result: list[str] = []
+    remaining = original_text
+
+    for i, sub in enumerate(sub_sentences):
+        if i == len(sub_sentences) - 1:
+            # Last sub-sentence gets everything remaining
+            result.append(remaining)
+        elif remaining.startswith(sub.text):
+            result.append(sub.text)
+            remaining = remaining[len(sub.text) :]
+        else:
+            # Mismatch — fallback: return remaining as a single entry
+            result.append(remaining)
+            remaining = ""
+
+    # If mismatch caused early exit, pad with empty strings
+    while len(result) < len(sub_sentences):
+        result.append("")
+
+    return result
 
 
 def group_segments(segments: list[Segment], chunk_size: int = 800) -> list[list[Segment]]:

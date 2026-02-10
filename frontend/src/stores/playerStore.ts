@@ -5,9 +5,12 @@ interface LoopRegion {
   endMs: number;
 }
 
+type MediaType = "video" | "audio";
+
 interface PlayerState {
-  audioSrc: string | null;
-  audioElement: HTMLAudioElement | null;
+  mediaSrc: string | null;
+  mediaElement: HTMLMediaElement | null;
+  mediaType: MediaType;
   currentTime: number;
   duration: number;
   isPlaying: boolean;
@@ -16,8 +19,8 @@ interface PlayerState {
   loopEnabled: boolean;
   loopRegion: LoopRegion | null;
 
-  setAudioSrc: (src: string) => void;
-  setAudioElement: (el: HTMLAudioElement | null) => void;
+  setMediaSrc: (src: string, type?: MediaType) => void;
+  setMediaElement: (el: HTMLMediaElement | null) => void;
   setCurrentTime: (ms: number) => void;
   setDuration: (ms: number) => void;
   seekTo: (ms: number) => void;
@@ -31,8 +34,9 @@ interface PlayerState {
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
-  audioSrc: null,
-  audioElement: null,
+  mediaSrc: null,
+  mediaElement: null,
+  mediaType: "audio",
   currentTime: 0,
   duration: 0,
   isPlaying: false,
@@ -41,19 +45,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   loopEnabled: false,
   loopRegion: null,
 
-  setAudioSrc: (src) => set({ audioSrc: src }),
-  setAudioElement: (el) => set({ audioElement: el }),
+  setMediaSrc: (src, type = "audio") => set({ mediaSrc: src, mediaType: type }),
+  setMediaElement: (el) => set({ mediaElement: el }),
   setCurrentTime: (ms) => set({ currentTime: ms }),
   setDuration: (ms) => set({ duration: ms }),
 
   seekTo: (ms) => {
-    const el = get().audioElement;
+    const el = get().mediaElement;
     if (el) el.currentTime = ms / 1000;
     set({ currentTime: ms });
   },
 
   seekAndPlay: (ms) => {
-    const el = get().audioElement;
+    const el = get().mediaElement;
     if (!el) return;
     el.currentTime = ms / 1000;
     set({ currentTime: ms });
@@ -64,12 +68,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   togglePlay: () => {
-    const { audioElement, isPlaying } = get();
-    if (!audioElement) return;
+    const { mediaElement, isPlaying } = get();
+    if (!mediaElement) return;
     if (isPlaying) {
-      audioElement.pause();
+      mediaElement.pause();
     } else {
-      audioElement.play();
+      mediaElement.play();
     }
     set({ isPlaying: !isPlaying });
   },
@@ -77,13 +81,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   setPlaying: (playing) => set({ isPlaying: playing }),
 
   setPlaybackRate: (rate) => {
-    const el = get().audioElement;
+    const el = get().mediaElement;
     if (el) el.playbackRate = rate;
     set({ playbackRate: rate });
   },
 
   setVolume: (vol) => {
-    const el = get().audioElement;
+    const el = get().mediaElement;
     if (el) el.volume = vol;
     set({ volume: vol });
   },

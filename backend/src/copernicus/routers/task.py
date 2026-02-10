@@ -21,24 +21,6 @@ from copernicus.utils.request import parse_hotwords
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 
 
-@router.post("/tasks", response_model=TaskSubmitResponse, status_code=202)
-async def submit_task(
-    file: UploadFile = File(...),
-    hotwords: str | None = Form(default=None),
-    store: TaskStore = Depends(get_task_store),
-) -> TaskSubmitResponse:
-    """Submit an async transcription task. Returns task_id immediately."""
-    audio_bytes = await file.read()
-
-    if len(audio_bytes) > settings.max_upload_size_bytes:
-        raise HTTPException(status_code=413, detail="File too large")
-
-    hw = parse_hotwords(hotwords)
-    task_id = store.submit(audio_bytes, file.filename or "upload.bin", hw)
-
-    return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
-
-
 @router.post("/tasks/transcript", response_model=TaskSubmitResponse, status_code=202)
 async def submit_transcript_task(
     file: UploadFile = File(...),
@@ -59,7 +41,10 @@ async def submit_transcript_task(
             task_id=existing_id, status=TaskStatus.COMPLETED, existing=True
         )
 
-    hw = parse_hotwords(hotwords)
+    try:
+        hw = parse_hotwords(hotwords)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     task_id = store.submit_transcript(
         audio_bytes, file.filename or "upload.bin", hw, file_hash=file_hash
     )
@@ -146,7 +131,10 @@ async def rerun_transcript(
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
     """Re-run ASR + correction on existing audio."""
-    hw = parse_hotwords(hotwords)
+    try:
+        hw = parse_hotwords(hotwords)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     try:
         store.rerun_transcript(task_id, hw)
     except ValueError as e:

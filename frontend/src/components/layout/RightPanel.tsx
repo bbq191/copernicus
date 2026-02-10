@@ -14,12 +14,14 @@ export function RightPanel() {
   const report = useComplianceStore((s) => s.report);
 
   const violationCount = report?.violations.length ?? 0;
+  const pendingCount =
+    report?.violations.filter((v) => v.status === "pending").length ?? 0;
   const hasReport = report !== null;
 
   useAuditKeyboard(hasReport && activeTab === "violations");
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full border-r border-base-300">
       {hasReport && (
         <div role="tablist" className="tabs tabs-bordered px-3 pt-2">
           <button
@@ -38,7 +40,7 @@ export function RightPanel() {
             {violationCount > 0 ? (
               <span className="indicator">
                 <span className="indicator-item badge badge-error badge-xs">
-                  {violationCount}
+                  {pendingCount > 0 ? pendingCount : violationCount}
                 </span>
                 <ShieldAlert className="h-4 w-4" />
               </span>

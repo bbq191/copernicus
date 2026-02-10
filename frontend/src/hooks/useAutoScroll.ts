@@ -42,9 +42,8 @@ export function useAutoScroll(
       // First scroll after mount / remount – Virtuoso may not be ready yet.
       // Retry with increasing delays to guarantee the scroll lands.
       mountedRef.current = true;
-      let frame: number;
       let timer: ReturnType<typeof setTimeout>;
-      frame = requestAnimationFrame(() => {
+      const frame = requestAnimationFrame(() => {
         scrollTo(idx);
         // Second attempt after 150ms as safety net
         timer = setTimeout(() => scrollTo(idx), 150);

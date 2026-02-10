@@ -4,19 +4,38 @@ export interface ComplianceRule {
 }
 
 export type ViolationStatus = "pending" | "confirmed" | "rejected";
+export type ViolationSource = "transcript" | "ocr" | "vision";
 
 export interface Violation {
+  // 通用
   rule_id: number;
   rule_content: string;
+  reason: string;
+  severity: "high" | "medium" | "low";
+  confidence: number;
+  status: ViolationStatus;
+
+  // 违规来源
+  source: ViolationSource;
+
+  // 证据
+  evidence_url: string | null;
+  evidence_text: string | null;
+  rule_ref: string | null;
+
+  // 音频/文本
   timestamp: string;
   timestamp_ms: number;
   end_ms: number;
   speaker: string;
   original_text: string;
-  reason: string;
-  severity: "high" | "medium" | "low";
-  confidence: number;
-  status: ViolationStatus;
+}
+
+export interface EvidenceItem {
+  type: "screenshot" | "ocr_text" | "audio_clip";
+  url: string;
+  description: string;
+  timestamp_ms: number;
 }
 
 export interface ComplianceReport {

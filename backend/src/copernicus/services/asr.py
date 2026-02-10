@@ -1,4 +1,5 @@
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,6 +10,30 @@ from copernicus.exceptions import ASRError
 from copernicus.utils.text import split_sentences
 
 logger = logging.getLogger(__name__)
+
+# SenseVoice 文本清洗预编译正则（避免热路径重复编译）
+_SENSEVOICE_TAG_RE = re.compile(r"<\|[^|]+\|>")
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001F9FF"
+    "\U00002600-\U000027BF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "]+",
+    flags=re.UNICODE,
+)
+_REPEATED_PUNC_RE = re.compile(r"[。，、！？；：]{2,}")
+_ISOLATED_PUNC_RE = re.compile(r"^\s*[。，、！？；：]+\s*$")
+
+# ASR 推理常量
+_PARAFORMER_VAD_MAX_SEGMENT_MS = 30000  # Paraformer VAD 单段最长时间
+_PARAFORMER_MERGE_LENGTH_S = 60         # Paraformer 模型每次最长合并秒数
+_SENSEVOICE_VAD_MAX_SEGMENT_MS = 15000  # SenseVoice VAD 单段最长时间
+_SENSEVOICE_MERGE_LENGTH_S = 15         # SenseVoice 每段最长合并秒数
+_SPK_BATCH_CAP = 60                     # 说话人分离模式 batch_size 上限（秒）
+_MIN_EMB_WINDOW_MS = 500                # 声纹提取最短有效窗口（毫秒）
+_MAX_SLIDING_WINDOWS = 500              # 单段最大滑动窗口数（防 OOM）
+_MAX_AUDIO_DURATION_MS = 36_000_000     # 合理性上限：10 小时
 
 
 @dataclass
@@ -89,9 +114,9 @@ class ASRService:
         if settings.vad_model_dir:
             model_kwargs["vad_model"] = settings.vad_model_dir
             model_kwargs["vad_kwargs"] = {
-                "max_single_segment_time": 30000,  # 单段最长 30 秒
+                "max_single_segment_time": _PARAFORMER_VAD_MAX_SEGMENT_MS,
             }
-            logger.info("  VAD model: %s (max_segment=30s)", settings.vad_model_dir)
+            logger.info("  VAD model: %s (max_segment=%dms)", settings.vad_model_dir, _PARAFORMER_VAD_MAX_SEGMENT_MS)
 
         if settings.punc_model_dir:
             model_kwargs["punc_model"] = settings.punc_model_dir
@@ -121,7 +146,7 @@ class ASRService:
         if settings.vad_model_dir:
             asr_kwargs["vad_model"] = settings.vad_model_dir
             asr_kwargs["vad_kwargs"] = {
-                "max_single_segment_time": 15000,  # 最长 15 秒一段
+                "max_single_segment_time": _SENSEVOICE_VAD_MAX_SEGMENT_MS,
             }
 
         if settings.asr_disable_pbar:
@@ -174,13 +199,13 @@ class ASRService:
         """Paraformer 模式推理"""
         # 说话人分离需要更小的 batch_size 以避免 OOM
         # batch_size_s 表示每批处理的音频秒数，16GB 显存建议 60-120 秒
-        effective_batch_size = min(self._batch_size, 60) if self._has_spk else self._batch_size
+        effective_batch_size = min(self._batch_size, _SPK_BATCH_CAP) if self._has_spk else self._batch_size
 
         kwargs: dict = {
             "input": str(audio_path),
             "batch_size_s": effective_batch_size,
-            "merge_vad": True,  # 开启 VAD 切分合并，避免 OOM
-            "merge_length_s": 60,  # 每次合并最长 60 秒送入模型
+            "merge_vad": True,
+            "merge_length_s": _PARAFORMER_MERGE_LENGTH_S,
         }
         if sentence_timestamp:
             kwargs["sentence_timestamp"] = True
@@ -243,8 +268,8 @@ class ASRService:
             language=self._sensevoice_language,
             use_itn=True,
             batch_size_s=self._batch_size,
-            merge_vad=False,  # 关键：不合并 VAD 片段，保留每段独立时间戳
-            merge_length_s=15,  # 每段最长 15 秒
+            merge_vad=False,
+            merge_length_s=_SENSEVOICE_MERGE_LENGTH_S,
             output_timestamp=True,  # 启用字级时间戳
         )
 
@@ -350,29 +375,10 @@ class ASRService:
     @staticmethod
     def _clean_sensevoice_text(text: str) -> str:
         """清洗 SenseVoice 输出的特殊标记和 emoji"""
-        import re
-
-        # 去除 SenseVoice 特殊标签 <|...|>
-        text = re.sub(r"<\|[^|]+\|>", "", text)
-
-        # 去除常见 emoji (音乐、表情等)
-        emoji_pattern = re.compile(
-            "["
-            "\U0001F300-\U0001F9FF"  # 各类符号和表情
-            "\U00002600-\U000027BF"  # 杂项符号
-            "\U0001F600-\U0001F64F"  # 表情符号
-            "\U0001F680-\U0001F6FF"  # 交通和地图符号
-            "]+",
-            flags=re.UNICODE,
-        )
-        text = emoji_pattern.sub("", text)
-
-        # 去除连续重复标点
-        text = re.sub(r"[。，、！？；：]{2,}", "。", text)
-
-        # 去除孤立的标点或空白
-        text = re.sub(r"^\s*[。，、！？；：]+\s*$", "", text)
-
+        text = _SENSEVOICE_TAG_RE.sub("", text)
+        text = _EMOJI_RE.sub("", text)
+        text = _REPEATED_PUNC_RE.sub("。", text)
+        text = _ISOLATED_PUNC_RE.sub("", text)
         return text.strip()
 
     @staticmethod
@@ -537,7 +543,7 @@ class ASRService:
         # 滑动窗口参数（来自配置）
         window_ms = self._spk_window_ms
         step_ms = self._spk_step_ms
-        min_window_ms = 500    # 最短有效窗口 0.5 秒
+        min_window_ms = _MIN_EMB_WINDOW_MS
         threshold_ms = self._spk_threshold_ms
         distance_threshold = self._spk_distance_threshold
 
@@ -570,7 +576,7 @@ class ASRService:
                     n_frames, sample_rate, audio_duration_ms, audio_duration_ms / 1000)
 
         # 合理性检查：音频时长不应超过 10 小时
-        if audio_duration_ms > 36000000:
+        if audio_duration_ms > _MAX_AUDIO_DURATION_MS:
             logger.error(
                 "Audio duration seems unreasonable (%d ms = %.1f hours). "
                 "Check: 1) audio file format 2) ffmpeg output 3) soundfile parsing. "
@@ -591,7 +597,7 @@ class ASRService:
 
             # 计算预期窗口数量，如果太多则增大步长
             expected_windows = audio_duration_ms // step_ms
-            max_windows = 500  # 最多提取 500 个窗口以避免 OOM
+            max_windows = _MAX_SLIDING_WINDOWS
 
             effective_step_ms = step_ms
             if expected_windows > max_windows:

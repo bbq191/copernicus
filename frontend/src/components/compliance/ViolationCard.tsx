@@ -6,12 +6,20 @@ import {
   Check,
   X,
   RotateCcw,
+  Mic,
+  FileText,
+  Eye,
+  ExternalLink,
 } from "lucide-react";
 import type { Violation } from "../../types/compliance";
 import { usePlayerStore } from "../../stores/playerStore";
-import { useComplianceStore } from "../../stores/complianceStore";
+import {
+  useComplianceStore,
+  violationKey,
+} from "../../stores/complianceStore";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
+import { EvidenceBlock } from "./EvidenceBlock";
 
 interface Props {
   violation: Violation;
@@ -56,6 +64,12 @@ const STATUS_CONFIG = {
   },
 } as const;
 
+const SOURCE_CONFIG = {
+  transcript: { badge: "badge-primary", label: "语音", icon: Mic },
+  ocr: { badge: "badge-secondary", label: "OCR", icon: FileText },
+  vision: { badge: "badge-accent", label: "视觉", icon: Eye },
+} as const;
+
 const LOOP_PADDING_MS = 10000;
 
 export function ViolationCard({ violation, isSelected, onClick }: Props) {
@@ -63,6 +77,10 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
   const setLoopRegion = usePlayerStore((s) => s.setLoopRegion);
   const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
   const setActiveTab = useComplianceStore((s) => s.setActiveTab);
+  const batchMode = useComplianceStore((s) => s.batchMode);
+  const selectedIds = useComplianceStore((s) => s.selectedIds);
+  const toggleSelect = useComplianceStore((s) => s.toggleSelect);
+  const openEvidenceDetail = useComplianceStore((s) => s.openEvidenceDetail);
 
   const config = SEVERITY_CONFIG[violation.severity] || SEVERITY_CONFIG.low;
   const SeverityIcon = config.icon;
@@ -71,6 +89,13 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
     !isPending && violation.status in STATUS_CONFIG
       ? STATUS_CONFIG[violation.status as "confirmed" | "rejected"]
       : null;
+
+  const sourceConfig =
+    SOURCE_CONFIG[violation.source] || SOURCE_CONFIG.transcript;
+  const SourceIcon = sourceConfig.icon;
+
+  const vKey = violationKey(violation);
+  const isChecked = selectedIds.has(vKey);
 
   const jumpToViolation = () => {
     const startMs = Math.max(0, violation.timestamp_ms - 5000);
@@ -102,6 +127,16 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
     setViolationStatus(violation, "pending");
   };
 
+  const handleCheckbox = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    toggleSelect(vKey);
+  };
+
+  const handleOpenDetail = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    openEvidenceDetail(violation);
+  };
+
   const borderClass = statusConfig ? statusConfig.border : config.border;
 
   return (
@@ -112,7 +147,18 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
       onClick={onClick}
     >
       <div className="card-body gap-2">
+        {/* Row 1: badges */}
         <div className="flex items-center gap-2 flex-wrap">
+          {batchMode && (
+            <input
+              type="checkbox"
+              className="checkbox checkbox-xs checkbox-primary"
+              checked={isChecked}
+              onClick={handleCheckbox}
+              readOnly
+            />
+          )}
+
           <button
             className="badge badge-ghost badge-sm gap-1 hover:badge-primary"
             onClick={handleTimestampClick}
@@ -120,6 +166,11 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
             <Clock className="h-3 w-3" />
             {formatTime(violation.timestamp_ms)}
           </button>
+
+          <span className={`badge badge-sm gap-1 ${sourceConfig.badge}`}>
+            <SourceIcon className="h-3 w-3" />
+            {sourceConfig.label}
+          </span>
 
           <span className={`badge badge-sm gap-1 ${config.badge}`}>
             <SeverityIcon className="h-3 w-3" />
@@ -143,25 +194,47 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
           </span>
         </div>
 
+        {/* Row 2: reason */}
         <p className="text-sm">{violation.reason}</p>
 
-        {violation.original_text && (
-          <blockquote className="text-xs text-base-content/60 border-l-2 border-base-300 pl-2 italic">
-            {violation.original_text}
-          </blockquote>
-        )}
+        {/* Row 3: evidence block */}
+        <EvidenceBlock
+          source={violation.source}
+          originalText={violation.original_text}
+          evidenceUrl={violation.evidence_url}
+          evidenceText={violation.evidence_text}
+          onImageClick={() => openEvidenceDetail(violation)}
+        />
 
-        <div
-          className="text-xs text-base-content/40 tooltip tooltip-bottom text-left"
-          data-tip={violation.rule_content}
-        >
-          规则 {violation.rule_id}:{" "}
-          {violation.rule_content.length > 40
-            ? violation.rule_content.slice(0, 40) + "..."
-            : violation.rule_content}
+        {/* Row 4: rule reference */}
+        <div className="flex items-center gap-2">
+          <div
+            className="text-xs text-base-content/40 tooltip tooltip-bottom text-left flex-1"
+            data-tip={violation.rule_content}
+          >
+            规则 {violation.rule_id}
+            {violation.rule_ref && (
+              <span className="text-base-content/60 font-medium">
+                {" "}({violation.rule_ref})
+              </span>
+            )}
+            :{" "}
+            {violation.rule_content.length > 40
+              ? violation.rule_content.slice(0, 40) + "..."
+              : violation.rule_content}
+          </div>
+
+          {(violation.evidence_url || violation.evidence_text) && (
+            <button
+              className="btn btn-ghost btn-xs gap-0.5 text-base-content/40"
+              onClick={handleOpenDetail}
+            >
+              <ExternalLink className="h-3 w-3" />
+            </button>
+          )}
         </div>
 
-        {/* 人工二审操作区 */}
+        {/* Row 5: actions */}
         <div className="border-t border-base-200 pt-2 mt-1">
           {isPending ? (
             <div className="flex justify-end gap-1">

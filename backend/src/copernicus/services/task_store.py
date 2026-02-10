@@ -1,16 +1,17 @@
 import asyncio
+import contextlib
 import logging
+import time
 import uuid
 
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResponse
 from copernicus.schemas.task import TaskProgress, TaskStatus
 from copernicus.schemas.transcription import (
-    SegmentSchema,
-    TranscriptionResponse,
     TranscriptEntrySchema,
     TranscriptResponse,
 )
+from copernicus.config import Settings
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.persistence import PersistenceService
@@ -44,8 +45,7 @@ class TaskInfo:
         self.current_chunk = 0
         self.total_chunks = 0
         self.result: (
-            TranscriptionResponse
-            | EvaluationResponse
+            EvaluationResponse
             | TranscriptResponse
             | ComplianceResponse
             | None
@@ -95,6 +95,7 @@ class TaskStore:
         self,
         pipeline: PipelineService,
         persistence: PersistenceService,
+        settings: Settings,
         evaluator: EvaluatorService | None = None,
         compliance: ComplianceService | None = None,
     ) -> None:
@@ -102,6 +103,8 @@ class TaskStore:
         self._evaluator = evaluator
         self._compliance = compliance
         self._persistence = persistence
+        self._task_timeout = settings.task_timeout_seconds
+        self._max_tasks = settings.task_max_in_memory
         self._tasks: dict[str, TaskInfo] = {}
         self._hash_index: dict[str, str] = persistence.load_hash_index()
 
@@ -155,35 +158,12 @@ class TaskStore:
 
     # -- submit methods ------------------------------------------------------
 
-    def submit(
-        self,
-        audio_bytes: bytes,
-        filename: str,
-        hotwords: list[str] | None = None,
-    ) -> str:
-        task_id = uuid.uuid4().hex
-        self._tasks[task_id] = TaskInfo(task_id)
-        asyncio.create_task(
-            self._run_transcription(task_id, audio_bytes, filename, hotwords)
-        )
-        logger.info("Task %s submitted (transcription)", task_id)
-        return task_id
-
-    def submit_evaluation(
-        self,
-        audio_bytes: bytes,
-        filename: str,
-        hotwords: list[str] | None = None,
-    ) -> str:
-        if self._evaluator is None:
-            raise RuntimeError("EvaluatorService not configured")
-        task_id = uuid.uuid4().hex
-        self._tasks[task_id] = TaskInfo(task_id)
-        asyncio.create_task(
-            self._run_evaluation(task_id, audio_bytes, filename, hotwords)
-        )
-        logger.info("Task %s submitted (evaluation)", task_id)
-        return task_id
+    def _register_task(self, task_id: str, **kwargs) -> TaskInfo:
+        """Create a TaskInfo, store it, and evict old tasks if needed."""
+        info = TaskInfo(task_id, **kwargs)
+        self._tasks[task_id] = info
+        self._evict_completed()
+        return info
 
     def submit_transcript(
         self,
@@ -194,9 +174,12 @@ class TaskStore:
         file_hash: str = "",
     ) -> str:
         task_id = uuid.uuid4().hex
-        self._tasks[task_id] = TaskInfo(task_id)
+        self._register_task(task_id)
         asyncio.create_task(
-            self._run_transcript(task_id, audio_bytes, filename, hotwords)
+            self._run_with_timeout(
+                task_id,
+                self._run_transcript(task_id, audio_bytes, filename, hotwords),
+            )
         )
         if file_hash:
             self._register_hash(file_hash, task_id)
@@ -213,10 +196,10 @@ class TaskStore:
         if self._evaluator is None:
             raise RuntimeError("EvaluatorService not configured")
         task_id = uuid.uuid4().hex
-        self._tasks[task_id] = TaskInfo(
-            task_id, eval_only=True, parent_task_id=parent_task_id
+        self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
+        asyncio.create_task(
+            self._run_with_timeout(task_id, self._run_text_evaluation(task_id, text))
         )
-        asyncio.create_task(self._run_text_evaluation(task_id, text))
         logger.info("Task %s submitted (text evaluation, parent=%s)", task_id, parent_task_id)
         return task_id
 
@@ -232,12 +215,13 @@ class TaskStore:
         if self._compliance is None:
             raise RuntimeError("ComplianceService not configured")
         task_id = uuid.uuid4().hex
-        self._tasks[task_id] = TaskInfo(
-            task_id, eval_only=True, parent_task_id=parent_task_id
-        )
+        self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
         asyncio.create_task(
-            self._run_compliance_audit(
-                task_id, transcript_entries, rules_bytes, rules_filename
+            self._run_with_timeout(
+                task_id,
+                self._run_compliance_audit(
+                    task_id, transcript_entries, rules_bytes, rules_filename
+                ),
             )
         )
         logger.info("Task %s submitted (compliance audit, parent=%s)", task_id, parent_task_id)
@@ -274,7 +258,10 @@ class TaskStore:
         self._persistence.delete_file(task_id, "compliance.json")
 
         asyncio.create_task(
-            self._run_transcript(task_id, audio_bytes, f"audio{suffix}", hotwords)
+            self._run_with_timeout(
+                task_id,
+                self._run_transcript(task_id, audio_bytes, f"audio{suffix}", hotwords),
+            )
         )
         logger.info("Task %s rerun (transcript)", task_id)
         return task_id
@@ -298,102 +285,62 @@ class TaskStore:
     def get(self, task_id: str) -> TaskInfo | None:
         return self._tasks.get(task_id)
 
+    # -- memory management ---------------------------------------------------
+
+    def _evict_completed(self) -> None:
+        """Remove oldest completed/failed tasks when memory limit is exceeded."""
+        if len(self._tasks) <= self._max_tasks:
+            return
+        terminal = (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        evict_ids = [
+            tid
+            for tid, t in self._tasks.items()
+            if t.status in terminal
+        ]
+        # Evict from the front (oldest inserted first, dict preserves insertion order)
+        to_remove = len(self._tasks) - self._max_tasks
+        for tid in evict_ids[:to_remove]:
+            del self._tasks[tid]
+        if to_remove > 0:
+            logger.info("Evicted %d completed tasks (total: %d)", min(to_remove, len(evict_ids)), len(self._tasks))
+
+    # -- timeout wrapper -----------------------------------------------------
+
+    async def _run_with_timeout(self, task_id: str, coro) -> None:
+        """Wrap a task coroutine with timeout protection."""
+        try:
+            await asyncio.wait_for(coro, timeout=self._task_timeout)
+        except asyncio.TimeoutError:
+            task = self._tasks.get(task_id)
+            if task and task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                task.status = TaskStatus.FAILED
+                task.error = f"任务超时（{self._task_timeout}s）"
+                logger.error("Task %s timed out after %ds", task_id, self._task_timeout)
+
     # -- run implementations -------------------------------------------------
 
-    async def _run_transcription(
-        self,
-        task_id: str,
-        audio_bytes: bytes,
-        filename: str,
-        hotwords: list[str] | None,
-    ) -> None:
+    @contextlib.asynccontextmanager
+    async def _task_lifecycle(self, task_id: str, label: str):
+        """Common try/except + status/error/logging for all _run_* methods."""
         task = self._tasks[task_id]
         try:
-            task.status = TaskStatus.PROCESSING_ASR
-
-            def on_progress(current: int, total: int) -> None:
-                task.status = TaskStatus.CORRECTING
-                task.current_chunk = current
-                task.total_chunks = total
-
-            result = await self._pipeline.process(
-                audio_bytes, filename, hotwords, on_progress=on_progress
-            )
-
-            task.result = TranscriptionResponse(
-                raw_text=result.raw_text,
-                corrected_text=result.corrected_text,
-                segments=[
-                    SegmentSchema(
-                        text=s.text,
-                        start_ms=s.start_ms,
-                        end_ms=s.end_ms,
-                        confidence=s.confidence,
-                    )
-                    for s in result.segments
-                ],
-                processing_time_ms=result.processing_time_ms,
-            )
+            yield task
             task.status = TaskStatus.COMPLETED
-            logger.info("Task %s completed (transcription)", task_id)
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error = str(e)
-            logger.error("Task %s failed: %s", task_id, e)
-
-    async def _run_evaluation(
-        self,
-        task_id: str,
-        audio_bytes: bytes,
-        filename: str,
-        hotwords: list[str] | None,
-    ) -> None:
-        task = self._tasks[task_id]
-        try:
-            task.status = TaskStatus.PROCESSING_ASR
-
-            def on_progress(current: int, total: int) -> None:
-                task.status = TaskStatus.CORRECTING
-                task.current_chunk = current
-                task.total_chunks = total
-
-            result = await self._pipeline.process(
-                audio_bytes, filename, hotwords, on_progress=on_progress
-            )
-
-            task.status = TaskStatus.EVALUATING
-            task.current_chunk = 0
-            task.total_chunks = 0
-            assert self._evaluator is not None
-
-            def on_eval_progress(current: int, total: int) -> None:
-                task.current_chunk = current
-                task.total_chunks = total
-
-            evaluation = await self._evaluator.evaluate(
-                result.corrected_text, on_progress=on_eval_progress
-            )
-
-            task.result = EvaluationResponse(
-                raw_text=result.raw_text,
-                corrected_text=result.corrected_text,
-                evaluation=evaluation,
-                processing_time_ms=result.processing_time_ms,
-            )
-            task.status = TaskStatus.COMPLETED
-            logger.info("Task %s completed (evaluation)", task_id)
+            logger.info("Task %s completed (%s)", task_id, label)
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error = str(e) or type(e).__name__
-            logger.error("Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True)
+            logger.error(
+                "Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True
+            )
 
     async def _run_text_evaluation(self, task_id: str, text: str) -> None:
-        task = self._tasks[task_id]
-        try:
+        async with self._task_lifecycle(task_id, "text evaluation") as task:
             task.status = TaskStatus.EVALUATING
             task.current_chunk = 0
             task.total_chunks = 0
-            assert self._evaluator is not None
+            if self._evaluator is None:
+                raise RuntimeError("EvaluatorService not configured")
 
             def on_eval_progress(current: int, total: int) -> None:
                 task.current_chunk = current
@@ -409,18 +356,11 @@ class TaskStore:
                 evaluation=evaluation,
                 processing_time_ms=0,
             )
-            task.status = TaskStatus.COMPLETED
 
             if task.parent_task_id:
                 self._persistence.save_json(
                     task.parent_task_id, "evaluation.json", evaluation
                 )
-
-            logger.info("Task %s completed (text evaluation)", task_id)
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error = str(e) or type(e).__name__
-            logger.error("Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True)
 
     async def _run_transcript(
         self,
@@ -429,11 +369,8 @@ class TaskStore:
         filename: str,
         hotwords: list[str] | None,
     ) -> None:
-        logger.info("Task %s starting execution (transcript)", task_id)
-        task = self._tasks[task_id]
-        try:
+        async with self._task_lifecycle(task_id, "transcript") as task:
             task.status = TaskStatus.PROCESSING_ASR
-            logger.info("Task %s status: PROCESSING_ASR", task_id)
 
             def on_progress(current: int, total: int) -> None:
                 task.status = TaskStatus.CORRECTING
@@ -459,15 +396,7 @@ class TaskStore:
                 processing_time_ms=result.processing_time_ms,
             )
             task.result = transcript_response
-            task.status = TaskStatus.COMPLETED
-
             self._persistence.save_json(task_id, "transcript.json", transcript_response)
-
-            logger.info("Task %s completed (transcript)", task_id)
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error = str(e)
-            logger.error("Task %s failed: %s", task_id, e)
 
     async def _run_compliance_audit(
         self,
@@ -476,14 +405,12 @@ class TaskStore:
         rules_bytes: bytes,
         rules_filename: str,
     ) -> None:
-        import time
-
-        task = self._tasks[task_id]
-        try:
+        async with self._task_lifecycle(task_id, "compliance audit") as task:
             task.status = TaskStatus.AUDITING
             task.current_chunk = 0
             task.total_chunks = 0
-            assert self._compliance is not None
+            if self._compliance is None:
+                raise RuntimeError("ComplianceService not configured")
 
             start = time.perf_counter()
             rules, few_shot_examples = self._compliance.parse_rules(
@@ -508,21 +435,8 @@ class TaskStore:
                 processing_time_ms=elapsed_ms,
             )
             task.result = compliance_response
-            task.status = TaskStatus.COMPLETED
 
             if task.parent_task_id:
                 self._persistence.save_json(
                     task.parent_task_id, "compliance.json", compliance_response
                 )
-
-            logger.info("Task %s completed (compliance audit)", task_id)
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error = str(e) or type(e).__name__
-            logger.error(
-                "Task %s failed: [%s] %s",
-                task_id,
-                type(e).__name__,
-                e,
-                exc_info=True,
-            )

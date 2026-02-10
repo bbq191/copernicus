@@ -41,41 +41,42 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Copernicus service ...")
 
     llm_client = OllamaClient(settings)
+    try:
+        audio_service = AudioService(settings)
+        asr_service = ASRService(settings)
+        text_corrector = TextCorrectorService(settings)
+        hotword_replacer = HotwordReplacerService(settings)
+        corrector_service = CorrectorService(
+            llm_client, settings, text_corrector, hotword_replacer=hotword_replacer
+        )
 
-    audio_service = AudioService(settings)
-    asr_service = ASRService(settings)
-    text_corrector = TextCorrectorService(settings)
-    hotword_replacer = HotwordReplacerService(settings)
-    corrector_service = CorrectorService(
-        llm_client, settings, text_corrector, hotword_replacer=hotword_replacer
-    )
+        app.state.pipeline = PipelineService(
+            audio_service=audio_service,
+            asr_service=asr_service,
+            corrector_service=corrector_service,
+            confidence_threshold=settings.confidence_threshold,
+            chunk_size=settings.correction_chunk_size,
+            run_merge_gap=settings.confidence_run_merge_gap,
+            pre_merge_gap_ms=settings.pre_merge_gap_ms,
+            hotword_replacer=hotword_replacer,
+        )
+        app.state.evaluator = EvaluatorService(llm_client, settings)
+        app.state.compliance = ComplianceService(llm_client, settings)
+        persistence = PersistenceService(settings.upload_dir)
+        app.state.task_store = TaskStore(
+            pipeline=app.state.pipeline,
+            persistence=persistence,
+            settings=settings,
+            evaluator=app.state.evaluator,
+            compliance=app.state.compliance,
+        )
+        app.state.task_store.restore_from_disk()
 
-    app.state.pipeline = PipelineService(
-        audio_service=audio_service,
-        asr_service=asr_service,
-        corrector_service=corrector_service,
-        confidence_threshold=settings.confidence_threshold,
-        chunk_size=settings.correction_chunk_size,
-        run_merge_gap=settings.confidence_run_merge_gap,
-        pre_merge_gap_ms=settings.pre_merge_gap_ms,
-        hotword_replacer=hotword_replacer,
-    )
-    app.state.evaluator = EvaluatorService(llm_client, settings)
-    app.state.compliance = ComplianceService(llm_client, settings)
-    persistence = PersistenceService(settings.upload_dir)
-    app.state.task_store = TaskStore(
-        pipeline=app.state.pipeline,
-        persistence=persistence,
-        evaluator=app.state.evaluator,
-        compliance=app.state.compliance,
-    )
-    app.state.task_store.restore_from_disk()
-
-    logger.info("Copernicus service ready.")
-    yield
-
-    logger.info("Shutting down Copernicus service ...")
-    await llm_client.close()
+        logger.info("Copernicus service ready.")
+        yield
+    finally:
+        logger.info("Shutting down Copernicus service ...")
+        await llm_client.close()
 
 
 app = FastAPI(
@@ -87,7 +88,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

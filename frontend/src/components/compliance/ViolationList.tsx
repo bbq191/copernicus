@@ -1,8 +1,18 @@
 import { useState } from "react";
-import { Search, ShieldAlert, Filter, X } from "lucide-react";
+import {
+  Search,
+  ShieldAlert,
+  Filter,
+  Layers,
+  X,
+  Check,
+  CheckCheck,
+  ListChecks,
+} from "lucide-react";
 import {
   useComplianceStore,
   getFilteredViolations,
+  violationKey,
 } from "../../stores/complianceStore";
 import { ViolationCard } from "./ViolationCard";
 
@@ -20,6 +30,13 @@ const STATUS_OPTIONS = [
   { value: "rejected", label: "已忽略", className: "badge-ghost" },
 ] as const;
 
+const SOURCE_OPTIONS = [
+  { value: "all", label: "全部" },
+  { value: "transcript", label: "语音", className: "badge-primary" },
+  { value: "ocr", label: "OCR", className: "badge-secondary" },
+  { value: "vision", label: "视觉", className: "badge-accent" },
+] as const;
+
 const KBD_DISMISSED_KEY = "copernicus:kbd-hints-dismissed";
 
 export function ViolationList() {
@@ -31,10 +48,18 @@ export function ViolationList() {
   const setSeverityFilter = useComplianceStore((s) => s.setSeverityFilter);
   const statusFilter = useComplianceStore((s) => s.statusFilter);
   const setStatusFilter = useComplianceStore((s) => s.setStatusFilter);
+  const sourceFilter = useComplianceStore((s) => s.sourceFilter);
+  const setSourceFilter = useComplianceStore((s) => s.setSourceFilter);
   const searchQuery = useComplianceStore((s) => s.searchQuery);
   const setSearchQuery = useComplianceStore((s) => s.setSearchQuery);
   const selectedViolation = useComplianceStore((s) => s.selectedViolation);
   const selectViolation = useComplianceStore((s) => s.selectViolation);
+  const batchMode = useComplianceStore((s) => s.batchMode);
+  const toggleBatchMode = useComplianceStore((s) => s.toggleBatchMode);
+  const selectedIds = useComplianceStore((s) => s.selectedIds);
+  const selectAll = useComplianceStore((s) => s.selectAll);
+  const clearSelection = useComplianceStore((s) => s.clearSelection);
+  const batchSetStatus = useComplianceStore((s) => s.batchSetStatus);
 
   const violations = getFilteredViolations(useComplianceStore.getState());
 
@@ -57,12 +82,24 @@ export function ViolationList() {
     low: report.violations.filter((v) => v.severity === "low").length,
   };
 
+  const sourceCounts = {
+    all: report.violations.length,
+    transcript: report.violations.filter((v) => v.source === "transcript").length,
+    ocr: report.violations.filter((v) => v.source === "ocr").length,
+    vision: report.violations.filter((v) => v.source === "vision").length,
+  };
+
   const scoreColor =
     report.compliance_score >= 80
       ? "text-success"
       : report.compliance_score >= 60
         ? "text-warning"
         : "text-error";
+
+  // Count how many of the filtered violations are checked
+  const checkedCount = violations.filter((v) =>
+    selectedIds.has(violationKey(v)),
+  ).length;
 
   return (
     <div className="flex flex-col h-full">
@@ -102,6 +139,9 @@ export function ViolationList() {
           </span>
           <span className="flex items-center gap-1">
             <kbd className="kbd kbd-xs">&#8593;&#8595;</kbd> 切换
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="kbd kbd-xs">B</kbd> 批量
           </span>
           <button
             className="ml-auto btn btn-ghost btn-xs"
@@ -148,7 +188,38 @@ export function ViolationList() {
           </div>
         </div>
 
-        {/* Status filter + search */}
+        {/* Source filter */}
+        <div className="flex items-center gap-2">
+          <Layers className="h-4 w-4 opacity-50" />
+          <div className="flex gap-1">
+            {SOURCE_OPTIONS.map((opt) => {
+              const count =
+                sourceCounts[opt.value as keyof typeof sourceCounts];
+              return (
+                <button
+                  key={opt.value}
+                  className={`badge badge-sm cursor-pointer ${
+                    sourceFilter === opt.value
+                      ? "className" in opt
+                        ? opt.className
+                        : "badge-primary"
+                      : "badge-ghost"
+                  }`}
+                  onClick={() =>
+                    setSourceFilter(
+                      opt.value as "all" | "transcript" | "ocr" | "vision",
+                    )
+                  }
+                >
+                  {opt.label}
+                  {count > 0 && ` (${count})`}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Status filter + search + batch toggle */}
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 opacity-50" />
           <div className="flex gap-1">
@@ -172,6 +243,14 @@ export function ViolationList() {
               </button>
             ))}
           </div>
+
+          <button
+            className={`btn btn-xs gap-1 ml-2 ${batchMode ? "btn-primary" : "btn-ghost"}`}
+            onClick={toggleBatchMode}
+          >
+            <ListChecks className="h-3.5 w-3.5" />
+            批量
+          </button>
 
           <label className="input input-sm input-bordered flex items-center gap-2 w-48 ml-auto">
             <Search className="h-4 w-4 opacity-50" />
@@ -210,6 +289,41 @@ export function ViolationList() {
           ))
         )}
       </div>
+
+      {/* Batch action bar */}
+      {batchMode && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-base-200 border-t border-base-300 shrink-0">
+          <span className="text-sm font-medium">
+            已选 {checkedCount} 项
+          </span>
+          <button className="btn btn-ghost btn-xs gap-1" onClick={selectAll}>
+            <CheckCheck className="h-3 w-3" />
+            全选
+          </button>
+          <button className="btn btn-ghost btn-xs gap-1" onClick={clearSelection}>
+            <X className="h-3 w-3" />
+            取消
+          </button>
+          <div className="ml-auto flex gap-2">
+            <button
+              className="btn btn-success btn-sm gap-1"
+              disabled={checkedCount === 0}
+              onClick={() => batchSetStatus("confirmed")}
+            >
+              <Check className="h-3.5 w-3.5" />
+              批量确认
+            </button>
+            <button
+              className="btn btn-ghost btn-sm gap-1"
+              disabled={checkedCount === 0}
+              onClick={() => batchSetStatus("rejected")}
+            >
+              <X className="h-3.5 w-3.5" />
+              批量忽略
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

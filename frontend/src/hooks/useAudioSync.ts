@@ -1,19 +1,19 @@
 import { useEffect, useRef } from "react";
 import { usePlayerStore } from "../stores/playerStore";
 
-export function useAudioSync(audioRef: React.RefObject<HTMLAudioElement | null>) {
+export function useAudioSync(mediaRef: React.RefObject<HTMLMediaElement | null>) {
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
   const setDuration = usePlayerStore((s) => s.setDuration);
   const setPlaying = usePlayerStore((s) => s.setPlaying);
-  const setAudioElement = usePlayerStore((s) => s.setAudioElement);
+  const setMediaElement = usePlayerStore((s) => s.setMediaElement);
 
   useEffect(() => {
-    const el = audioRef.current;
+    const el = mediaRef.current;
     if (!el) return;
 
-    setAudioElement(el);
+    setMediaElement(el);
 
     const onLoadedMetadata = () => {
       setDuration(el.duration * 1000);
@@ -51,7 +51,7 @@ export function useAudioSync(audioRef: React.RefObject<HTMLAudioElement | null>)
       el.removeEventListener("play", onPlay);
       el.removeEventListener("pause", onPause);
       el.removeEventListener("ended", onEnded);
-      setAudioElement(null);
+      setMediaElement(null);
     };
-  }, [audioRef, setCurrentTime, setDuration, setPlaying, setAudioElement]);
+  }, [mediaRef, setCurrentTime, setDuration, setPlaying, setMediaElement]);
 }

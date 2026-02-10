@@ -7,10 +7,10 @@ export function useWaveSurfer(
   audioRef: React.RefObject<HTMLAudioElement | null>,
 ) {
   const wsRef = useRef<WaveSurfer | null>(null);
-  const audioSrc = usePlayerStore((s) => s.audioSrc);
+  const mediaSrc = usePlayerStore((s) => s.mediaSrc);
 
   useEffect(() => {
-    if (!containerRef.current || !audioRef.current || !audioSrc) return;
+    if (!containerRef.current || !audioRef.current || !mediaSrc) return;
 
     const ws = WaveSurfer.create({
       container: containerRef.current,
@@ -30,7 +30,7 @@ export function useWaveSurfer(
       ws.destroy();
       wsRef.current = null;
     };
-  }, [containerRef, audioRef, audioSrc]);
+  }, [containerRef, audioRef, mediaSrc]);
 
   return wsRef;
 }

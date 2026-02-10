@@ -13,16 +13,13 @@
 import asyncio
 import json
 import logging
-import re
-from collections.abc import Callable
 
 from copernicus.config import Settings
 from copernicus.schemas.evaluation import EvaluationResult
 from copernicus.services.llm import OllamaClient
+from copernicus.utils.llm_parse import extract_json_object, strip_think_tags
 from copernicus.utils.text import chunk_text
-
-# (current_step, total_steps) — Map chunk 完成时 current 递增，Reduce 时 = total
-ProgressCallback = Callable[[int, int], None]
+from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +192,7 @@ class EvaluatorService:
                 think=False,
                 num_predict=1024,
             )
-            content = _strip_think_tags(response.content).strip()
+            content = strip_think_tags(response.content).strip()
             logger.info("Map chunk %d/%d done: %d chars", index + 1, total, len(content))
             return content or f"（片段 {index + 1} 无法提取要点）"
         except Exception as e:
@@ -252,7 +249,7 @@ class EvaluatorService:
                 num_predict=4096,
             )
             raw = response.content
-            content = _extract_json(raw)
+            content = extract_json_object(raw)
 
             try:
                 data = json.loads(content)
@@ -279,27 +276,3 @@ class EvaluatorService:
         raise last_error  # type: ignore[misc]
 
 
-_THINK_PAIR_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-_THINK_OPEN_RE = re.compile(r"<think>.*", re.DOTALL)
-_THINK_CLOSE_RE = re.compile(r"^.*?</think>", re.DOTALL)
-
-
-def _strip_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags from LLM output."""
-    text = _THINK_PAIR_RE.sub("", text)
-    text = _THINK_OPEN_RE.sub("", text)
-    text = _THINK_CLOSE_RE.sub("", text)
-    return text
-
-
-def _extract_json(text: str) -> str:
-    """Extract JSON from LLM output, stripping think tags and markdown fences."""
-    text = _strip_think_tags(text)
-    text = text.replace("```json", "").replace("```", "").strip()
-    idx = text.find("{")
-    if idx > 0:
-        text = text[idx:]
-    last = text.rfind("}")
-    if last >= 0:
-        text = text[: last + 1]
-    return text.strip()

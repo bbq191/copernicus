@@ -30,6 +30,15 @@ export function useAuditKeyboard(enabled: boolean) {
 
       const store = useComplianceStore.getState();
 
+      // Ctrl/Cmd+A: select all (batch mode only)
+      if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+        if (store.batchMode) {
+          e.preventDefault();
+          store.selectAll();
+        }
+        return;
+      }
+
       switch (e.key) {
         case " ": {
           e.preventDefault();
@@ -61,6 +70,21 @@ export function useAuditKeyboard(enabled: boolean) {
           e.preventDefault();
           store.navigateViolation("prev");
           jumpToSelected();
+          break;
+        }
+        case "b":
+        case "B": {
+          e.preventDefault();
+          store.toggleBatchMode();
+          break;
+        }
+        case "Escape": {
+          e.preventDefault();
+          if (store.evidencePanelOpen) {
+            store.closeEvidenceDetail();
+          } else if (store.batchMode) {
+            store.toggleBatchMode();
+          }
           break;
         }
       }

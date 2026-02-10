@@ -2,24 +2,14 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Callable
 
 from copernicus.services.llm import OllamaClient
 from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.config import Settings
+from copernicus.utils.llm_parse import strip_think_tags
 from copernicus.utils.text import chunk_text, merge_chunks
-
-_THINK_RE = re.compile(
-    r"<think>.*?</think>"
-    r"|<think>.*"
-    r"|^.*?</think>",
-    re.DOTALL,
-)
-
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
-
-ProgressCallback = Callable[[int, int], None]
+from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -194,15 +184,17 @@ class CorrectorService:
         total = len(chunks)
         semaphore = asyncio.Semaphore(self._max_concurrency)
         completed = 0
+        lock = asyncio.Lock()
 
         async def _process(index: int, chunk: str) -> str:
             nonlocal completed
             async with semaphore:
                 logger.info("Correcting chunk %d/%d ...", index + 1, total)
                 result = await self._correct_chunk(chunk)
-                completed += 1
-                if on_progress:
-                    on_progress(completed, total)
+                async with lock:
+                    completed += 1
+                    if on_progress:
+                        on_progress(completed, total)
                 return result
 
         tasks = [_process(i, chunk) for i, chunk in enumerate(chunks)]
@@ -222,15 +214,17 @@ class CorrectorService:
         total = len(segments_text)
         semaphore = asyncio.Semaphore(self._max_concurrency)
         completed = 0
+        lock = asyncio.Lock()
 
         async def _process(index: int, text: str) -> str:
             nonlocal completed
             async with semaphore:
                 logger.info("Correcting segment %d/%d ...", index + 1, total)
                 result = await self._correct_chunk(text)
-                completed += 1
-                if on_progress:
-                    on_progress(completed, total)
+                async with lock:
+                    completed += 1
+                    if on_progress:
+                        on_progress(completed, total)
                 return result
 
         tasks = [_process(i, text) for i, text in enumerate(segments_text)]
@@ -312,6 +306,7 @@ class CorrectorService:
         )
         semaphore = asyncio.Semaphore(self._max_concurrency)
         completed = 0
+        lock = asyncio.Lock()
 
         async def _process_batch(
             index: int, batch: list[dict]
@@ -320,9 +315,10 @@ class CorrectorService:
             async with semaphore:
                 logger.info("Correcting transcript batch %d/%d ...", index + 1, total)
                 result = await self._correct_transcript_batch(batch)
-                completed += 1
-                if on_progress:
-                    on_progress(completed, total)
+                async with lock:
+                    completed += 1
+                    if on_progress:
+                        on_progress(completed, total)
                 return result
 
         tasks = [_process_batch(i, batch) for i, batch in enumerate(batches)]
@@ -420,7 +416,7 @@ class CorrectorService:
                 num_predict=max_output_tokens,  # 限制输出长度
             )
             raw = response.content
-            raw = _THINK_RE.sub("", raw).strip()
+            raw = strip_think_tags(raw).strip()
 
             if not raw:
                 logger.warning("LLM returned empty response for transcript batch, using fallback")
@@ -498,7 +494,7 @@ class CorrectorService:
                 num_ctx=self._num_ctx,
             )
             content = response.content
-            return _THINK_RE.sub("", content).strip() or text
+            return strip_think_tags(content).strip() or text
         except Exception as e:
             logger.warning(
                 "LLM correction failed for chunk, using raw text: [%s] %s",

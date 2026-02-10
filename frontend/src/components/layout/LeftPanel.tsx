@@ -1,5 +1,5 @@
 import { Sparkles, ShieldCheck } from "lucide-react";
-import { AudioPlayer } from "../player/AudioPlayer";
+import { MediaPlayer } from "../player/MediaPlayer";
 import { SummaryPanel } from "../summary/SummaryPanel";
 import { CompliancePanel } from "../compliance/CompliancePanel";
 import { useEvaluationStore } from "../../stores/evaluationStore";
@@ -17,7 +17,9 @@ export function LeftPanel() {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto border-r border-base-300">
-      <AudioPlayer />
+      <MediaPlayer />
+
+      <div className="divider my-0" />
 
       {/* SummaryPanel collapse */}
       <div className="collapse collapse-arrow border-t border-base-300">

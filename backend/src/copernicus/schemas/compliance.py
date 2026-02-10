@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -13,15 +15,17 @@ class Violation(BaseModel):
 
     rule_id: int
     rule_content: str
-    timestamp: str
-    timestamp_ms: int
-    end_ms: int
-    speaker: str
-    original_text: str
     reason: str
-    severity: str  # "high" | "medium" | "low"
+    severity: Literal["high", "medium", "low"] = "low"
     confidence: float
-    status: str = "pending"  # "pending" | "confirmed" | "rejected"
+    status: Literal["pending", "confirmed", "rejected"] = "pending"
+
+    # 音频/文本字段
+    timestamp: str = ""
+    timestamp_ms: int = 0
+    end_ms: int = 0
+    speaker: str = ""
+    original_text: str = ""
 
 
 class ComplianceReport(BaseModel):

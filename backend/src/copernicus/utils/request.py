@@ -4,9 +4,6 @@ Author: afu
 """
 
 import json
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 def parse_hotwords(hotwords: str | None) -> list[str] | None:
@@ -17,13 +14,16 @@ def parse_hotwords(hotwords: str | None) -> list[str] | None:
 
     Returns:
         热词列表，或 None（无热词时）
+
+    Raises:
+        ValueError: hotwords 不是合法的 JSON 字符串数组
     """
     if not hotwords:
         return None
     try:
         parsed = json.loads(hotwords)
-        if isinstance(parsed, list) and all(isinstance(w, str) for w in parsed):
-            return parsed
-    except json.JSONDecodeError:
-        logger.warning("Invalid hotwords JSON: %s", hotwords[:100])
-    return None
+    except json.JSONDecodeError as e:
+        raise ValueError(f"hotwords 不是合法 JSON: {e}") from e
+    if not isinstance(parsed, list) or not all(isinstance(w, str) for w in parsed):
+        raise ValueError("hotwords 必须是字符串数组，如 [\"词1\", \"词2\"]")
+    return parsed if parsed else None

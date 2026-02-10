@@ -9,6 +9,7 @@ and JSON format — features not available via Ollama's OpenAI-compatible endpoi
 - 流式模式下，只要连接保持活跃（每 chunk 间隔 < timeout），就不会超时
 """
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -48,6 +49,9 @@ class OllamaClient:
         self._temperature = settings.llm_temperature
         self._num_ctx = settings.ollama_num_ctx
         self._timeout = settings.llm_timeout
+        self._max_retries = settings.llm_max_retries
+        self._retry_delay = settings.llm_retry_delay
+        self._semaphore = asyncio.Semaphore(settings.llm_max_concurrent)
         # 使用较长的连接超时，但读取超时保持合理（流式模式下每个 chunk 间隔不会太长）
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -74,6 +78,8 @@ class OllamaClient:
         使用流式响应避免长推理超时：Ollama 会逐 token 返回，
         只要 token 生成间隔 < read_timeout，连接就不会断开。
 
+        内置重试机制：遇到网络错误或 HTTP 5xx 时自动重试，指数退避。
+
         Args:
             think: 是否启用 qwen3 thinking 模式。
                    None = 使用默认行为（不设置参数，由 Ollama 决定）
@@ -82,6 +88,49 @@ class OllamaClient:
             num_predict: 最大输出 token 数，限制 thinking 长度避免无限推理
             timeout: 覆盖默认 read timeout（秒），用于大文本 prompt evaluation 耗时较长的场景
         """
+        last_error: Exception | None = None
+        max_attempts = 1 + self._max_retries
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with self._semaphore:
+                    return await self._do_chat(
+                        messages,
+                        temperature=temperature,
+                        json_format=json_format,
+                        num_ctx=num_ctx,
+                        think=think,
+                        num_predict=num_predict,
+                        timeout=timeout,
+                    )
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError) as e:
+                last_error = e
+                if attempt >= max_attempts:
+                    raise
+                delay = self._retry_delay * (2 ** (attempt - 1))
+                logger.warning(
+                    "LLM attempt %d/%d failed, retry in %.1fs: %s",
+                    attempt,
+                    max_attempts,
+                    delay,
+                    e,
+                )
+                await asyncio.sleep(delay)
+
+        raise last_error  # type: ignore[misc]
+
+    async def _do_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        json_format: bool = False,
+        num_ctx: int | None = None,
+        think: bool | None = None,
+        num_predict: int | None = None,
+        timeout: float | None = None,
+    ) -> ChatResponse:
+        """Execute a single streaming chat request (no retry logic)."""
         options: dict = {
             "num_ctx": num_ctx if num_ctx is not None else self._num_ctx,
             "temperature": temperature if temperature is not None else self._temperature,

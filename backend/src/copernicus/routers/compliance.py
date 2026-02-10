@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -53,7 +54,7 @@ async def submit_compliance_audit(
 
 class ViolationStatusUpdate(BaseModel):
     index: int
-    status: str  # "pending" | "confirmed" | "rejected"
+    status: Literal["pending", "confirmed", "rejected"]
 
 
 class ViolationBatchUpdate(BaseModel):

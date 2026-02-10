@@ -21,8 +21,8 @@ export function WorkspacePage() {
   const updateStatus = useTaskStore((s) => s.updateStatus);
   const setPollEnabled = useTaskStore((s) => s.setPollEnabled);
   const pollEnabled = useTaskStore((s) => s.pollEnabled);
-  const audioSrc = usePlayerStore((s) => s.audioSrc);
-  const setAudioSrc = usePlayerStore((s) => s.setAudioSrc);
+  const mediaSrc = usePlayerStore((s) => s.mediaSrc);
+  const setMediaSrc = usePlayerStore((s) => s.setMediaSrc);
 
   useEffect(() => {
     if (taskId && taskId !== currentTaskId) {
@@ -66,9 +66,9 @@ export function WorkspacePage() {
   }, [taskId, updateStatus, setPollEnabled]);
 
   useEffect(() => {
-    if (!taskId || audioSrc) return;
-    setAudioSrc(`/api/v1/tasks/${taskId}/audio`);
-  }, [taskId, audioSrc, setAudioSrc]);
+    if (!taskId || mediaSrc) return;
+    setMediaSrc(`/api/v1/tasks/${taskId}/audio`);
+  }, [taskId, mediaSrc, setMediaSrc]);
 
   useTaskPolling(pollEnabled);
 

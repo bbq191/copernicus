@@ -4,7 +4,7 @@ from pydantic import BaseModel
 
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResponse, EvaluationResult
-from copernicus.schemas.transcription import TranscriptionResponse, TranscriptResponse
+from copernicus.schemas.transcription import TranscriptResponse
 
 
 class TaskStatus(StrEnum):
@@ -33,7 +33,7 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     status: TaskStatus
     progress: TaskProgress
-    result: TranscriptionResponse | EvaluationResponse | TranscriptResponse | ComplianceResponse | None = None
+    result: EvaluationResponse | TranscriptResponse | ComplianceResponse | None = None
     error: str | None = None
 
 

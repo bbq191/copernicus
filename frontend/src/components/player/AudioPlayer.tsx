@@ -9,16 +9,16 @@ import { WaveformDisplay } from "./WaveformDisplay";
 export function AudioPlayer() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const waveformRef = useRef<HTMLDivElement>(null);
-  const audioSrc = usePlayerStore((s) => s.audioSrc);
+  const mediaSrc = usePlayerStore((s) => s.mediaSrc);
 
   useAudioSync(audioRef);
   useWaveSurfer(waveformRef, audioRef);
 
-  if (!audioSrc) return null;
+  if (!mediaSrc) return null;
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <audio ref={audioRef} src={audioSrc} preload="metadata" />
+      <audio ref={audioRef} src={mediaSrc} preload="metadata" />
       <WaveformDisplay containerRef={waveformRef} />
       <ProgressBar />
       <PlaybackControls />

@@ -15,20 +15,16 @@ import io
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Iterable
 
 from copernicus.config import Settings
 from copernicus.exceptions import ComplianceError
 from copernicus.schemas.compliance import ComplianceReport, ComplianceRule, Violation
 from copernicus.services.llm import OllamaClient
-
-ProgressCallback = Callable[[int, int], None]
+from copernicus.utils.llm_parse import extract_json_array, strip_think_tags
+from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
-
-_THINK_PAIR_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-_THINK_OPEN_RE = re.compile(r"<think>.*", re.DOTALL)
-_THINK_CLOSE_RE = re.compile(r"^.*?</think>", re.DOTALL)
 
 _AUDIT_SYSTEM_PROMPT = """\
 你是一个保险行业合规审核专家，执行严格的合规质检任务。
@@ -296,7 +292,7 @@ class ComplianceService:
                     num_predict=4096,
                     think=False,
                 )
-                raw = _strip_think_tags(response.content)
+                raw = strip_think_tags(response.content)
                 logger.info(
                     "Audit chunk %d/%d raw LLM output:\n%s",
                     chunk_index + 1,
@@ -351,7 +347,7 @@ class ComplianceService:
                 think=False,
                 num_predict=1024,
             )
-            return _strip_think_tags(response.content).strip()
+            return strip_think_tags(response.content).strip()
         except Exception as e:
             logger.warning("Summary generation failed: %s", e)
             high = sum(1 for v in violations if v.severity == "high")
@@ -381,33 +377,6 @@ def _calculate_score(total_rules: int, violations: list[Violation]) -> float:
     return max(0.0, round(100.0 - deduction, 1))
 
 
-def _strip_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags from LLM output."""
-    text = _THINK_PAIR_RE.sub("", text)
-    text = _THINK_OPEN_RE.sub("", text)
-    text = _THINK_CLOSE_RE.sub("", text)
-    return text
-
-
-def _extract_json_array(text: str) -> str:
-    """Extract JSON array from LLM output."""
-    text = _strip_think_tags(text)
-    text = text.replace("```json", "").replace("```", "").strip()
-    # 尝试找到 JSON 数组
-    start = text.find("[")
-    if start >= 0:
-        end = text.rfind("]")
-        if end > start:
-            return text[start : end + 1]
-    # 可能 LLM 输出了 {"violations": [...]} 形式的对象
-    start = text.find("{")
-    if start >= 0:
-        end = text.rfind("}")
-        if end > start:
-            return text[start : end + 1]
-    return text.strip()
-
-
 def _parse_timestamp_to_ms(ts: str) -> int:
     """Parse MM:SS or HH:MM:SS string to milliseconds."""
     parts = ts.strip().split(":")
@@ -419,6 +388,22 @@ def _parse_timestamp_to_ms(ts: str) -> int:
     except ValueError:
         pass
     return 0
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    """安全地将 LLM 输出转换为 int，避免非数值字符串崩溃。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    """安全地将 LLM 输出转换为 float。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_violations(
@@ -433,7 +418,7 @@ def _parse_violations(
     transcript entries), LLM-returned ``timestamp_ms`` is replaced with the
     accurate value looked up by the ``timestamp`` string key.
     """
-    content = _extract_json_array(raw)
+    content = extract_json_array(raw)
     data = json.loads(content)
 
     # 如果 LLM 输出了对象而非数组
@@ -453,17 +438,22 @@ def _parse_violations(
     if not isinstance(data, list):
         return []
 
+    _VALID_SEVERITY = {"high", "medium", "low"}
     rules_map = {r.id: r.content for r in rules}
     violations: list[Violation] = []
 
     for item in data:
         if not isinstance(item, dict):
             continue
-        rule_id = int(item.get("rule_id", 0))
+        rule_id = _safe_int(item.get("rule_id", 0))
         rule_content = item.get("rule_content", "") or rules_map.get(rule_id, "")
         ts_str = str(item.get("timestamp", "00:00"))
-        llm_ts_ms = int(item.get("timestamp_ms", 0))
-        llm_end_ms = int(item.get("end_ms", 0))
+        llm_ts_ms = _safe_int(item.get("timestamp_ms", 0))
+        llm_end_ms = _safe_int(item.get("end_ms", 0))
+
+        # Validate severity from LLM output
+        raw_severity = str(item.get("severity", "low")).lower()
+        severity = raw_severity if raw_severity in _VALID_SEVERITY else "low"
 
         # Resolve precise timestamp_ms from transcript entries mapping.
         # The LLM only sees [MM:SS] strings and cannot reliably infer the
@@ -486,49 +476,54 @@ def _parse_violations(
                 speaker=str(item.get("speaker", "")),
                 original_text=str(item.get("original_text", "")),
                 reason=str(item.get("reason", "")),
-                severity=str(item.get("severity", "low")).lower(),
-                confidence=float(item.get("confidence", 0.5)),
+                severity=severity,
+                confidence=_safe_float(item.get("confidence", 0.5), default=0.5),
+                source="audio",
             )
         )
 
     return violations
 
 
-def _parse_csv(file_bytes: bytes) -> tuple[list[ComplianceRule], list[str]]:
-    """解析 CSV 文件，返回 (规则列表, few-shot 案例列表)。"""
-    text = _decode_bytes(file_bytes)
-    reader = csv.reader(io.StringIO(text))
+_HEADER_KEYWORDS = ("必备要素", "检查", "标准", "序号", "注：")
+_SKIP_CELLS = {"合格", "不涉及", "None", ""}
+
+
+def _parse_rule_rows(
+    rows: Iterable[list[str]],
+) -> tuple[list[ComplianceRule], list[str]]:
+    """统一的规则行解析逻辑，CSV 和 XLSX 共用。"""
     rules: list[ComplianceRule] = []
     examples: list[str] = []
-    header_keywords = ("必备要素", "检查", "标准", "序号", "注：")
 
-    for row in reader:
-        if not row:
-            continue
-        col_a = row[0].strip()
+    for cells in rows:
+        col_a = cells[0].strip() if cells else ""
         if not col_a:
             continue
-        # 跳过标题行和注释行
-        if any(kw in col_a for kw in header_keywords):
+        if any(kw in col_a for kw in _HEADER_KEYWORDS):
             continue
-        # 跳过底部"存在的问题"汇总区域
-        if col_a.startswith(("存在的问题",)):
+        if col_a.startswith("存在的问题"):
             break
 
-        # 分离编号和内容：如 "4全程双录：正面摄录..." -> id=4, content="全程双录..."
         rule_id, content = _split_rule_id(col_a, len(rules) + 1)
         if not content:
             continue
 
         rules.append(ComplianceRule(id=rule_id, content=content))
 
-        # 提取 B-G 列中非"合格"/"不涉及"的实际违规案例
-        for cell in row[1:]:
+        for cell in cells[1:]:
             cell = cell.strip()
-            if cell and cell not in ("合格", "不涉及", ""):
+            if cell and cell not in _SKIP_CELLS:
                 examples.append(f"规则{rule_id}({content[:20]}...): {cell}")
 
     return rules, examples
+
+
+def _parse_csv(file_bytes: bytes) -> tuple[list[ComplianceRule], list[str]]:
+    """解析 CSV 文件，返回 (规则列表, few-shot 案例列表)。"""
+    text = _decode_bytes(file_bytes)
+    rows = (row for row in csv.reader(io.StringIO(text)) if row)
+    return _parse_rule_rows(rows)
 
 
 def _parse_xlsx(file_bytes: bytes) -> tuple[list[ComplianceRule], list[str]]:
@@ -539,33 +534,15 @@ def _parse_xlsx(file_bytes: bytes) -> tuple[list[ComplianceRule], list[str]]:
         raise ComplianceError("解析 XLSX 需要 openpyxl 库") from e
 
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    if not wb.sheetnames:
+        raise ComplianceError("XLSX 文件没有工作表")
     ws = wb[wb.sheetnames[0]]
 
-    rules: list[ComplianceRule] = []
-    examples: list[str] = []
-    header_keywords = ("必备要素", "检查", "标准", "序号", "注：")
-
-    for row in ws.iter_rows(values_only=True):
-        cells = [str(c).strip() if c is not None else "" for c in row]
-        col_a = cells[0] if cells else ""
-        if not col_a:
-            continue
-        if any(kw in col_a for kw in header_keywords):
-            continue
-        if col_a.startswith(("存在的问题",)):
-            break
-
-        rule_id, content = _split_rule_id(col_a, len(rules) + 1)
-        if not content:
-            continue
-
-        rules.append(ComplianceRule(id=rule_id, content=content))
-
-        for cell in cells[1:]:
-            if cell and cell not in ("合格", "不涉及", "None", ""):
-                examples.append(f"规则{rule_id}({content[:20]}...): {cell}")
-
-    return rules, examples
+    rows = (
+        [str(c).strip() if c is not None else "" for c in row]
+        for row in ws.iter_rows(values_only=True)
+    )
+    return _parse_rule_rows(rows)
 
 
 def _decode_bytes(data: bytes) -> str:

@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     llm_model_name: str = "deepseek-chat"
     llm_temperature: float = 0.1
     llm_timeout: float = 120.0  # 单次 LLM 请求超时，超时后使用原文作为 fallback
+    llm_max_retries: int = 2  # LLM 调用失败重试次数（指数退避）
+    llm_retry_delay: float = 2.0  # 首次重试延迟（秒），后续 2x 递增
+    llm_max_concurrent: int = 3  # 全局 LLM 并发上限
     ollama_num_ctx: int = 32768
     ollama_num_ctx_correction: int = 4096
 
@@ -82,6 +85,13 @@ class Settings(BaseSettings):
     # Hotwords file (optional)
     hotwords_file: Path | None = None
 
+    # Task execution
+    task_timeout_seconds: int = 3600  # 单任务超时（秒），防止 ASR/LLM 卡住
+    task_max_in_memory: int = 500  # 内存中最大任务数，超出时淘汰最早的已完成任务
+
+    # CORS
+    cors_origins: list[str] = ["http://localhost:3000"]
+
     # Upload settings
     upload_dir: Path = Path("./uploads")
     max_upload_size_mb: int = 500
@@ -91,29 +101,27 @@ class Settings(BaseSettings):
         return self.max_upload_size_mb * 1024 * 1024
 
     def resolve_asr_device(self) -> str:
+        import logging
+        _logger = logging.getLogger(__name__)
+
         if self.asr_device != "auto":
             return self.asr_device
         try:
             import torch
 
             if torch.cuda.is_available():
-                device_name = torch.cuda.get_device_name(0)
-                import logging
-                logging.getLogger(__name__).info(
+                _logger.info(
                     "CUDA available: %s (VRAM: %.1f GB)",
-                    device_name,
+                    torch.cuda.get_device_name(0),
                     torch.cuda.get_device_properties(0).total_memory / 1024**3,
                 )
                 return "cuda"
-            else:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "CUDA not available. Check: 1) torch+cu12x installed 2) NVIDIA driver"
-                )
-                return "cpu"
+            _logger.warning(
+                "CUDA not available. Check: 1) torch+cu12x installed 2) NVIDIA driver"
+            )
+            return "cpu"
         except ImportError:
-            import logging
-            logging.getLogger(__name__).warning("PyTorch not installed, falling back to CPU")
+            _logger.warning("PyTorch not installed, falling back to CPU")
             return "cpu"
 
 

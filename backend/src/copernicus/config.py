@@ -55,7 +55,10 @@ class Settings(BaseSettings):
     correction_overlap: int = 50
     correction_max_concurrency: int = 3
 
-    # pycorrector 轻量级纠错（阶段 2）
+    # 热词后处理替换（阶段 2）
+    hotword_replacer_enabled: bool = True
+
+    # pycorrector 轻量级纠错（阶段 3）
     pycorrector_enabled: bool = True
     pycorrector_model: str = "macbert"  # macbert | kenlm
 

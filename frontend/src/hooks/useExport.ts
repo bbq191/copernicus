@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { useTranscriptStore } from "../stores/transcriptStore";
+import { useToastStore } from "../stores/toastStore";
 import { generateSrt, downloadSrt } from "../utils/srtGenerator";
 import { exportToWord } from "../utils/wordGenerator";
 import { exportToPdf } from "../utils/pdfGenerator";
@@ -30,6 +31,13 @@ export function useExport() {
             await exportToPdf(mergedBlocks, speakerMap, textMode);
             break;
         }
+        const labels = { srt: "SRT 字幕", word: "Word 文档", pdf: "PDF 文档" };
+        useToastStore.getState().addToast("success", `${labels[format]}导出成功`);
+      } catch (err) {
+        useToastStore
+          .getState()
+          .addToast("error", err instanceof Error ? err.message : "导出失败");
+        throw err;
       } finally {
         setIsExporting(false);
       }

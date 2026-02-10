@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Upload, FileAudio } from "lucide-react";
 import { submitTranscriptTask } from "../../api/task";
 import { useTaskStore } from "../../stores/taskStore";
+import { useToastStore } from "../../stores/toastStore";
 import { UploadProgress } from "./UploadProgress";
 
 export function UploadPage() {
@@ -18,6 +19,10 @@ export function UploadPage() {
         const res = await submitTranscriptTask(file);
         if (!res.existing) {
           setTask(res.task_id, res.status);
+        } else {
+          useToastStore
+            .getState()
+            .addToast("info", "检测到相同文件，已恢复历史结果");
         }
         navigate(`/workspace/${res.task_id}`);
       } catch (err) {

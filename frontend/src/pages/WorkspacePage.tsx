@@ -8,8 +8,8 @@ import { useComplianceStore } from "../stores/complianceStore";
 import { useTaskPolling } from "../hooks/useTaskPolling";
 import { getTaskResults } from "../api/task";
 import { AppLayout } from "../components/layout/AppLayout";
-import { LoadingSpinner } from "../components/shared/LoadingSpinner";
 import { ErrorAlert } from "../components/shared/ErrorAlert";
+import { WorkspaceSkeleton } from "../components/shared/WorkspaceSkeleton";
 import { UploadProgress } from "../components/upload/UploadProgress";
 
 export function WorkspacePage() {
@@ -82,12 +82,14 @@ export function WorkspacePage() {
 
   if (status && status !== "completed") {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-8">
-        <LoadingSpinner text="处理中..." />
+      <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-8">
+        <span className="loading loading-spinner loading-lg text-primary" />
         <UploadProgress />
       </div>
     );
   }
+
+  if (!status) return <WorkspaceSkeleton />;
 
   return <AppLayout />;
 }

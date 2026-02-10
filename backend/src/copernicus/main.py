@@ -24,6 +24,7 @@ from copernicus.services.asr import ASRService
 from copernicus.services.llm import OllamaClient
 from copernicus.services.corrector import CorrectorService
 from copernicus.services.text_corrector import TextCorrectorService
+from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.persistence import PersistenceService
@@ -44,7 +45,10 @@ async def lifespan(app: FastAPI):
     audio_service = AudioService(settings)
     asr_service = ASRService(settings)
     text_corrector = TextCorrectorService(settings)
-    corrector_service = CorrectorService(llm_client, settings, text_corrector)
+    hotword_replacer = HotwordReplacerService(settings)
+    corrector_service = CorrectorService(
+        llm_client, settings, text_corrector, hotword_replacer=hotword_replacer
+    )
 
     app.state.pipeline = PipelineService(
         audio_service=audio_service,
@@ -54,7 +58,7 @@ async def lifespan(app: FastAPI):
         chunk_size=settings.correction_chunk_size,
         run_merge_gap=settings.confidence_run_merge_gap,
         pre_merge_gap_ms=settings.pre_merge_gap_ms,
-        hotwords_file=settings.hotwords_file,
+        hotword_replacer=hotword_replacer,
     )
     app.state.evaluator = EvaluatorService(llm_client, settings)
     app.state.compliance = ComplianceService(llm_client, settings)

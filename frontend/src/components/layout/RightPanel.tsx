@@ -35,11 +35,17 @@ export function RightPanel() {
             className={`tab gap-1 ${activeTab === "violations" ? "tab-active" : ""}`}
             onClick={() => setActiveTab("violations")}
           >
-            <ShieldAlert className="h-4 w-4" />
-            违规报告
-            {violationCount > 0 && (
-              <span className="badge badge-error badge-xs">{violationCount}</span>
+            {violationCount > 0 ? (
+              <span className="indicator">
+                <span className="indicator-item badge badge-error badge-xs">
+                  {violationCount}
+                </span>
+                <ShieldAlert className="h-4 w-4" />
+              </span>
+            ) : (
+              <ShieldAlert className="h-4 w-4" />
             )}
+            违规报告
           </button>
         </div>
       )}

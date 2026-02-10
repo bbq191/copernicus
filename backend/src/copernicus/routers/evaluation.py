@@ -1,5 +1,3 @@
-import json
-
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 
 from copernicus.config import settings
@@ -10,20 +8,9 @@ from copernicus.schemas.task import TaskStatus, TaskSubmitResponse
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
+from copernicus.utils.request import parse_hotwords
 
 router = APIRouter(prefix="/api/v1", tags=["evaluation"])
-
-
-async def _parse_hotwords(hotwords: str | None) -> list[str] | None:
-    if not hotwords:
-        return None
-    try:
-        parsed = json.loads(hotwords)
-        if isinstance(parsed, list) and all(isinstance(w, str) for w in parsed):
-            return parsed
-    except (json.JSONDecodeError, TypeError):
-        pass
-    raise HTTPException(status_code=422, detail="hotwords must be a JSON array of strings")
 
 
 @router.post("/evaluate", response_model=EvaluationResponse)
@@ -39,7 +26,7 @@ async def evaluate_audio(
     if len(audio_bytes) > settings.max_upload_size_bytes:
         raise HTTPException(status_code=413, detail="File too large")
 
-    hw = await _parse_hotwords(hotwords)
+    hw = parse_hotwords(hotwords)
 
     try:
         result = await pipeline.process(audio_bytes, file.filename or "upload.bin", hw)
@@ -67,7 +54,7 @@ async def submit_evaluate_task(
     if len(audio_bytes) > settings.max_upload_size_bytes:
         raise HTTPException(status_code=413, detail="File too large")
 
-    hw = await _parse_hotwords(hotwords)
+    hw = parse_hotwords(hotwords)
     task_id = store.submit_evaluation(audio_bytes, file.filename or "upload.bin", hw)
 
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)

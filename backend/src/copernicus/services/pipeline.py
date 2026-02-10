@@ -2,12 +2,12 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from copernicus.services.asr import ASRResult, Segment
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.corrector import CorrectorService, ProgressCallback
+from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.utils.text import (
     format_timestamp,
     group_segments,
@@ -44,19 +44,6 @@ class TranscriptResult:
     processing_time_ms: float = 0.0
 
 
-def _load_hotwords_file(path: Path | None) -> list[str]:
-    """Load hotwords from a text file (one word per line, # for comments)."""
-    if path is None:
-        return []
-    if not path.exists():
-        logger.warning("Hotwords file not found: %s", path)
-        return []
-    lines = path.read_text(encoding="utf-8").splitlines()
-    words = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
-    logger.info("Loaded %d hotwords from %s", len(words), path)
-    return words
-
-
 class PipelineService:
     def __init__(
         self,
@@ -67,7 +54,7 @@ class PipelineService:
         chunk_size: int = 800,
         run_merge_gap: int = 3,
         pre_merge_gap_ms: int = 1000,
-        hotwords_file: Path | None = None,
+        hotword_replacer: HotwordReplacerService | None = None,
     ) -> None:
         self._audio = audio_service
         self._asr = asr_service
@@ -76,12 +63,13 @@ class PipelineService:
         self._chunk_size = chunk_size
         self._run_merge_gap = run_merge_gap
         self._pre_merge_gap_ms = pre_merge_gap_ms
-        self._global_hotwords = _load_hotwords_file(hotwords_file)
+        self._hotword_replacer = hotword_replacer
         self._asr_lock = asyncio.Lock()
 
     def _merge_hotwords(self, request_hotwords: list[str] | None) -> list[str] | None:
-        """Combine global hotwords with per-request hotwords."""
-        combined = list(self._global_hotwords)
+        """Combine global hotwords (from HotwordReplacerService) with per-request hotwords."""
+        global_hw = self._hotword_replacer.get_asr_hotwords() if self._hotword_replacer else []
+        combined = list(global_hw)
         if request_hotwords:
             combined.extend(request_hotwords)
         return combined if combined else None

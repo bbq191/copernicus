@@ -10,6 +10,7 @@ import {
 import type { Violation } from "../../types/compliance";
 import { usePlayerStore } from "../../stores/playerStore";
 import { useComplianceStore } from "../../stores/complianceStore";
+import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
 
 interface Props {
@@ -87,11 +88,13 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
   const handleConfirm = (e: React.MouseEvent) => {
     e.stopPropagation();
     setViolationStatus(violation, "confirmed");
+    useToastStore.getState().addToast("info", "已确认违规");
   };
 
   const handleReject = (e: React.MouseEvent) => {
     e.stopPropagation();
     setViolationStatus(violation, "rejected");
+    useToastStore.getState().addToast("info", "已标记为误报");
   };
 
   const handleReset = (e: React.MouseEvent) => {

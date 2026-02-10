@@ -1,4 +1,5 @@
-import { Search, ShieldAlert, Filter } from "lucide-react";
+import { useState } from "react";
+import { Search, ShieldAlert, Filter, X } from "lucide-react";
 import {
   useComplianceStore,
   getFilteredViolations,
@@ -19,7 +20,12 @@ const STATUS_OPTIONS = [
   { value: "rejected", label: "已忽略", className: "badge-ghost" },
 ] as const;
 
+const KBD_DISMISSED_KEY = "copernicus:kbd-hints-dismissed";
+
 export function ViolationList() {
+  const [kbdDismissed, setKbdDismissed] = useState(
+    () => localStorage.getItem(KBD_DISMISSED_KEY) === "1",
+  );
   const report = useComplianceStore((s) => s.report);
   const severityFilter = useComplianceStore((s) => s.severityFilter);
   const setSeverityFilter = useComplianceStore((s) => s.setSeverityFilter);
@@ -81,6 +87,33 @@ export function ViolationList() {
           </div>
         </div>
       </div>
+
+      {/* Keyboard shortcuts hint */}
+      {!kbdDismissed && (
+        <div className="flex items-center gap-3 px-3 py-1.5 bg-base-200 border-b border-base-300 text-xs text-base-content/60">
+          <span className="flex items-center gap-1">
+            <kbd className="kbd kbd-xs">Space</kbd> 播放
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="kbd kbd-xs">Enter</kbd> 确认
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="kbd kbd-xs">Del</kbd> 忽略
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="kbd kbd-xs">&#8593;&#8595;</kbd> 切换
+          </span>
+          <button
+            className="ml-auto btn btn-ghost btn-xs"
+            onClick={() => {
+              setKbdDismissed(true);
+              localStorage.setItem(KBD_DISMISSED_KEY, "1");
+            }}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="flex flex-col gap-2 p-3">

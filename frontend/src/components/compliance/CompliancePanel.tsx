@@ -1,8 +1,9 @@
 import { useCallback, useRef } from "react";
-import { Upload, ShieldCheck, AlertTriangle } from "lucide-react";
+import { Upload, AlertTriangle } from "lucide-react";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useComplianceStore } from "../../stores/complianceStore";
 import { useTaskStore } from "../../stores/taskStore";
+import { ErrorAlert } from "../shared/ErrorAlert";
 import { auditCompliance } from "../../api/compliance";
 
 export function CompliancePanel() {
@@ -88,15 +89,11 @@ export function CompliancePanel() {
   if (error) {
     return (
       <div className="p-4">
-        <div className="text-error text-center text-sm mb-2">{error}</div>
-        <button
-          className="btn btn-sm btn-outline btn-error w-full"
-          onClick={() => {
-            useComplianceStore.getState().reset();
-          }}
-        >
-          重试
-        </button>
+        <ErrorAlert
+          compact
+          message={error}
+          onRetry={() => useComplianceStore.getState().reset()}
+        />
       </div>
     );
   }
@@ -110,11 +107,6 @@ export function CompliancePanel() {
 
     return (
       <div className="flex flex-col gap-3 p-4">
-        <h2 className="font-bold text-lg flex items-center gap-2">
-          <ShieldCheck className="h-5 w-5" />
-          合规审核
-        </h2>
-
         <div className="flex items-center justify-center">
           <div
             className={`radial-progress text-2xl font-bold ${
@@ -134,6 +126,24 @@ export function CompliancePanel() {
           >
             {Math.round(report.compliance_score)}
           </div>
+        </div>
+
+        <div className="text-center text-xs font-medium">
+          <span
+            className={
+              report.compliance_score >= 80
+                ? "text-success"
+                : report.compliance_score >= 60
+                  ? "text-warning"
+                  : "text-error"
+            }
+          >
+            {report.compliance_score >= 80
+              ? "良好"
+              : report.compliance_score >= 60
+                ? "需关注"
+                : "高风险"}
+          </span>
         </div>
 
         <div className="flex justify-center gap-2 text-xs">
@@ -182,10 +192,6 @@ export function CompliancePanel() {
   // 上传规则文件
   return (
     <div className="flex flex-col gap-3 p-4">
-      <h2 className="font-bold text-lg flex items-center gap-2">
-        <ShieldCheck className="h-5 w-5" />
-        合规审核
-      </h2>
       <div
         className="border-2 border-dashed border-base-300 rounded-lg p-4 text-center cursor-pointer hover:border-primary transition-colors"
         onClick={() => fileRef.current?.click()}

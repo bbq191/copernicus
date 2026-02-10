@@ -1,5 +1,4 @@
 import hashlib
-import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -17,20 +16,9 @@ from copernicus.schemas.task import (
 )
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.task_store import TaskStore
+from copernicus.utils.request import parse_hotwords
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
-
-
-def _parse_hotwords(hotwords: str | None) -> list[str] | None:
-    if not hotwords:
-        return None
-    try:
-        parsed = json.loads(hotwords)
-        if isinstance(parsed, list) and all(isinstance(w, str) for w in parsed):
-            return parsed
-    except (json.JSONDecodeError, TypeError):
-        pass
-    raise HTTPException(status_code=422, detail="hotwords must be a JSON array of strings")
 
 
 @router.post("/tasks", response_model=TaskSubmitResponse, status_code=202)
@@ -45,7 +33,7 @@ async def submit_task(
     if len(audio_bytes) > settings.max_upload_size_bytes:
         raise HTTPException(status_code=413, detail="File too large")
 
-    hw = _parse_hotwords(hotwords)
+    hw = parse_hotwords(hotwords)
     task_id = store.submit(audio_bytes, file.filename or "upload.bin", hw)
 
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
@@ -71,7 +59,7 @@ async def submit_transcript_task(
             task_id=existing_id, status=TaskStatus.COMPLETED, existing=True
         )
 
-    hw = _parse_hotwords(hotwords)
+    hw = parse_hotwords(hotwords)
     task_id = store.submit_transcript(
         audio_bytes, file.filename or "upload.bin", hw, file_hash=file_hash
     )
@@ -158,7 +146,7 @@ async def rerun_transcript(
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
     """Re-run ASR + correction on existing audio."""
-    hw = _parse_hotwords(hotwords)
+    hw = parse_hotwords(hotwords)
     try:
         store.rerun_transcript(task_id, hw)
     except ValueError as e:

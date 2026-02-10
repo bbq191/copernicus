@@ -5,6 +5,7 @@ import { useTaskStore } from "../../stores/taskStore";
 import { useEvaluationStore } from "../../stores/evaluationStore";
 import { useComplianceStore } from "../../stores/complianceStore";
 import { useExport } from "../../hooks/useExport";
+import { useToastStore } from "../../stores/toastStore";
 import { rerunTranscript } from "../../api/task";
 
 interface Props {
@@ -36,6 +37,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
       const store = useTaskStore.getState();
       store.setTask(taskId, "pending");
       store.setPollEnabled(true);
+      useToastStore.getState().addToast("info", "重新转写已启动");
     } catch (err) {
       useTaskStore.getState().setError(
         err instanceof Error ? err.message : "重新转写失败",
@@ -48,24 +50,27 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
   return (
     <div className="flex flex-col gap-2 p-3 bg-base-200 rounded-lg">
       <div className="flex items-center gap-2">
-        <button
-          className="btn btn-ghost btn-sm gap-1"
-          onClick={() =>
-            setTextMode(textMode === "corrected" ? "original" : "corrected")
-          }
-        >
-          {textMode === "corrected" ? (
-            <ToggleRight className="h-4 w-4" />
-          ) : (
-            <ToggleLeft className="h-4 w-4" />
-          )}
-          {textMode === "corrected" ? "修正文" : "原文"}
-        </button>
+        {/* Text display controls group */}
+        <div className="join">
+          <button
+            className="btn btn-ghost btn-sm gap-1 join-item"
+            onClick={() =>
+              setTextMode(textMode === "corrected" ? "original" : "corrected")
+            }
+          >
+            {textMode === "corrected" ? (
+              <ToggleRight className="h-4 w-4" />
+            ) : (
+              <ToggleLeft className="h-4 w-4" />
+            )}
+            {textMode === "corrected" ? "修正文" : "原文"}
+          </button>
 
-        <button className="btn btn-ghost btn-sm gap-1" onClick={onOpenRename}>
-          <Users className="h-4 w-4" />
-          说话人
-        </button>
+          <button className="btn btn-ghost btn-sm gap-1 join-item" onClick={onOpenRename}>
+            <Users className="h-4 w-4" />
+            说话人
+          </button>
+        </div>
 
         <div className="dropdown dropdown-end">
           <div

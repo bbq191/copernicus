@@ -1,11 +1,13 @@
 import { useCallback, useEffect } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Sparkles } from "lucide-react";
 import { useEvaluationStore } from "../../stores/evaluationStore";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useTaskStore } from "../../stores/taskStore";
+import { useToastStore } from "../../stores/toastStore";
 import { evaluateText } from "../../api/evaluation";
 import { rerunEvaluation, getTaskStatus } from "../../api/task";
 import type { EvaluationResponse } from "../../types/evaluation";
+import { ErrorAlert } from "../shared/ErrorAlert";
 import { MetaInfo } from "./MetaInfo";
 import { ScoreRadar } from "./ScoreRadar";
 import { AnalysisSection } from "./AnalysisSection";
@@ -52,6 +54,7 @@ export function SummaryPanel() {
   const handleRerun = useCallback(async () => {
     if (!taskId) return;
     useEvaluationStore.getState().setLoading(true);
+    useToastStore.getState().addToast("info", "重新评估已启动");
 
     try {
       const res = await rerunEvaluation(taskId);
@@ -83,8 +86,10 @@ export function SummaryPanel() {
 
   if (rawEntries.length === 0) {
     return (
-      <div className="p-4 text-base-content/40 text-center">
-        转录完成后显示智能摘要
+      <div className="flex flex-col items-center justify-center gap-2 p-6 text-base-content/40">
+        <Sparkles className="h-10 w-10 opacity-20" />
+        <p className="font-medium text-sm">智能摘要</p>
+        <p className="text-xs">转写完成后自动生成内容评估</p>
       </div>
     );
   }
@@ -112,7 +117,9 @@ export function SummaryPanel() {
 
   if (error) {
     return (
-      <div className="p-4 text-error text-center text-sm">{error}</div>
+      <div className="p-4">
+        <ErrorAlert compact message={error} onRetry={handleRerun} />
+      </div>
     );
   }
 
@@ -120,7 +127,6 @@ export function SummaryPanel() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <h2 className="font-bold text-lg">智能摘要</h2>
       <MetaInfo meta={evaluation.meta} />
       <div className="divider my-0" />
       <ScoreRadar scores={evaluation.scores} />

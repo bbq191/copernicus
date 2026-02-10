@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from copernicus.services.llm import OllamaClient
 from copernicus.services.text_corrector import TextCorrectorService
+from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.config import Settings
 from copernicus.utils.text import chunk_text, merge_chunks
 
@@ -60,6 +61,36 @@ _REPEAT_PATTERNS = [
 # 英文噪声前缀清理
 _EN_NOISE_PREFIX_RE = re.compile(r"^\s*(?:the\s+)+", re.IGNORECASE)
 
+# ============================================================
+# 数字规范化：中文数字 -> 阿拉伯数字
+# ============================================================
+_CN_DIGIT_MAP = {
+    "零": "0", "〇": "0", "一": "1", "二": "2", "三": "3",
+    "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9",
+}
+
+# 年份模式：X零XX年 或 XXXX年（四位中文数字 + 年字）
+_YEAR_RE = re.compile(
+    r"([一二三四五六七八九])"
+    r"([零〇])"
+    r"([一二三四五六七八九零〇])"
+    r"([一二三四五六七八九零〇])"
+    r"(?=年)"
+)
+
+# 通用四位中文数字模式（如 "二零二五" 不跟 "年"，但在上下文中明显是年份）
+_FOUR_DIGIT_CN_RE = re.compile(
+    r"([一二三四五六七八九])"
+    r"([零〇])"
+    r"([一二三四五六七八九零〇])"
+    r"([一二三四五六七八九零〇])"
+)
+
+
+def _cn_digits_to_arabic(match: re.Match) -> str:
+    """将匹配到的四位中文数字转为阿拉伯数字"""
+    return "".join(_CN_DIGIT_MAP.get(c, c) for c in match.group())
+
 
 def preprocess_text(text: str) -> str | None:
     """阶段 1：规则预处理，快速清理噪声和明显错误
@@ -86,14 +117,18 @@ def preprocess_text(text: str) -> str | None:
     for pattern, replacement in _REPEAT_PATTERNS:
         cleaned = pattern.sub(replacement, cleaned)
 
-    # 4. 检查清理后是否为空或纯标点
+    # 4. 数字规范化：中文数字年份 -> 阿拉伯数字
+    cleaned = _YEAR_RE.sub(_cn_digits_to_arabic, cleaned)
+    cleaned = _FOUR_DIGIT_CN_RE.sub(_cn_digits_to_arabic, cleaned)
+
+    # 5. 检查清理后是否为空或纯标点
     stripped = cleaned
     for punc in "，。、！？；：,.!?;: ":
         stripped = stripped.replace(punc, "")
     if not stripped:
         return None
 
-    # 5. 检查是否为纯语气词
+    # 6. 检查是否为纯语气词
     if stripped in _NOISE_WORDS_CN or len(stripped) <= 2 and all(c in _NOISE_WORDS_CN for c in stripped):
         return None
 
@@ -112,27 +147,22 @@ SYSTEM_PROMPT = """\
 TRANSCRIPT_SYSTEM_PROMPT = """\
 你是一个字幕校对专家。
 输入是一个JSON对象，entries字段包含句子ID和原始内容。
-任务：修正每个对象中 text 字段的错别字，并轻度去除口语冗余。
+任务：对每个 text 字段做轻度润色，使其更适合阅读。
 
 规则：
 1. 绝对严禁修改 id 字段。
 2. 绝对严禁合并或拆分句子。
-3. **方言模糊匹配**：注意常见的口音混淆，如：
-   - 平翘舌混淆 (z/zh, c/ch, s/sh) -> 例如 "姿势" 听成 "知识"，"四" 听成 "是"
-   - 鼻音混淆 (n/l, ang/an, ing/in) -> 例如 "牛奶" 听成 "刘来"，"经" 听成 "金"
-   - f/h 混淆 -> 例如 "发货" 听成 "花货"，"灰" 听成 "飞"
-4. 修正同音字错误（如"惊济"->"经济"，"特朗谱"->"特朗普"）。
-5. 修正阿拉伯数字格式（如"二零二五"->"2025"）。
-6. 保留原有标点符号，不要修改。
-7. 去除无意义的重复口语（如"那个那个"->"那个"，"终于终于终于"->"终于"），但保持句子原意。
-8. 保持原句意，不要重写或大幅删减内容。
-9. 输出必须是包含 entries 字段的JSON对象。
+3. 去除无意义的口语填充词（如"那个""就是说""嗯"等），但保持句意完整。
+4. 修正口语倒装（如"我走了先"->"我先走了"）。
+5. 保留原有标点符号，仅在明显断句错误时微调。
+6. 严禁臆造原文中没有的事实，严禁大幅改写。
+7. 输出必须是包含 entries 字段的JSON对象。
 
 【输入示例】
-{"entries": [{"id": 1, "text": "二零二五全球惊济概览。"}, {"id": 2, "text": "终于终于终于特朗谱把关税旋风刮到全球。"}]}
+{"entries": [{"id": 1, "text": "嗯那个今天的会议呢主要是关于明年的计划。"}, {"id": 2, "text": "我觉得这个方案还是可以的就是说需要再优化一下。"}]}
 
 【输出示例】
-{"entries": [{"id": 1, "text": "2025全球经济概览。"}, {"id": 2, "text": "终于，特朗普把关税旋风刮到全球。"}]}"""
+{"entries": [{"id": 1, "text": "今天的会议主要是关于明年的计划。"}, {"id": 2, "text": "我觉得这个方案还是可以的，需要再优化一下。"}]}"""
 
 
 class CorrectorService:
@@ -141,6 +171,7 @@ class CorrectorService:
         client: OllamaClient,
         settings: Settings,
         text_corrector: TextCorrectorService | None = None,
+        hotword_replacer: HotwordReplacerService | None = None,
     ) -> None:
         self._client = client
         self._model = settings.llm_model_name
@@ -150,6 +181,7 @@ class CorrectorService:
         self._max_concurrency = settings.correction_max_concurrency
         self._num_ctx = settings.ollama_num_ctx_correction
         self._text_corrector = text_corrector
+        self._hotword_replacer = hotword_replacer
 
     async def correct(
         self, raw_text: str, on_progress: ProgressCallback | None = None
@@ -210,10 +242,12 @@ class CorrectorService:
         batch_size: int = 15,
         on_progress: ProgressCallback | None = None,
     ) -> dict[int, str]:
-        """两阶段纠正 transcript entries
+        """四阶段纠正 transcript entries
 
-        阶段 1：规则预处理（快速清理噪声、重复词、英文幻觉）
-        阶段 2：LLM 精细纠正（启用 thinking，处理同音字等复杂错误）
+        阶段 1：规则预处理（噪声过滤、重复词合并、数字规范化）
+        阶段 2：热词强制替换（FlashText 多模式匹配）
+        阶段 3：pycorrector/MacBERT 轻量级纠错（同音字/形近字）
+        阶段 4：LLM 润色（去口语 + 倒装 + 标点）
 
         Each entry is {"id": int, "text": str}. Returns a mapping of id -> corrected text.
         """
@@ -253,13 +287,19 @@ class CorrectorService:
             return {entry["id"]: "" for entry in entries}
 
         # ============================================================
-        # 阶段 2：pycorrector 轻量级纠错（可选）
+        # 阶段 2：热词强制替换（可选）
+        # ============================================================
+        if self._hotword_replacer is not None:
+            preprocessed_entries = self._hotword_replacer.replace_entries(preprocessed_entries)
+
+        # ============================================================
+        # 阶段 3：pycorrector 轻量级纠错（可选）
         # ============================================================
         if self._text_corrector is not None:
             preprocessed_entries = self._text_corrector.correct_entries(preprocessed_entries)
 
         # ============================================================
-        # 阶段 3：LLM 精细纠正
+        # 阶段 4：LLM 润色
         # ============================================================
         batches = self._create_transcript_batches(
             preprocessed_entries, batch_size, self._chunk_size
@@ -267,7 +307,7 @@ class CorrectorService:
 
         total = len(batches)
         logger.info(
-            "Phase 3 (LLM): %d entries -> %d batches (max_entries=%d, max_chars=%d)",
+            "Phase 4 (LLM): %d entries -> %d batches (max_entries=%d, max_chars=%d)",
             len(preprocessed_entries), total, batch_size, self._chunk_size
         )
         semaphore = asyncio.Semaphore(self._max_concurrency)

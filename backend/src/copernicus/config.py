@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     compliance_chunk_size: int = 4000
     compliance_num_ctx: int = 8192
 
+    # Cognitive Audit (Phase 3)
+    compliance_confidence_threshold: float = 0.7
+    compliance_dedup_window_ms: int = 30000
+    compliance_group_by_source: bool = True
+    compliance_ocr_margin_ms: int = 5000
+
     # Hotwords file (optional)
     hotwords_file: Path | None = None
 
@@ -91,6 +97,28 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    # Video processing
+    video_extensions: str = ".mp4,.avi,.mov,.mkv,.flv,.wmv"
+
+    # Keyframe extraction
+    keyframe_strategy: str = "interval"  # "interval" | "scene"
+    keyframe_interval_s: float = 2.0
+    keyframe_scene_threshold: float = 0.3
+    keyframe_max_count: int = 500
+    keyframe_format: str = "jpg"
+    keyframe_quality: int = 85
+
+    # OCR (RapidOCR)
+    ocr_enabled: bool = True
+    ocr_confidence_threshold: float = 0.6
+    ocr_min_text_length: int = 2
+
+    # Face Detection (YOLO)
+    face_detect_enabled: bool = True
+    face_detect_model: str = "models/yolov8n-face.pt"
+    face_detect_confidence: float = 0.5
+    face_missing_threshold_ms: int = 10000
 
     # Upload settings
     upload_dir: Path = Path("./uploads")

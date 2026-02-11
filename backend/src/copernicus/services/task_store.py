@@ -378,7 +378,8 @@ class TaskStore:
                 task.total_chunks = total
 
             result = await self._pipeline.process_transcript(
-                audio_bytes, filename, hotwords, on_progress=on_progress
+                audio_bytes, filename, hotwords, on_progress=on_progress,
+                task_id=task_id,
             )
 
             transcript_response = TranscriptResponse(
@@ -417,6 +418,22 @@ class TaskStore:
                 rules_bytes, rules_filename
             )
 
+            # 从持久化层加载 OCR 数据（如果存在）
+            ocr_results: list[dict] | None = None
+            visual_events: list[dict] | None = None
+            source_task_id = task.parent_task_id or task_id
+            ocr_data = self._persistence.load_json(source_task_id, "ocr_results.json")
+            if ocr_data and isinstance(ocr_data, list):
+                ocr_results = ocr_data
+                logger.info(
+                    "Loaded %d OCR records for compliance audit (task=%s)",
+                    len(ocr_results),
+                    source_task_id,
+                )
+            ve_data = self._persistence.load_json(source_task_id, "visual_events.json")
+            if ve_data and isinstance(ve_data, list):
+                visual_events = ve_data
+
             def on_audit_progress(current: int, total: int) -> None:
                 task.current_chunk = current
                 task.total_chunks = total
@@ -426,6 +443,8 @@ class TaskStore:
                 transcript_entries,
                 few_shot_examples=few_shot_examples,
                 on_progress=on_audit_progress,
+                ocr_results=ocr_results,
+                visual_events=visual_events,
             )
             elapsed_ms = (time.perf_counter() - start) * 1000
 

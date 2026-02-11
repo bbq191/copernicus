@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { getTaskStatus } from "../api/task";
+import { getTaskStatus, getTaskResults, getTaskMediaUrl } from "../api/task";
 import { useTaskStore } from "../stores/taskStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
+import { usePlayerStore } from "../stores/playerStore";
 import type { TranscriptResponse } from "../types/transcript";
 
 const POLL_INTERVAL = 2000;
@@ -29,6 +30,14 @@ export function useTaskPolling(enabled = true) {
           if ("transcript" in transcript) {
             setRawEntries(transcript.transcript);
           }
+          // Check if video task and update media type
+          getTaskResults(taskId).then((results) => {
+            if (results.has_video) {
+              usePlayerStore.getState().setMediaSrc(
+                getTaskMediaUrl(taskId), "video"
+              );
+            }
+          }).catch(() => {});
           clearInterval(timerRef.current);
         } else if (res.status === "failed") {
           setError(res.error ?? "任务失败");

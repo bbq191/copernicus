@@ -60,13 +60,18 @@ class PersistenceService:
         filename: str,
         file_hash: str,
         audio_suffix: str,
+        media_type: str = "audio",
+        video_suffix: str | None = None,
     ) -> None:
-        meta = {
+        meta: dict = {
             "filename": filename,
             "hash": file_hash,
             "audio_suffix": audio_suffix,
+            "media_type": media_type,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        if video_suffix:
+            meta["video_suffix"] = video_suffix
         dest = self.task_dir(task_id) / "meta.json"
         self._atomic_write(dest, json.dumps(meta, ensure_ascii=False, indent=2))
 
@@ -93,6 +98,27 @@ class PersistenceService:
             for p in legacy_dir.glob(f"{task_id}.*"):
                 return p
         return None
+
+    # -- video ---------------------------------------------------------------
+
+    def save_video(self, task_id: str, video_bytes: bytes, suffix: str) -> Path:
+        dest = self.task_dir(task_id) / f"video{suffix}"
+        dest.write_bytes(video_bytes)
+        logger.info("Saved video (%d bytes) for task %s", len(video_bytes), task_id)
+        return dest
+
+    def find_video(self, task_id: str) -> Path | None:
+        d = self._upload_dir / task_id
+        if not d.exists():
+            return None
+        for p in d.glob("video.*"):
+            return p
+        return None
+
+    def frames_dir(self, task_id: str) -> Path:
+        d = self.task_dir(task_id) / "frames"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     # -- hash index ----------------------------------------------------------
 
@@ -139,6 +165,9 @@ class PersistenceService:
 
             task_id = d.name
             audio_path = self.find_audio(task_id)
+            video_path = self.find_video(task_id)
+            frames_path = d / "frames"
+            keyframe_count = len(list(frames_path.glob("*"))) if frames_path.is_dir() else 0
             results.append(
                 {
                     "task_id": task_id,
@@ -147,6 +176,10 @@ class PersistenceService:
                     "has_evaluation": (d / "evaluation.json").exists(),
                     "has_compliance": (d / "compliance.json").exists(),
                     "audio_path": str(audio_path) if audio_path else None,
+                    "has_video": video_path is not None,
+                    "keyframe_count": keyframe_count,
+                    "has_ocr_results": (d / "ocr_results.json").exists(),
+                    "has_visual_events": (d / "visual_events.json").exists(),
                 }
             )
         logger.info("Scanned %d persisted tasks from disk", len(results))

@@ -12,11 +12,13 @@ import {
   ExternalLink,
 } from "lucide-react";
 import type { Violation } from "../../types/compliance";
+import { resolveEvidenceUrl } from "../../api/task";
 import { usePlayerStore } from "../../stores/playerStore";
 import {
   useComplianceStore,
   violationKey,
 } from "../../stores/complianceStore";
+import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
 import { EvidenceBlock } from "./EvidenceBlock";
@@ -81,6 +83,7 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
   const selectedIds = useComplianceStore((s) => s.selectedIds);
   const toggleSelect = useComplianceStore((s) => s.toggleSelect);
   const openEvidenceDetail = useComplianceStore((s) => s.openEvidenceDetail);
+  const taskId = useTaskStore((s) => s.taskId);
 
   const config = SEVERITY_CONFIG[violation.severity] || SEVERITY_CONFIG.low;
   const SeverityIcon = config.icon;
@@ -197,11 +200,25 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
         {/* Row 2: reason */}
         <p className="text-sm">{violation.reason}</p>
 
+        {/* Row 2.5: reasoning (collapsed) */}
+        {violation.reasoning && (
+          <details className="text-xs bg-base-200/50 rounded px-2 py-1">
+            <summary className="cursor-pointer text-base-content/50 hover:text-base-content/70 select-none">
+              AI 判定逻辑
+            </summary>
+            <div className="mt-1.5 text-base-content/60 space-y-0.5 pl-2 border-l border-base-300">
+              {violation.reasoning.split(/[。；]/).filter(Boolean).map((step, i) => (
+                <p key={i}>{step.trim()}</p>
+              ))}
+            </div>
+          </details>
+        )}
+
         {/* Row 3: evidence block */}
         <EvidenceBlock
           source={violation.source}
           originalText={violation.original_text}
-          evidenceUrl={violation.evidence_url}
+          evidenceUrl={resolveEvidenceUrl(violation.evidence_url, taskId)}
           evidenceText={violation.evidence_text}
           onImageClick={() => openEvidenceDetail(violation)}
         />

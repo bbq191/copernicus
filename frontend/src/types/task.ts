@@ -5,6 +5,8 @@ import type { EvaluationResponse, EvaluationResult } from "./evaluation";
 export type TaskStatus =
   | "pending"
   | "processing_asr"
+  | "extracting_frames"
+  | "scanning_visual"
   | "correcting"
   | "evaluating"
   | "auditing"
@@ -42,4 +44,8 @@ export interface TaskResultsResponse {
   evaluation: EvaluationResult | null;
   compliance: ComplianceResponse | null;
   has_audio: boolean;
+  has_video: boolean;
+  keyframe_count: number;
+  ocr_text_count: number;
+  visual_event_count: number;
 }

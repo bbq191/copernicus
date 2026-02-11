@@ -42,6 +42,7 @@ class PipelineContext:
     """Shared data bus passed through all stages."""
 
     # Input
+    task_id: str = ""
     audio_bytes: bytes | None = None
     filename: str = ""
     hotwords: list[str] | None = None
@@ -61,6 +62,13 @@ class PipelineContext:
 
     # Transcript output
     transcript_entries: list[TranscriptEntry] = field(default_factory=list)
+
+    # Visual (video pipeline)
+    video_path: Path | None = None
+    keyframes: list | None = None
+    ocr_results: list | None = None
+    visual_events: list | None = None
+    media_type: str = "audio"
 
     # Timing
     processing_times: dict[str, float] = field(default_factory=dict)

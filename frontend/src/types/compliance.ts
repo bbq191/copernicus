@@ -23,6 +23,9 @@ export interface Violation {
   evidence_text: string | null;
   rule_ref: string | null;
 
+  // 认知审计推理链
+  reasoning?: string;
+
   // 音频/文本
   timestamp: string;
   timestamp_ms: number;

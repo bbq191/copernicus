@@ -27,6 +27,8 @@ from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
+from copernicus.services.face_detector import FaceDetectorService
+from copernicus.services.ocr import OCRService
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
@@ -50,6 +52,9 @@ async def lifespan(app: FastAPI):
             llm_client, settings, text_corrector, hotword_replacer=hotword_replacer
         )
 
+        persistence = PersistenceService(settings.upload_dir)
+        ocr_service = OCRService(settings) if settings.ocr_enabled else None
+        face_detector = FaceDetectorService(settings) if settings.face_detect_enabled else None
         app.state.pipeline = PipelineService(
             audio_service=audio_service,
             asr_service=asr_service,
@@ -59,10 +64,13 @@ async def lifespan(app: FastAPI):
             run_merge_gap=settings.confidence_run_merge_gap,
             pre_merge_gap_ms=settings.pre_merge_gap_ms,
             hotword_replacer=hotword_replacer,
+            settings=settings,
+            persistence=persistence,
+            ocr_service=ocr_service,
+            face_detector=face_detector,
         )
         app.state.evaluator = EvaluatorService(llm_client, settings)
         app.state.compliance = ComplianceService(llm_client, settings)
-        persistence = PersistenceService(settings.upload_dir)
         app.state.task_store = TaskStore(
             pipeline=app.state.pipeline,
             persistence=persistence,

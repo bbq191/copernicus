@@ -1,4 +1,5 @@
 import hashlib
+import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -17,6 +18,12 @@ from copernicus.schemas.task import (
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.task_store import TaskStore
 from copernicus.utils.request import parse_hotwords
+
+_VIDEO_EXTENSIONS = {
+    e.strip().lower()
+    for e in settings.video_extensions.split(",")
+    if e.strip()
+}
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 
@@ -49,20 +56,66 @@ async def submit_transcript_task(
         audio_bytes, file.filename or "upload.bin", hw, file_hash=file_hash
     )
 
-    # persist audio and meta to task directory
+    # persist media and meta to task directory
     persistence = store.persistence
     filename = file.filename or "upload.bin"
     suffix = Path(filename).suffix or ".bin"
-    audio_path = persistence.save_audio(task_id, audio_bytes, suffix)
-    persistence.save_meta(
-        task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix
-    )
+    is_video = suffix.lower() in _VIDEO_EXTENSIONS
 
-    task = store.get(task_id)
-    if task:
-        task.audio_path = str(audio_path)
+    if is_video:
+        video_path = persistence.save_video(task_id, audio_bytes, suffix)
+        persistence.save_meta(
+            task_id,
+            filename=filename,
+            file_hash=file_hash,
+            audio_suffix=suffix,
+            media_type="video",
+            video_suffix=suffix,
+        )
+        task = store.get(task_id)
+        if task:
+            task.audio_path = str(video_path)
+    else:
+        audio_path = persistence.save_audio(task_id, audio_bytes, suffix)
+        persistence.save_meta(
+            task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix
+        )
+        task = store.get(task_id)
+        if task:
+            task.audio_path = str(audio_path)
 
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
+
+
+@router.get("/tasks/{task_id}/media")
+async def get_task_media(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> FileResponse:
+    """Return the original uploaded media file (audio or video)."""
+    persistence = store.persistence
+
+    # Try video first
+    video_path = persistence.find_video(task_id)
+    if video_path and video_path.exists():
+        mime = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
+        return FileResponse(video_path, media_type=mime)
+
+    # Fall back to audio
+    audio_path = persistence.find_audio(task_id)
+    if audio_path and audio_path.exists():
+        mime = mimetypes.guess_type(str(audio_path))[0] or "audio/mpeg"
+        return FileResponse(audio_path, media_type=mime)
+
+    # Legacy fallback
+    task = store.get(task_id)
+    if task and task.audio_path:
+        legacy = Path(task.audio_path)
+        if legacy.exists():
+            mime = mimetypes.guess_type(str(legacy))[0] or "audio/mpeg"
+            return FileResponse(legacy, media_type=mime)
+
+    raise HTTPException(status_code=404, detail="Media file not found")
 
 
 @router.get("/tasks/{task_id}/audio")
@@ -70,19 +123,22 @@ async def get_task_audio(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
 ) -> FileResponse:
-    """Return the original uploaded audio file for playback."""
-    audio_path = store.persistence.find_audio(task_id)
-    if audio_path and audio_path.exists():
-        return FileResponse(audio_path, media_type="audio/mpeg")
+    """Backward-compatible audio endpoint -- delegates to media logic."""
+    return await get_task_media(task_id, store)
 
-    # fallback: check TaskInfo.audio_path (legacy)
-    task = store.get(task_id)
-    if task and task.audio_path:
-        legacy = Path(task.audio_path)
-        if legacy.exists():
-            return FileResponse(legacy, media_type="audio/mpeg")
 
-    raise HTTPException(status_code=404, detail="Audio file not found")
+@router.get("/tasks/{task_id}/frames/{filename}")
+async def get_task_frame(
+    task_id: str,
+    filename: str,
+    store: TaskStore = Depends(get_task_store),
+) -> FileResponse:
+    """Return a keyframe image."""
+    frames_path = store.persistence.task_dir(task_id) / "frames" / filename
+    if not frames_path.exists():
+        raise HTTPException(status_code=404, detail="Frame not found")
+    mime = mimetypes.guess_type(str(frames_path))[0] or "image/jpeg"
+    return FileResponse(frames_path, media_type=mime)
 
 
 @router.get("/tasks/{task_id}/results", response_model=TaskResultsResponse)
@@ -114,6 +170,15 @@ async def get_task_results(
         compliance = ComplianceResponse.model_validate(compliance_data)
 
     has_audio = persistence.find_audio(task_id) is not None
+    has_video = persistence.find_video(task_id) is not None
+    frames_path = persistence.task_dir(task_id) / "frames"
+    keyframe_count = len(list(frames_path.glob("*"))) if frames_path.is_dir() else 0
+
+    ocr_data = persistence.load_json(task_id, "ocr_results.json")
+    ocr_text_count = len(ocr_data) if isinstance(ocr_data, list) else 0
+
+    events_data = persistence.load_json(task_id, "visual_events.json")
+    visual_event_count = len(events_data) if isinstance(events_data, list) else 0
 
     return TaskResultsResponse(
         task_id=task_id,
@@ -121,6 +186,10 @@ async def get_task_results(
         evaluation=evaluation,
         compliance=compliance,
         has_audio=has_audio,
+        has_video=has_video,
+        keyframe_count=keyframe_count,
+        ocr_text_count=ocr_text_count,
+        visual_event_count=visual_event_count,
     )
 
 

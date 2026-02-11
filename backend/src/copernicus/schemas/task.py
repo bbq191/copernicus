@@ -10,6 +10,8 @@ from copernicus.schemas.transcription import TranscriptResponse
 class TaskStatus(StrEnum):
     PENDING = "pending"
     PROCESSING_ASR = "processing_asr"
+    EXTRACTING_FRAMES = "extracting_frames"
+    SCANNING_VISUAL = "scanning_visual"
     CORRECTING = "correcting"
     EVALUATING = "evaluating"
     AUDITING = "auditing"
@@ -45,3 +47,7 @@ class TaskResultsResponse(BaseModel):
     evaluation: EvaluationResult | None = None
     compliance: ComplianceResponse | None = None
     has_audio: bool = False
+    has_video: bool = False
+    keyframe_count: int = 0
+    ocr_text_count: int = 0
+    visual_event_count: int = 0

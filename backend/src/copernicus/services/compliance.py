@@ -1,12 +1,14 @@
 """合规审核服务
 
 基于 CSV/XLSX 规则 + ASR 转写文本，使用 Map-Reduce 策略进行 LLM 逐段合规判定。
-参照 EvaluatorService 的架构，确保每次 LLM 调用 num_ctx 控制在 8192，显存稳定。
+Phase 3: 认知审计 -- 结构化规则 + CoT 推理 + OCR 融合 + 后处理过滤。
 
 流程：
   parse_rules(file_bytes) -> rules[]
   audit(rules, transcript_entries) ->
-    按 entry 分组 -> Map 并发审核各 chunk -> Reduce 生成摘要 -> ComplianceReport
+    规则分组 -> 按 entry 分组 -> Map 并发审核各 chunk -> 过滤器链 -> Reduce 生成摘要 -> ComplianceReport
+
+Author: afu
 """
 
 import asyncio
@@ -20,20 +22,45 @@ from collections.abc import Iterable
 from copernicus.config import Settings
 from copernicus.exceptions import ComplianceError
 from copernicus.schemas.compliance import ComplianceReport, ComplianceRule, Violation
+from copernicus.services.compliance_filters import run_filters
 from copernicus.services.llm import OllamaClient
+from copernicus.services.rule_registry import RuleRegistry, StructuredRule
 from copernicus.utils.llm_parse import extract_json_array, strip_think_tags
 from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
-_AUDIT_SYSTEM_PROMPT = """\
-你是一个保险行业合规审核专家，执行严格的合规质检任务。
+# ------------------------------------------------------------------ #
+#  CoT Prompt（Phase 3 四步推理框架）
+# ------------------------------------------------------------------ #
 
-### 核心工作方法
-1. 你必须逐条对照【审核标准】中的每一条规则，检查【语音转录文本】中是否存在违反。
-2. 宁严勿松：有疑似违规的内容也必须报告（标记为 medium），绝不放过。
-3. 对于包含"不允许出现"、"不得"、"禁止"等关键词的规则，执行精确匹配——只要转录文本中出现了规则禁止的字样或语义相近的表述，即判定为违规。
-4. ASR 转写存在同音字误差（如"保种"可能是"保证"），你必须结合上下文语义判断，不要因为同音字差异而漏判。
+_AUDIT_SYSTEM_PROMPT = """\
+你是一个保险行业合规审核专家。你的任务是严谨、准确地判定语音转录文本是否违反审核规则。
+
+### 审核推理框架（必须遵循）
+
+对每条规则，按以下四步推理：
+
+**第一步：理解规则边界**
+明确规则禁止什么行为、不涉及什么行为。每条规则附带的「审核说明」是你判断的核心依据。
+
+**第二步：提取相关证据**
+仅当文本语义落在规则的适用范围内时，才提取相关文本片段。如果文本内容与规则不相关，直接跳过。
+
+**第三步：判断是否违规**
+- 精确匹配规则（check_mode=exact）：文本中必须出现规则禁止的原词或同音字变体才算违规
+- 语义审核规则（check_mode=semantic）：文本含义必须与规则直接矛盾才算违规
+- ASR 转写存在同音字误差（如"保种"可能是"保证"），需结合上下文语义判断
+
+**第四步：置信度评估**
+仅输出 confidence >= 0.7 的违规。不确定的不要输出。
+
+### 什么不是违规（反向约束）
+- 产品参数的客观陈述（投保年龄、费率、保额、保障期限）不是"夸大"或"夸大经营成果"
+- 合规的风险提示内容本身不构成违规
+- 保单利益演示中标注"假设投资回报率"属于合规披露，不是承诺收益
+- 仅因包含保险术语不能关联到不相关的规则
+- 正常的产品介绍和条款解读不构成误导
 
 ### 绝对格式约束
 1. 你必须且只能输出一段合法的 JSON 数组。
@@ -49,13 +76,14 @@ _AUDIT_SYSTEM_PROMPT = """\
     "speaker": "说话人标识",
     "original_text": "涉及违规的原始文本内容(原文摘录)",
     "reason": "详细解释为什么违规，必须引用具体规则编号和规则原文",
+    "reasoning": "你的四步推理过程简述",
     "severity": "high 或 medium 或 low",
-    "confidence": 0.0到1.0的置信度(浮点数)
+    "confidence": 0.0到1.0的置信度(浮点数，仅输出>=0.7的)
 }
 
 ### 严重程度判定标准
-- high: 明确违反禁止性规定（如虚假陈述、承诺收益、同业诋毁、使用禁止字样、不当对比）
-- medium: 疑似违规或措辞不当（如夸大但未明确承诺、混淆概念、缺失必要说明）
+- high: 明确违反禁止性规定（如虚假陈述、承诺收益、同业诋毁、使用禁止字样、混淆保险与存款）
+- medium: 措辞不当但非明确违反（如夸大但未明确承诺、缺失必要说明）
 - low: 轻微不规范（如用词不够严谨、风险提示不充分）"""
 
 _SUMMARY_SYSTEM_PROMPT = """\
@@ -72,9 +100,11 @@ _SUMMARY_SYSTEM_PROMPT = """\
 class ComplianceService:
     def __init__(self, client: OllamaClient, settings: Settings) -> None:
         self._client = client
+        self._settings = settings
         self._max_text_chars = settings.compliance_max_text_chars
         self._chunk_size = settings.compliance_chunk_size
         self._num_ctx = settings.compliance_num_ctx
+        self._registry = RuleRegistry()
 
     # ------------------------------------------------------------------ #
     #  规则解析
@@ -105,8 +135,15 @@ class ComplianceService:
         *,
         few_shot_examples: list[str] | None = None,
         on_progress: ProgressCallback | None = None,
+        ocr_results: list[dict] | None = None,
+        visual_events: list[dict] | None = None,
     ) -> ComplianceReport:
-        """执行合规审核，长文本自动 Map-Reduce。"""
+        """执行合规审核，长文本自动 Map-Reduce。
+
+        新增参数（向后兼容，默认 None）：
+        - ocr_results: OCR 识别结果列表
+        - visual_events: 视觉事件列表
+        """
         total_text = sum(len(e.get("text_corrected", "")) for e in transcript_entries)
         if total_text > self._max_text_chars:
             logger.warning(
@@ -122,27 +159,66 @@ class ComplianceService:
                 acc += len(t)
             transcript_entries = truncated
 
+        # 结构化规则
+        structured_rules = self._registry.enrich(rules)
+
+        # 决定是否分组审核
+        group_by_source = self._settings.compliance_group_by_source
+
         chunks = self._build_entry_chunks(transcript_entries)
-        total_steps = len(chunks) + 1  # map chunks + summary
+        total_steps = len(chunks) + 1  # map chunks + summary（分组模式下步数倍增由内部处理）
+        if group_by_source:
+            groups = RuleRegistry.group_by_source(structured_rules)
+            active_groups = {k: v for k, v in groups.items() if v}
+            # OCR-only 规则组仅在有 OCR 数据时才审核
+            if "ocr" in active_groups and not ocr_results:
+                logger.info("Skipping OCR-only rules group (no OCR data)")
+                del active_groups["ocr"]
+            total_steps = len(chunks) * len(active_groups) + 1
+        else:
+            active_groups = {"all": structured_rules}
+            total_steps = len(chunks) + 1
+
         logger.info(
-            "Compliance audit: %d entries -> %d chunks (chunk_size=%d)",
+            "Compliance audit: %d entries -> %d chunks, %d rule groups, "
+            "ocr_records=%d, group_by_source=%s",
             len(transcript_entries),
             len(chunks),
-            self._chunk_size,
+            len(active_groups),
+            len(ocr_results) if ocr_results else 0,
+            group_by_source,
         )
         if on_progress:
             on_progress(0, total_steps)
 
-        # Map: 并发审核各 chunk
+        # Map: 并发审核各 chunk x 各规则组
         completed = 0
         lock = asyncio.Lock()
 
         async def _audit_with_progress(
-            i: int, chunk: list[dict]
+            chunk_idx: int,
+            chunk: list[dict],
+            group_name: str,
+            group_rules: list[StructuredRule],
         ) -> list[Violation]:
             nonlocal completed
+            # 决定是否附加 OCR 数据
+            include_ocr = group_name in ("ocr", "mixed", "all") and ocr_results
+            chunk_ocr = (
+                _align_ocr_to_chunk(
+                    chunk, ocr_results, self._settings.compliance_ocr_margin_ms
+                )
+                if include_ocr
+                else None
+            )
             result = await self._audit_chunk(
-                i, len(chunks), rules, chunk, few_shot_examples
+                chunk_idx,
+                len(chunks),
+                group_rules,
+                chunk,
+                few_shot_examples,
+                group_name=group_name,
+                ocr_records=chunk_ocr,
             )
             async with lock:
                 completed += 1
@@ -151,7 +227,9 @@ class ComplianceService:
             return result
 
         tasks = [
-            _audit_with_progress(i, chunk) for i, chunk in enumerate(chunks)
+            _audit_with_progress(i, chunk, gname, grules)
+            for gname, grules in active_groups.items()
+            for i, chunk in enumerate(chunks)
         ]
         chunk_results = await asyncio.gather(*tasks)
 
@@ -162,6 +240,19 @@ class ComplianceService:
         # 按时间戳排序
         all_violations.sort(key=lambda v: v.timestamp_ms)
 
+        # 后处理过滤器链
+        full_text = " ".join(
+            e.get("text_corrected", "") for e in transcript_entries
+        )
+        all_violations = run_filters(
+            all_violations,
+            rules=structured_rules,
+            full_text=full_text,
+            ocr_results=ocr_results,
+            confidence_threshold=self._settings.compliance_confidence_threshold,
+            dedup_window_ms=self._settings.compliance_dedup_window_ms,
+        )
+
         # Reduce: 生成摘要
         summary = await self._generate_summary(rules, all_violations)
         if on_progress:
@@ -169,12 +260,17 @@ class ComplianceService:
 
         score = _calculate_score(len(rules), all_violations)
 
+        source_counts: dict[str, int] = {}
+        for v in all_violations:
+            source_counts[v.source] = source_counts.get(v.source, 0) + 1
+
         return ComplianceReport(
             total_rules=len(rules),
             total_segments_checked=len(transcript_entries),
             violations=all_violations,
             summary=summary,
             compliance_score=score,
+            source_counts=source_counts,
         )
 
     # ------------------------------------------------------------------ #
@@ -202,20 +298,35 @@ class ComplianceService:
             chunks.append(current)
         return chunks
 
+    def _build_rules_text(self, rules: list[StructuredRule]) -> str:
+        """构建带审核说明的规则文本。"""
+        lines: list[str] = []
+        for r in rules:
+            line = f"{r.id}. [{r.check_mode}] {r.content}"
+            if r.description:
+                line += f"\n   审核说明：{r.description}"
+            lines.append(line)
+        return "\n".join(lines)
+
     async def _audit_chunk(
         self,
         chunk_index: int,
         total_chunks: int,
-        rules: list[ComplianceRule],
+        rules: list[StructuredRule],
         entries: list[dict],
         few_shot_examples: list[str] | None = None,
+        *,
+        group_name: str = "all",
+        ocr_records: list[dict] | None = None,
     ) -> list[Violation]:
         """Map 阶段：对单个 chunk 执行 LLM 合规审核。"""
         logger.info(
-            "Audit chunk %d/%d (%d entries)...",
+            "Audit chunk %d/%d group=%s (%d entries, %d rules)...",
             chunk_index + 1,
             total_chunks,
+            group_name,
             len(entries),
+            len(rules),
         )
 
         # Build timestamp -> precise ms mapping from original entries
@@ -227,7 +338,7 @@ class ComplianceService:
                 ts_to_ms[ts] = int(e.get("timestamp_ms", 0))
                 ts_to_end_ms[ts] = int(e.get("end_ms", 0))
 
-        rules_text = "\n".join(f"{r.id}. {r.content}" for r in rules)
+        rules_text = self._build_rules_text(rules)
         transcript_lines = [
             f"[{e.get('timestamp', '??:??')}] [{e.get('speaker', '未知')}]: "
             f"{e.get('text_corrected', '')}"
@@ -246,27 +357,42 @@ class ComplianceService:
                 "（以上为真实违规案例，供你参考判断标准的严格程度。）"
             )
 
+        # OCR 数据注入（如果有）
+        if ocr_records:
+            ocr_lines = [
+                f"[{_ms_to_timestamp(r.get('timestamp_ms', 0))}] "
+                f"\"{r.get('text', '')}\""
+                for r in ocr_records
+            ]
+            user_parts.append(
+                f"【屏幕文字（OCR）】\n" + "\n".join(ocr_lines)
+            )
+
         user_parts.append(
             f"【语音转录文本 - 第 {chunk_index + 1}/{total_chunks} 段】\n"
             f"{transcript_text}"
         )
         user_parts.append(
-            "请逐条对照审核标准，仔细检查上述转录文本。\n"
+            "请按照四步推理框架，逐条对照审核标准检查上述内容。\n"
             "注意：\n"
-            "1. 对每一条标准都要检查，不要遗漏。\n"
-            "2. 包含'不允许出现'或'不得'的规则，只要文本中出现了相应字样（即使有同音字差异），即为违规。\n"
-            "3. 将违规原文完整摘录到 original_text 中。\n"
-            "4. 有疑似违规的也要报告，severity 标记为 medium。"
+            "1. 严格遵循每条规则的「审核说明」确定适用边界。\n"
+            "2. 客观事实陈述（产品参数、年龄、费率）不构成违规。\n"
+            "3. 仅输出 confidence >= 0.7 的违规。\n"
+            "4. 将违规原文完整摘录到 original_text 中。"
         )
 
         user_prompt = "\n\n".join(user_parts)
 
         logger.info(
-            "Audit chunk %d/%d user prompt (first 1000 chars):\n%s",
+            "Audit chunk %d/%d group=%s user prompt (first 1000 chars):\n%s",
             chunk_index + 1,
             total_chunks,
+            group_name,
             user_prompt[:1000],
         )
+
+        # 构建 ComplianceRule 列表用于 _parse_violations
+        cr_rules = [ComplianceRule(id=r.id, content=r.content) for r in rules]
 
         for attempt in range(1, 3):
             try:
@@ -294,29 +420,37 @@ class ComplianceService:
                 )
                 raw = strip_think_tags(response.content)
                 logger.info(
-                    "Audit chunk %d/%d raw LLM output:\n%s",
+                    "Audit chunk %d/%d group=%s raw LLM output:\n%s",
                     chunk_index + 1,
                     total_chunks,
+                    group_name,
                     raw[:2000],
                 )
-                violations = _parse_violations(raw, rules, ts_to_ms, ts_to_end_ms)
+                violations = _parse_violations(raw, cr_rules, ts_to_ms, ts_to_end_ms)
                 logger.info(
-                    "Audit chunk %d/%d done: %d violations found",
+                    "Audit chunk %d/%d group=%s done: %d violations found",
                     chunk_index + 1,
                     total_chunks,
+                    group_name,
                     len(violations),
                 )
                 return violations
             except Exception as e:
                 logger.warning(
-                    "Audit chunk %d/%d attempt %d failed: %s",
+                    "Audit chunk %d/%d group=%s attempt %d failed: %s",
                     chunk_index + 1,
                     total_chunks,
+                    group_name,
                     attempt,
                     e,
                 )
 
-        logger.error("Audit chunk %d/%d all attempts failed", chunk_index + 1, total_chunks)
+        logger.error(
+            "Audit chunk %d/%d group=%s all attempts failed",
+            chunk_index + 1,
+            total_chunks,
+            group_name,
+        )
         return []
 
     async def _generate_summary(
@@ -360,8 +494,62 @@ class ComplianceService:
 
 
 # ------------------------------------------------------------------ #
+#  OCR 时间对齐
+# ------------------------------------------------------------------ #
+
+
+def _align_ocr_to_chunk(
+    entries: list[dict],
+    ocr_results: list[dict],
+    margin_ms: int = 5000,
+) -> list[dict]:
+    """筛选与 chunk 时间范围重叠的 OCR 记录。
+
+    去重（同帧同文本只保留一次），按时间排序。
+    """
+    if not entries or not ocr_results:
+        return []
+
+    # 计算 chunk 时间范围
+    chunk_start = min(int(e.get("timestamp_ms", 0)) for e in entries)
+    chunk_end = max(int(e.get("end_ms", 0)) for e in entries)
+    range_start = chunk_start - margin_ms
+    range_end = chunk_end + margin_ms
+
+    # 筛选 + 去重
+    seen: set[tuple[int, str]] = set()
+    aligned: list[dict] = []
+
+    for ocr in ocr_results:
+        ocr_ms = int(ocr.get("timestamp_ms", 0))
+        if ocr_ms < range_start or ocr_ms > range_end:
+            continue
+
+        text = ocr.get("text", "").strip()
+        if not text:
+            continue
+
+        key = (ocr_ms, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        aligned.append(ocr)
+
+    aligned.sort(key=lambda r: r.get("timestamp_ms", 0))
+    return aligned
+
+
+# ------------------------------------------------------------------ #
 #  辅助函数
 # ------------------------------------------------------------------ #
+
+
+def _ms_to_timestamp(ms: int) -> str:
+    """将毫秒转换为 MM:SS 格式。"""
+    total_s = ms // 1000
+    minutes = total_s // 60
+    seconds = total_s % 60
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def _calculate_score(total_rules: int, violations: list[Violation]) -> float:
@@ -456,13 +644,10 @@ def _parse_violations(
         severity = raw_severity if raw_severity in _VALID_SEVERITY else "low"
 
         # Resolve precise timestamp_ms from transcript entries mapping.
-        # The LLM only sees [MM:SS] strings and cannot reliably infer the
-        # original millisecond value, so we look it up from the source data.
         if ts_to_ms and ts_str in ts_to_ms:
             precise_ms = ts_to_ms[ts_str]
             precise_end = ts_to_end_ms.get(ts_str, 0) if ts_to_end_ms else 0
         else:
-            # Fallback: parse the timestamp string to approximate ms
             precise_ms = _parse_timestamp_to_ms(ts_str) if not llm_ts_ms else llm_ts_ms
             precise_end = llm_end_ms
 
@@ -478,7 +663,8 @@ def _parse_violations(
                 reason=str(item.get("reason", "")),
                 severity=severity,
                 confidence=_safe_float(item.get("confidence", 0.5), default=0.5),
-                source="audio",
+                source="transcript",
+                reasoning=item.get("reasoning"),
             )
         )
 

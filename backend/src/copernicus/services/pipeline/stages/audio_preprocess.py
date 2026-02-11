@@ -15,7 +15,7 @@ class AudioPreprocessStage:
         self._audio = audio_service
 
     def should_run(self, ctx: PipelineContext) -> bool:
-        return ctx.audio_bytes is not None
+        return ctx.audio_bytes is not None and ctx.wav_path is None
 
     async def execute(
         self,

@@ -52,3 +52,29 @@ export async function rerunEvaluation(
   );
   return data;
 }
+
+export function getTaskMediaUrl(taskId: string): string {
+  return `/api/v1/tasks/${taskId}/media`;
+}
+
+export function getFrameUrl(taskId: string, filename: string): string {
+  return `/api/v1/tasks/${taskId}/frames/${filename}`;
+}
+
+/**
+ * 将 evidence_url 解析为可访问的 HTTP URL。
+ * 兼容：纯 filename / 绝对文件路径（旧数据） / 已有 API 路径。
+ */
+export function resolveEvidenceUrl(
+  evidenceUrl: string | null | undefined,
+  taskId: string | null,
+): string | null {
+  if (!evidenceUrl || !taskId) return null;
+  if (evidenceUrl.startsWith("http") || evidenceUrl.startsWith("/api"))
+    return evidenceUrl;
+  // 提取 filename：兼容 Windows 反斜杠和 Unix 正斜杠
+  const filename = evidenceUrl.includes("/") || evidenceUrl.includes("\\")
+    ? evidenceUrl.split(/[/\\]/).pop()!
+    : evidenceUrl;
+  return getFrameUrl(taskId, filename);
+}

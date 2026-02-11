@@ -13,7 +13,9 @@ import {
   ZoomIn,
 } from "lucide-react";
 import { useState } from "react";
+import { resolveEvidenceUrl } from "../../api/task";
 import { useComplianceStore } from "../../stores/complianceStore";
+import { useTaskStore } from "../../stores/taskStore";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { usePlayerStore } from "../../stores/playerStore";
 import { useToastStore } from "../../stores/toastStore";
@@ -40,9 +42,12 @@ export function EvidenceDetailPanel() {
   const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
   const seekAndPlay = usePlayerStore((s) => s.seekAndPlay);
+  const taskId = useTaskStore((s) => s.taskId);
   const [imageZoom, setImageZoom] = useState(false);
 
   if (!violation) return null;
+
+  const imageUrl = resolveEvidenceUrl(violation.evidence_url, taskId);
 
   const sevConfig = SEVERITY_CONFIG[violation.severity] || SEVERITY_CONFIG.low;
   const SevIcon = sevConfig.icon;
@@ -129,13 +134,28 @@ export function EvidenceDetailPanel() {
           <p className="text-sm">{violation.reason}</p>
         </div>
 
+        {/* AI Reasoning */}
+        {violation.reasoning && (
+          <div>
+            <h4 className="text-xs font-bold text-base-content/50 mb-1">AI 判定逻辑</h4>
+            <div className="bg-base-200 rounded p-3 text-sm border border-base-300 space-y-1">
+              {violation.reasoning.split(/[。；]/).filter(Boolean).map((step, i) => (
+                <p key={i} className="text-base-content/70">
+                  <span className="text-base-content/40 mr-1">{i + 1}.</span>
+                  {step.trim()}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Screenshot viewer (ocr / vision) */}
-        {violation.evidence_url && (
+        {imageUrl && (
           <div>
             <h4 className="text-xs font-bold text-base-content/50 mb-1">证据截图</h4>
             <div className="relative">
               <img
-                src={violation.evidence_url}
+                src={imageUrl}
                 alt="证据截图"
                 className="w-full rounded border border-base-300 cursor-pointer hover:opacity-90 transition-opacity"
                 onClick={() => setImageZoom(true)}
@@ -245,18 +265,16 @@ export function EvidenceDetailPanel() {
       </div>
 
       {/* Image zoom modal */}
-      {imageZoom && violation.evidence_url && (
+      {imageZoom && imageUrl && (
         <dialog className="modal modal-open" onClick={() => setImageZoom(false)}>
           <div className="modal-box max-w-4xl p-2" onClick={(e) => e.stopPropagation()}>
             <img
-              src={violation.evidence_url}
+              src={imageUrl}
               alt="证据截图（放大）"
               className="w-full rounded"
             />
           </div>
-          <form method="dialog" className="modal-backdrop">
-            <button onClick={() => setImageZoom(false)}>close</button>
-          </form>
+          <div className="modal-backdrop" onClick={() => setImageZoom(false)} />
         </dialog>
       )}
     </div>

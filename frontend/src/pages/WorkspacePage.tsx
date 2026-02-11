@@ -6,7 +6,7 @@ import { useTranscriptStore } from "../stores/transcriptStore";
 import { useEvaluationStore } from "../stores/evaluationStore";
 import { useComplianceStore } from "../stores/complianceStore";
 import { useTaskPolling } from "../hooks/useTaskPolling";
-import { getTaskResults } from "../api/task";
+import { getTaskResults, getTaskMediaUrl } from "../api/task";
 import { AppLayout } from "../components/layout/AppLayout";
 import { ErrorAlert } from "../components/shared/ErrorAlert";
 import { WorkspaceSkeleton } from "../components/shared/WorkspaceSkeleton";
@@ -49,6 +49,12 @@ export function WorkspacePage() {
           if (res.compliance) {
             useComplianceStore.getState().setReport(res.compliance.report, res.compliance.rules);
           }
+          // Set media type based on video detection
+          if (res.has_video) {
+            usePlayerStore.getState().setMediaSrc(
+              getTaskMediaUrl(taskId), "video"
+            );
+          }
           useTranscriptStore.getState().setRawEntries(res.transcript.transcript);
           updateStatus("completed", { current_chunk: 0, total_chunks: 0, percent: 100 });
           // No need to enable polling -- already restored
@@ -67,7 +73,7 @@ export function WorkspacePage() {
 
   useEffect(() => {
     if (!taskId || mediaSrc) return;
-    setMediaSrc(`/api/v1/tasks/${taskId}/audio`);
+    setMediaSrc(getTaskMediaUrl(taskId));
   }, [taskId, mediaSrc, setMediaSrc]);
 
   useTaskPolling(pollEnabled);

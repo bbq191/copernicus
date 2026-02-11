@@ -27,6 +27,15 @@ class Violation(BaseModel):
     speaker: str = ""
     original_text: str = ""
 
+    # 多源审核字段
+    source: Literal["transcript", "ocr", "vision"] = "transcript"
+    evidence_url: str | None = None
+    evidence_text: str | None = None
+    rule_ref: str | None = None
+
+    # 认知审计（CoT 推理链）
+    reasoning: str | None = None
+
 
 class ComplianceReport(BaseModel):
     """Full compliance audit report."""
@@ -36,6 +45,7 @@ class ComplianceReport(BaseModel):
     violations: list[Violation] = Field(default_factory=list)
     summary: str = ""
     compliance_score: float = 100.0
+    source_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ComplianceResponse(BaseModel):

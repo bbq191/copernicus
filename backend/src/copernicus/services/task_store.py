@@ -59,10 +59,17 @@ class TaskInfo:
     def progress(self) -> TaskProgress:
         if self.status == TaskStatus.PENDING:
             percent = 0.0
-        elif self.status == TaskStatus.PROCESSING_ASR:
+        elif self.status == TaskStatus.EXTRACTING_FRAMES:
             percent = 5.0
+        elif self.status == TaskStatus.SCANNING_VISUAL:
+            if self.total_chunks > 0:
+                percent = 5.0 + (self.current_chunk / self.total_chunks) * 15.0
+            else:
+                percent = 10.0
+        elif self.status == TaskStatus.PROCESSING_ASR:
+            percent = 20.0
         elif self.status == TaskStatus.CORRECTING and self.total_chunks > 0:
-            percent = 5.0 + (self.current_chunk / self.total_chunks) * 85.0
+            percent = 20.0 + (self.current_chunk / self.total_chunks) * 70.0
         elif self.status == TaskStatus.AUDITING:
             if self.total_chunks > 0:
                 percent = (self.current_chunk / self.total_chunks) * 100.0
@@ -82,7 +89,7 @@ class TaskInfo:
         elif self.status == TaskStatus.COMPLETED:
             percent = 100.0
         else:
-            percent = 5.0 + (self.current_chunk / max(self.total_chunks, 1)) * 85.0
+            percent = 20.0 + (self.current_chunk / max(self.total_chunks, 1)) * 70.0
         return TaskProgress(
             current_chunk=self.current_chunk,
             total_chunks=self.total_chunks,
@@ -119,9 +126,13 @@ class TaskStore:
         task_id = self._hash_index.get(file_hash)
         if task_id is None:
             return None
+        # Task still in memory (running / pending / failed)
+        if task_id in self._tasks:
+            return task_id
+        # Task completed and persisted to disk
         if self._persistence.has_file(task_id, "transcript.json"):
             return task_id
-        # stale index entry
+        # Stale index entry: task evicted from memory without completing
         del self._hash_index[file_hash]
         self._persistence.save_hash_index(self._hash_index)
         return None
@@ -172,18 +183,19 @@ class TaskStore:
         hotwords: list[str] | None = None,
         *,
         file_hash: str = "",
+        visual_scan: bool = False,
     ) -> str:
         task_id = uuid.uuid4().hex
         self._register_task(task_id)
         asyncio.create_task(
             self._run_with_timeout(
                 task_id,
-                self._run_transcript(task_id, audio_bytes, filename, hotwords),
+                self._run_transcript(task_id, audio_bytes, filename, hotwords, visual_scan=visual_scan),
             )
         )
         if file_hash:
             self._register_hash(file_hash, task_id)
-        logger.info("Task %s submitted (transcript)", task_id)
+        logger.info("Task %s submitted (transcript, visual_scan=%s)", task_id, visual_scan)
         return task_id
 
     def submit_text_evaluation(
@@ -368,18 +380,39 @@ class TaskStore:
         audio_bytes: bytes,
         filename: str,
         hotwords: list[str] | None,
+        *,
+        visual_scan: bool = False,
     ) -> None:
+        _STAGE_STATUS = {
+            "video_preprocess": TaskStatus.EXTRACTING_FRAMES,
+            "keyframe_extract": TaskStatus.EXTRACTING_FRAMES,
+            "ocr_scan": TaskStatus.SCANNING_VISUAL,
+            "face_detect": TaskStatus.SCANNING_VISUAL,
+            "audio_preprocess": TaskStatus.PROCESSING_ASR,
+            "asr_transcribe": TaskStatus.PROCESSING_ASR,
+            "text_correction": TaskStatus.CORRECTING,
+        }
+
         async with self._task_lifecycle(task_id, "transcript") as task:
             task.status = TaskStatus.PROCESSING_ASR
 
+            def on_stage_change(stage_name: str) -> None:
+                status = _STAGE_STATUS.get(stage_name)
+                if status:
+                    task.status = status
+                    task.current_chunk = 0
+                    task.total_chunks = 0
+
             def on_progress(current: int, total: int) -> None:
-                task.status = TaskStatus.CORRECTING
                 task.current_chunk = current
                 task.total_chunks = total
 
             result = await self._pipeline.process_transcript(
-                audio_bytes, filename, hotwords, on_progress=on_progress,
+                audio_bytes, filename, hotwords,
+                on_progress=on_progress,
+                on_stage_change=on_stage_change,
                 task_id=task_id,
+                visual_scan=visual_scan,
             )
 
             transcript_response = TranscriptResponse(

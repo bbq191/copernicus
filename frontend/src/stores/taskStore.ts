@@ -7,6 +7,7 @@ interface TaskState {
   progress: TaskProgress;
   error: string | null;
   pollEnabled: boolean;
+  isVideoTask: boolean;
 
   setTask: (taskId: string, status: TaskStatus) => void;
   updateStatus: (status: TaskStatus, progress: TaskProgress) => void;
@@ -21,22 +22,30 @@ const initialProgress: TaskProgress = {
   percent: 0,
 };
 
+const VIDEO_STAGE_SET = new Set<TaskStatus>(["extracting_frames", "scanning_visual"]);
+
 export const useTaskStore = create<TaskState>((set) => ({
   taskId: null,
   status: null,
   progress: initialProgress,
   error: null,
   pollEnabled: false,
+  isVideoTask: false,
 
   setTask: (taskId, status) =>
-    set({ taskId, status, progress: initialProgress, error: null, pollEnabled: false }),
+    set({ taskId, status, progress: initialProgress, error: null, pollEnabled: false, isVideoTask: false }),
 
-  updateStatus: (status, progress) => set({ status, progress }),
+  updateStatus: (status, progress) =>
+    set((state) => ({
+      status,
+      progress,
+      isVideoTask: state.isVideoTask || VIDEO_STAGE_SET.has(status),
+    })),
 
   setError: (error) => set({ error, status: "failed" }),
 
   setPollEnabled: (enabled) => set({ pollEnabled: enabled }),
 
   reset: () =>
-    set({ taskId: null, status: null, progress: initialProgress, error: null, pollEnabled: false }),
+    set({ taskId: null, status: null, progress: initialProgress, error: null, pollEnabled: false, isVideoTask: false }),
 }));

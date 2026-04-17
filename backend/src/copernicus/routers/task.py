@@ -32,6 +32,7 @@ router = APIRouter(prefix="/api/v1", tags=["tasks"])
 async def submit_transcript_task(
     file: UploadFile = File(...),
     hotwords: str | None = Form(default=None),
+    visual_scan: bool = Form(default=False),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
     """Submit an async transcript task with timestamps and speaker labels."""
@@ -44,8 +45,10 @@ async def submit_transcript_task(
     file_hash = hashlib.sha256(audio_bytes).hexdigest()
     existing_id = store.lookup_by_hash(file_hash)
     if existing_id:
+        existing_task = store.get(existing_id)
+        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
         return TaskSubmitResponse(
-            task_id=existing_id, status=TaskStatus.COMPLETED, existing=True
+            task_id=existing_id, status=existing_status, existing=True
         )
 
     try:
@@ -53,7 +56,9 @@ async def submit_transcript_task(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     task_id = store.submit_transcript(
-        audio_bytes, file.filename or "upload.bin", hw, file_hash=file_hash
+        audio_bytes, file.filename or "upload.bin", hw,
+        file_hash=file_hash,
+        visual_scan=visual_scan,
     )
 
     # persist media and meta to task directory

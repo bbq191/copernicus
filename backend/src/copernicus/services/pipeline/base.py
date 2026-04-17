@@ -69,6 +69,7 @@ class PipelineContext:
     ocr_results: list | None = None
     visual_events: list | None = None
     media_type: str = "audio"
+    visual_scan: bool = False  # True 时才执行关键帧提取/OCR/人脸检测
 
     # Timing
     processing_times: dict[str, float] = field(default_factory=dict)

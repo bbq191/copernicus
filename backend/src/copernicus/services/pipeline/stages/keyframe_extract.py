@@ -35,7 +35,7 @@ class KeyframeExtractStage:
         self._persistence = persistence
 
     def should_run(self, ctx: PipelineContext) -> bool:
-        return ctx.video_path is not None
+        return ctx.visual_scan and ctx.video_path is not None
 
     async def execute(
         self,

@@ -8,10 +8,12 @@ import type {
 export async function submitTranscriptTask(
   file: File,
   hotwords?: string,
+  visualScan?: boolean,
 ): Promise<TaskSubmitResponse> {
   const form = new FormData();
   form.append("file", file);
   if (hotwords) form.append("hotwords", hotwords);
+  if (visualScan) form.append("visual_scan", "true");
   const { data } = await client.post<TaskSubmitResponse>(
     "/tasks/transcript",
     form,

@@ -1,6 +1,6 @@
-"""OCR service using RapidOCR (ONNX, CPU-only).
+"""基于 RapidOCR（ONNX，仅 CPU）的 OCR 服务。
 
-Author: afu
+作者：afu
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class OCRService:
-    """Lazy-loaded RapidOCR wrapper for scanning keyframes."""
+    """懒加载 RapidOCR 封装，用于扫描关键帧图像。"""
 
     def __init__(self, settings: Settings) -> None:
         self._confidence_threshold = settings.ocr_confidence_threshold
@@ -33,7 +33,7 @@ class OCRService:
         logger.info("RapidOCR engine initialized (CPU)")
 
     def scan_frame(self, image_path: str, timestamp_ms: int) -> list[OCRRecord]:
-        """Run OCR on a single keyframe image. Synchronous -- call via to_thread."""
+        """对单张关键帧图像执行 OCR 识别。同步方法，需通过 to_thread 调用。"""
         self._ensure_engine()
         assert self._engine is not None
 

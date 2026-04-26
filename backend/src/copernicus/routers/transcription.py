@@ -20,7 +20,7 @@ async def transcribe_transcript(
     hotwords: str | None = Form(default=None),
     pipeline: PipelineService = Depends(get_pipeline),
 ) -> TranscriptResponse:
-    """Upload an audio file and get speaker-segmented transcript with timestamps."""
+    """上传音频文件，获取带说话人标注和时间戳的转写结果。"""
     audio_bytes = await file.read()
 
     if len(audio_bytes) > settings.max_upload_size_bytes:
@@ -55,7 +55,7 @@ async def transcribe_transcript(
 async def health(
     pipeline: PipelineService = Depends(get_pipeline),
 ) -> HealthResponse:
-    """Check service health: ASR model loaded and LLM reachable."""
+    """检查服务健康状态：ASR 模型是否已加载，LLM 是否可达。"""
     asr_loaded = pipeline._asr is not None
     llm_reachable = await pipeline._corrector.is_reachable()
     return HealthResponse(asr_loaded=asr_loaded, llm_reachable=llm_reachable)

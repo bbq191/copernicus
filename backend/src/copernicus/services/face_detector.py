@@ -1,6 +1,6 @@
-"""Face detection service using ultralytics YOLO (CPU-only).
+"""基于 ultralytics YOLO 的人脸检测服务（仅 CPU）。
 
-Author: afu
+作者：afu
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class FaceDetectorService:
-    """Lazy-loaded YOLO face detector with timeline analysis."""
+    """懒加载 YOLO 人脸检测器，支持时间轴事件分析。"""
 
     def __init__(self, settings: Settings) -> None:
         self._model_path = settings.face_detect_model
@@ -41,7 +41,7 @@ class FaceDetectorService:
         logger.info("YOLO face model loaded from %s (CPU)", model_path)
 
     def detect_frame(self, image_path: str) -> list[dict]:
-        """Detect faces in a single frame. Synchronous -- call via to_thread."""
+        """在单帧图像中检测人脸。同步方法，需通过 to_thread 调用。"""
         self._ensure_model()
         assert self._model is not None
 
@@ -63,14 +63,14 @@ class FaceDetectorService:
         frame_results: list[dict],
         interval_ms: int,
     ) -> list[VisualEvent]:
-        """Analyze per-frame face detection results into timeline events.
+        """将逐帧人脸检测结果整合为时间轴事件列表。
 
         Args:
-            frame_results: List of {timestamp_ms, face_count, max_confidence, frame_path}
-            interval_ms: Approximate interval between frames in milliseconds.
+            frame_results: 包含 {timestamp_ms, face_count, max_confidence, frame_path} 的列表。
+            interval_ms: 帧间隔的近似毫秒数。
 
         Returns:
-            List of VisualEvent (face_detected / face_missing).
+            VisualEvent 列表（face_detected / face_missing）。
         """
         if not frame_results:
             return []
@@ -131,7 +131,7 @@ class FaceDetectorService:
         confidence: float,
         frame_path: str | None,
     ) -> None:
-        """Emit a VisualEvent, filtering short face_missing segments."""
+        """生成 VisualEvent，过滤掉过短的 face_missing 片段。"""
         duration = end_ms - start_ms
         if state == "missing" and duration < self._missing_threshold_ms:
             return

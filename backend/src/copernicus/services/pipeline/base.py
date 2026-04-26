@@ -1,4 +1,4 @@
-"""Pipeline core abstractions: PipelineContext and Stage protocol."""
+"""Pipeline 核心抽象：PipelineContext 数据总线与 Stage 协议。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ StageProgressCallback = Callable[[str, int, int, int, int], None]
 
 @dataclass
 class TranscriptEntry:
-    """A single timestamped transcript entry."""
+    """带时间戳的单条转写记录。"""
 
     timestamp: str
     timestamp_ms: int
@@ -31,7 +31,7 @@ class TranscriptEntry:
 
 @dataclass
 class TranscriptResult:
-    """Output of the transcript pipeline."""
+    """转写 Pipeline 的输出结果。"""
 
     transcript: list[TranscriptEntry] = field(default_factory=list)
     processing_time_ms: float = 0.0
@@ -39,7 +39,7 @@ class TranscriptResult:
 
 @dataclass
 class PipelineContext:
-    """Shared data bus passed through all stages."""
+    """贯穿所有 Stage 的共享数据总线。"""
 
     # Input
     task_id: str = ""
@@ -77,7 +77,7 @@ class PipelineContext:
 
 @runtime_checkable
 class Stage(Protocol):
-    """Protocol that all pipeline stages must implement."""
+    """所有 Pipeline Stage 必须实现的协议接口。"""
 
     name: str
 

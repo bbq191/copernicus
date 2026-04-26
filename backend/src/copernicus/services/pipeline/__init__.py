@@ -1,8 +1,8 @@
-"""Pipeline service facade.
+"""Pipeline 服务外观类。
 
-Transcript processing mode delegates to a Stage-based orchestrator.
+转写处理模式委托给基于 Stage 的编排器执行。
 
-Author: afu
+作者：afu
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ __all__ = [
 
 
 class PipelineService:
-    """Facade: transcript pipeline uses Stage orchestrator."""
+    """外观类：转写 Pipeline 基于 Stage 编排器实现。"""
 
     def __init__(
         self,
@@ -125,7 +125,7 @@ class PipelineService:
         self._transcript_pipeline.register(TranscriptBuildStage())
 
     def _merge_hotwords(self, request_hotwords: list[str] | None) -> list[str] | None:
-        """Combine global hotwords (from HotwordReplacerService) with per-request hotwords."""
+        """合并全局热词（来自 HotwordReplacerService）与请求级热词。"""
         global_hw = (
             self._hotword_replacer.get_asr_hotwords() if self._hotword_replacer else []
         )
@@ -144,7 +144,7 @@ class PipelineService:
         task_id: str = "",
         visual_scan: bool = False,
     ) -> TranscriptResult:
-        """Run transcript pipeline via Stage orchestrator."""
+        """通过 Stage 编排器运行转写 Pipeline。"""
         logger.info(
             "Pipeline process_transcript started for: %s (visual_scan=%s)",
             filename, visual_scan,

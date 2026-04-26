@@ -8,10 +8,10 @@ if TYPE_CHECKING:
 
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 50) -> list[str]:
-    """Split text into overlapping chunks for LLM context windowing.
+    """将文本切分为带重叠的分块，供 LLM 上下文窗口使用。
 
-    Tries to split at sentence boundaries (punctuation) to avoid cutting
-    mid-sentence. Falls back to hard split if no boundary is found.
+    优先在句子边界（标点符号）处切分，避免句子中断。
+    若未找到边界则回退为硬切分。
     """
     if len(text) <= chunk_size:
         return [text]
@@ -41,12 +41,11 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 50) -> list[str]
 
 
 def merge_chunks(chunks: list[str], overlap: int = 50) -> str:
-    """Reassemble corrected chunks, deduplicating overlap regions.
+    """重新拼接纠正后的分块，去重重叠区域。
 
-    Since LLM correction may alter the overlap content, we use a simple
-    strategy: keep the first chunk fully, then for subsequent chunks
-    skip the first `overlap` characters (which were also present at the
-    end of the previous chunk).
+    由于 LLM 纠正可能改变重叠内容，采用简单策略：
+    第一个分块完整保留，后续分块跳过开头 overlap 个字符
+    （这些字符已出现在上一分块末尾）。
     """
     if not chunks:
         return ""
@@ -63,7 +62,7 @@ def merge_chunks(chunks: list[str], overlap: int = 50) -> str:
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split text into sentences using punctuation boundaries."""
+    """按标点边界将文本切分为句子列表。"""
     if not text:
         return []
     parts = re.split(r"(?<=[。！？；\n])", text)
@@ -72,7 +71,7 @@ def split_sentences(text: str) -> list[str]:
 
 
 def format_timestamp(ms: int) -> str:
-    """Convert milliseconds to MM:SS display format."""
+    """将毫秒转换为 MM:SS 显示格式。"""
     total_seconds = ms // 1000
     minutes = total_seconds // 60
     seconds = total_seconds % 60
@@ -83,16 +82,15 @@ def pre_merge_segments(
     segments: list[Segment],
     gap_ms: int = 500,
 ) -> list[Segment]:
-    """Pre-merge fine-grained ASR segments before LLM correction.
+    """在 LLM 纠正前预合并细粒度 ASR 分段。
 
-    Combines consecutive segments from the same speaker when the time gap
-    between them is small. This reduces the total segment count (e.g. from
-    1400 to ~300), which cuts the number of LLM batches and gives the model
-    better context per request.
+    将同一说话人的相邻分段在时间间隔较小时合并，
+    从而减少总分段数（如从 1400 条降至约 300 条），
+    减少 LLM 批次数并为每次请求提供更好的上下文。
 
-    Merged segment confidence is the weighted average by text length.
-    Each merged segment preserves original sentence boundaries in
-    ``sub_sentences`` for later fine-grained splitting.
+    合并后的分段置信度为按文本长度加权平均值。
+    每个合并分段在 sub_sentences 中保留原始句子边界，
+    供后续细粒度拆分使用。
     """
     from copernicus.services.asr import Segment as _Seg, SubSentence
 
@@ -147,11 +145,11 @@ def smooth_speakers(
     segments: list[Segment],
     max_duration_ms: int = 1500,
 ) -> list[Segment]:
-    """Smooth speaker diarization flicker.
+    """平滑说话人分离的抖动噪声。
 
-    If a segment's speaker differs from both its predecessor and successor,
-    and the segment duration is short (below max_duration_ms), force its
-    speaker to match the surrounding context.
+    若某分段的说话人与前后分段均不同，
+    且该分段时长较短（低于 max_duration_ms），
+    则强制将其说话人修正为周围分段的说话人。
     """
     if len(segments) < 3:
         return segments
@@ -172,14 +170,12 @@ def merge_transcript_entries(
     entries: list[dict],
     gap_threshold_ms: int = 2000,
 ) -> list[dict]:
-    """Merge consecutive transcript entries from the same speaker.
+    """合并同一说话人的相邻转写条目。
 
-    Each entry is {"timestamp": str, "timestamp_ms": int, "speaker": str,
-    "text": str, "text_corrected": str}.
+    每条条目格式为 {"timestamp": str, "timestamp_ms": int, "speaker": str,
+    "text": str, "text_corrected": str}。
 
-    Entries are merged when the speaker is the same and the time gap between
-    the current entry's start and the previous entry's start is within the
-    threshold.
+    当说话人相同且当前条目与前一条目的起始时间差在阈值内时合并。
     """
     if not entries:
         return []
@@ -206,13 +202,11 @@ def split_corrected_by_sub_sentences(
     corrected_text: str,
     sub_sentences: list[SubSentence],
 ) -> list[SubSentence]:
-    """Split LLM-corrected text back into sub-sentence granularity.
+    """将 LLM 纠正后的文本拆分回子句粒度。
 
-    Uses punctuation-based splitting and proportionally maps each fragment
-    to the original sub-sentence time span.
+    基于标点切分，按比例将每个片段映射到原始子句的时间区间。
 
-    Returns a list of SubSentence with corrected text and estimated
-    start_ms / end_ms.
+    返回带有纠正文本和估算 start_ms / end_ms 的 SubSentence 列表。
     """
     from copernicus.services.asr import SubSentence as _Sub
 
@@ -261,11 +255,10 @@ def split_original_by_sub_sentences(
     original_text: str,
     sub_sentences: list[SubSentence],
 ) -> list[str]:
-    """Split original (pre-correction) text using sub-sentence boundaries.
+    """使用子句边界切分纠正前的原始文本。
 
-    Since original text was built by concatenating sub-sentence texts, we
-    can split by prefix matching. Falls back to punctuation splitting on
-    mismatch.
+    原始文本由各子句文本拼接而成，因此可通过前缀匹配切分。
+    匹配失败时回退为标点切分。
     """
     if len(sub_sentences) <= 1:
         return [original_text]
@@ -293,10 +286,9 @@ def split_original_by_sub_sentences(
 
 
 def group_segments(segments: list[Segment], chunk_size: int = 800) -> list[list[Segment]]:
-    """Group ASR segments into chunks that fit within chunk_size characters.
+    """将 ASR 分段贪心地分组为不超过 chunk_size 字符的批次。
 
-    Segments are grouped greedily: each group accumulates segments until
-    adding the next one would exceed chunk_size, then a new group starts.
+    每组持续累积分段，直到加入下一个分段会超过 chunk_size 时开启新组。
     """
     if not segments:
         return []

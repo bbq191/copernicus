@@ -122,7 +122,7 @@ class TaskStore:
     # -- hash dedup ----------------------------------------------------------
 
     def lookup_by_hash(self, file_hash: str) -> str | None:
-        """Return existing task_id for the given file hash, or None."""
+        """根据文件哈希查找已有 task_id，不存在则返回 None。"""
         task_id = self._hash_index.get(file_hash)
         if task_id is None:
             return None
@@ -144,9 +144,17 @@ class TaskStore:
     # -- restore from disk ---------------------------------------------------
 
     def restore_from_disk(self) -> None:
-        """Scan uploads directory and restore completed tasks into memory."""
+        """扫描上传目录，将已完成任务恢复到内存中，并从 meta.json 重建 hash index。"""
+        index_dirty = False
         for entry in self._persistence.scan_completed_tasks():
             task_id = entry["task_id"]
+
+            # 从 meta.json 重建 hash index（兼容 hash_index.json 丢失/损坏的场景）
+            file_hash = entry.get("meta", {}).get("hash")
+            if file_hash and file_hash not in self._hash_index:
+                self._hash_index[file_hash] = task_id
+                index_dirty = True
+
             if task_id in self._tasks:
                 continue
 
@@ -154,10 +162,14 @@ class TaskStore:
             info.audio_path = entry["audio_path"]
 
             if entry["has_transcript"]:
-                data = self._persistence.load_json(task_id, "transcript.json")
-                if data:
-                    info.result = TranscriptResponse.model_validate(data)
-                    info.status = TaskStatus.COMPLETED
+                try:
+                    data = self._persistence.load_json(task_id, "transcript.json")
+                    if data:
+                        info.result = TranscriptResponse.model_validate(data)
+                        info.status = TaskStatus.COMPLETED
+                except Exception as e:
+                    logger.warning("Skipping task %s during restore: %s", task_id, e)
+                    continue
 
             if info.status != TaskStatus.COMPLETED:
                 continue
@@ -165,12 +177,16 @@ class TaskStore:
             self._tasks[task_id] = info
             logger.info("Restored task %s from disk", task_id)
 
+        if index_dirty:
+            self._persistence.save_hash_index(self._hash_index)
+            logger.info("Rebuilt hash index from meta.json files")
+
         logger.info("Total tasks in memory: %d", len(self._tasks))
 
     # -- submit methods ------------------------------------------------------
 
     def _register_task(self, task_id: str, **kwargs) -> TaskInfo:
-        """Create a TaskInfo, store it, and evict old tasks if needed."""
+        """创建 TaskInfo 并存储，必要时淘汰旧任务。"""
         info = TaskInfo(task_id, **kwargs)
         self._tasks[task_id] = info
         self._evict_completed()
@@ -204,7 +220,7 @@ class TaskStore:
         *,
         parent_task_id: str | None = None,
     ) -> str:
-        """Submit text-only evaluation (no ASR needed)."""
+        """提交纯文本评估任务（不需要 ASR）。"""
         if self._evaluator is None:
             raise RuntimeError("EvaluatorService not configured")
         task_id = uuid.uuid4().hex
@@ -223,7 +239,7 @@ class TaskStore:
         *,
         parent_task_id: str | None = None,
     ) -> str:
-        """Submit compliance audit task (text-only, no ASR needed)."""
+        """提交合规审核任务（纯文本，不需要 ASR）。"""
         if self._compliance is None:
             raise RuntimeError("ComplianceService not configured")
         task_id = uuid.uuid4().hex
@@ -246,7 +262,7 @@ class TaskStore:
         task_id: str,
         hotwords: list[str] | None = None,
     ) -> str:
-        """Re-run ASR + correction on existing audio. Returns same task_id."""
+        """对已有音频重新执行 ASR 和纠正，返回相同的 task_id。"""
         task = self._tasks.get(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
@@ -279,7 +295,7 @@ class TaskStore:
         return task_id
 
     def rerun_evaluation(self, parent_task_id: str) -> str:
-        """Re-run evaluation from existing transcript. Returns child task_id."""
+        """基于已有转写结果重新执行评估，返回子任务 task_id。"""
         data = self._persistence.load_json(parent_task_id, "transcript.json")
         if data is None:
             raise ValueError(f"transcript.json not found for task {parent_task_id}")
@@ -300,7 +316,7 @@ class TaskStore:
     # -- memory management ---------------------------------------------------
 
     def _evict_completed(self) -> None:
-        """Remove oldest completed/failed tasks when memory limit is exceeded."""
+        """内存超限时淘汰最早完成/失败的任务。"""
         if len(self._tasks) <= self._max_tasks:
             return
         terminal = (TaskStatus.COMPLETED, TaskStatus.FAILED)
@@ -319,7 +335,7 @@ class TaskStore:
     # -- timeout wrapper -----------------------------------------------------
 
     async def _run_with_timeout(self, task_id: str, coro) -> None:
-        """Wrap a task coroutine with timeout protection."""
+        """为任务协程添加超时保护。"""
         try:
             await asyncio.wait_for(coro, timeout=self._task_timeout)
         except asyncio.TimeoutError:
@@ -333,7 +349,7 @@ class TaskStore:
 
     @contextlib.asynccontextmanager
     async def _task_lifecycle(self, task_id: str, label: str):
-        """Common try/except + status/error/logging for all _run_* methods."""
+        """所有 _run_* 方法通用的 try/except + 状态/错误/日志处理。"""
         task = self._tasks[task_id]
         try:
             yield task

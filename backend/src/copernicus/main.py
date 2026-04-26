@@ -32,14 +32,15 @@ from copernicus.services.ocr import OCRService
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
-from copernicus.routers import compliance, task, transcription, evaluation
+from copernicus.services.upload_session import UploadSessionService
+from copernicus.routers import compliance, task, transcription, evaluation, upload
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load ASR model on startup, release on shutdown."""
+    """启动时加载 ASR 模型，关闭时释放资源。"""
     logger.info("Starting Copernicus service ...")
 
     llm_client = OllamaClient(settings)
@@ -53,6 +54,7 @@ async def lifespan(app: FastAPI):
         )
 
         persistence = PersistenceService(settings.upload_dir)
+        app.state.upload_session = UploadSessionService(settings.upload_dir)
         ocr_service = OCRService(settings) if settings.ocr_enabled else None
         face_detector = FaceDetectorService(settings) if settings.face_detect_enabled else None
         app.state.pipeline = PipelineService(
@@ -104,6 +106,7 @@ app.add_middleware(
 
 app.include_router(transcription.router)
 app.include_router(task.router)
+app.include_router(upload.router)
 app.include_router(evaluation.router)
 app.include_router(compliance.router)
 

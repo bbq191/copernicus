@@ -12,7 +12,9 @@ client.interceptors.response.use(
   (error) => {
     const message =
       error.response?.data?.detail ?? error.message ?? "请求失败";
-    return Promise.reject(new Error(message));
+    const apiError = new Error(message) as Error & { statusCode?: number };
+    apiError.statusCode = error.response?.status;
+    return Promise.reject(apiError);
   },
 );
 

@@ -35,7 +35,7 @@ async def submit_transcript_task(
     visual_scan: bool = Form(default=False),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
-    """Submit an async transcript task with timestamps and speaker labels."""
+    """提交异步转写任务，包含时间戳和说话人标注。"""
     audio_bytes = await file.read()
 
     if len(audio_bytes) > settings.max_upload_size_bytes:
@@ -97,7 +97,7 @@ async def get_task_media(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
 ) -> FileResponse:
-    """Return the original uploaded media file (audio or video)."""
+    """返回原始上传的媒体文件（音频或视频）。"""
     persistence = store.persistence
 
     # Try video first
@@ -128,7 +128,7 @@ async def get_task_audio(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
 ) -> FileResponse:
-    """Backward-compatible audio endpoint -- delegates to media logic."""
+    """向后兼容的音频端点，委托给媒体逻辑处理。"""
     return await get_task_media(task_id, store)
 
 
@@ -138,7 +138,7 @@ async def get_task_frame(
     filename: str,
     store: TaskStore = Depends(get_task_store),
 ) -> FileResponse:
-    """Return a keyframe image."""
+    """返回指定关键帧图像。"""
     frames_path = store.persistence.task_dir(task_id) / "frames" / filename
     if not frames_path.exists():
         raise HTTPException(status_code=404, detail="Frame not found")
@@ -151,7 +151,7 @@ async def get_task_results(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
 ) -> TaskResultsResponse:
-    """Return all persisted results for a task."""
+    """返回任务的所有持久化结果。"""
     persistence = store.persistence
 
     if not persistence.has_file(task_id, "meta.json"):
@@ -204,7 +204,7 @@ async def rerun_transcript(
     hotwords: str | None = Form(default=None),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
-    """Re-run ASR + correction on existing audio."""
+    """对已有音频重新执行 ASR 和纠正。"""
     try:
         hw = parse_hotwords(hotwords)
     except ValueError as e:
@@ -221,7 +221,7 @@ async def rerun_evaluation(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
-    """Re-run evaluation based on existing transcript."""
+    """基于已有转写结果重新执行评估。"""
     try:
         child_task_id = store.rerun_evaluation(task_id)
     except ValueError as e:
@@ -229,12 +229,26 @@ async def rerun_evaluation(
     return TaskSubmitResponse(task_id=child_task_id, status=TaskStatus.PENDING)
 
 
+@router.get("/tasks/lookup", response_model=TaskSubmitResponse)
+async def lookup_task_by_hash(
+    hash: str,
+    store: TaskStore = Depends(get_task_store),
+) -> TaskSubmitResponse:
+    """根据文件 SHA-256 查询是否已有对应任务，用于上传前预检。"""
+    existing_id = store.lookup_by_hash(hash)
+    if not existing_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    existing_task = store.get(existing_id)
+    status = existing_task.status if existing_task else TaskStatus.COMPLETED
+    return TaskSubmitResponse(task_id=existing_id, status=status, existing=True)
+
+
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
 ) -> TaskStatusResponse:
-    """Query task progress and result."""
+    """查询任务进度与结果。"""
     task = store.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")

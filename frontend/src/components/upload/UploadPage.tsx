@@ -19,13 +19,21 @@ export function UploadPage() {
   const [dragging, setDragging] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [visualScan, setVisualScan] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ received: number; total: number } | null>(null);
   const setTask = useTaskStore((s) => s.setTask);
   const taskId = useTaskStore((s) => s.taskId);
 
   const submitFile = useCallback(
     async (file: File, withVisualScan: boolean) => {
+      setPendingFile(null);
+      setVisualScan(false);
+      setUploading(true);
+      setUploadProgress(null);
       try {
-        const res = await submitTranscriptTask(file, undefined, withVisualScan);
+        const res = await submitTranscriptTask(file, undefined, withVisualScan, {
+          onProgress: (received, total) => setUploadProgress({ received, total }),
+        });
         if (!res.existing) {
           setTask(res.task_id, res.status);
         } else if (res.status === "completed") {
@@ -44,8 +52,8 @@ export function UploadPage() {
           err instanceof Error ? err.message : "上传失败",
         );
       } finally {
-        setPendingFile(null);
-        setVisualScan(false);
+        setUploading(false);
+        setUploadProgress(null);
       }
     },
     [navigate, setTask],
@@ -127,43 +135,67 @@ export function UploadPage() {
         </div>
       )}
 
-      <div
-        className={`border-2 border-dashed rounded-xl p-16 w-full max-w-lg text-center cursor-pointer transition-colors ${
-          dragging
-            ? "border-primary bg-primary/5"
-            : "border-base-300 hover:border-primary/50"
-        }`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept="audio/*,video/*"
-          className="hidden"
-          onChange={onFileChange}
-        />
-        <div className="flex flex-col items-center gap-4">
-          {dragging ? (
-            <FileAudio className="h-12 w-12 text-primary" />
+      {uploading ? (
+        <div className="border-2 border-dashed border-base-300 rounded-xl p-16 w-full max-w-lg flex flex-col items-center gap-4">
+          <span className="loading loading-spinner loading-lg text-primary" />
+          {uploadProgress ? (
+            <div className="flex flex-col items-center gap-2 w-full max-w-xs">
+              <progress
+                className="progress progress-primary w-full"
+                value={uploadProgress.received}
+                max={uploadProgress.total}
+              />
+              <p className="text-xs text-base-content/60">
+                {(uploadProgress.received / 1024 / 1024).toFixed(1)} MB
+                {" / "}
+                {(uploadProgress.total / 1024 / 1024).toFixed(1)} MB
+                {"  "}
+                ({Math.round((uploadProgress.received / uploadProgress.total) * 100)}%)
+              </p>
+            </div>
           ) : (
-            <Upload className="h-12 w-12 text-base-content/30" />
+            <p className="text-sm text-base-content/60">正在上传，请勿关闭页面...</p>
           )}
-          <div>
-            <p className="font-medium">
-              拖拽音视频文件到此处，或点击选择
-            </p>
-            <p className="text-sm text-base-content/50 mt-1">
-              支持 MP3, WAV, MP4, M4A 等格式，最大 500MB
-            </p>
+        </div>
+      ) : (
+        <div
+          className={`border-2 border-dashed rounded-xl p-16 w-full max-w-lg text-center cursor-pointer transition-colors ${
+            dragging
+              ? "border-primary bg-primary/5"
+              : "border-base-300 hover:border-primary/50"
+          }`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          onClick={() => inputRef.current?.click()}
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            accept="audio/*,video/*"
+            className="hidden"
+            onChange={onFileChange}
+          />
+          <div className="flex flex-col items-center gap-4">
+            {dragging ? (
+              <FileAudio className="h-12 w-12 text-primary" />
+            ) : (
+              <Upload className="h-12 w-12 text-base-content/30" />
+            )}
+            <div>
+              <p className="font-medium">
+                拖拽音视频文件到此处，或点击选择
+              </p>
+              <p className="text-sm text-base-content/50 mt-1">
+                支持 MP3, WAV, MP4, M4A 等格式，最大 500MB
+              </p>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {taskId && <UploadProgress />}
     </div>

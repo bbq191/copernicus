@@ -1,4 +1,4 @@
-"""JSON file persistence service for task results and hash dedup index."""
+"""任务结果与哈希去重索引的 JSON 文件持久化服务。"""
 
 import json
 import logging
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class PersistenceService:
-    """Manages JSON persistence under ``upload_dir/{task_id}/``."""
+    """管理 upload_dir/{task_id}/ 目录下的 JSON 持久化数据。"""
 
     def __init__(self, upload_dir: Path) -> None:
         self._upload_dir = upload_dir
@@ -146,10 +146,10 @@ class PersistenceService:
     # -- scan ----------------------------------------------------------------
 
     def scan_completed_tasks(self) -> list[dict]:
-        """Scan upload_dir for task directories containing meta.json.
+        """扫描 upload_dir，查找包含 meta.json 的任务目录。
 
-        Returns a list of dicts with keys: task_id, meta, has_transcript,
-        has_evaluation, has_compliance, audio_path.
+        返回字典列表，键包含：task_id, meta, has_transcript,
+        has_evaluation, has_compliance, audio_path。
         """
         results: list[dict] = []
         for d in self._upload_dir.iterdir():
@@ -189,7 +189,7 @@ class PersistenceService:
 
     @staticmethod
     def _atomic_write(dest: Path, content: str) -> None:
-        """Write via temp file + rename to avoid partial writes."""
+        """通过临时文件写入再重命名，防止部分写入导致数据损坏。"""
         tmp_fd, tmp_path = tempfile.mkstemp(
             dir=str(dest.parent), suffix=".tmp"
         )

@@ -1,4 +1,4 @@
-"""Pipeline orchestrator: runs stages sequentially with progress reporting."""
+"""Pipeline 编排器：按序执行各 Stage 并上报进度。"""
 
 import logging
 import time
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineOrchestrator:
-    """Runs a sequence of Stage instances, skipping those where should_run is False."""
+    """顺序执行 Stage 列表，跳过 should_run 返回 False 的阶段。"""
 
     def __init__(self) -> None:
         self._stages: list[Stage] = []

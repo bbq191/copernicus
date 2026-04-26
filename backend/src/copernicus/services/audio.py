@@ -13,7 +13,7 @@ class AudioService:
         self._audio_enhance = settings.audio_enhance
 
     async def preprocess(self, audio_bytes: bytes, original_filename: str) -> Path:
-        """Convert uploaded audio to 16kHz mono WAV via ffmpeg."""
+        """将上传的音频通过 ffmpeg 转换为 16kHz 单声道 WAV 格式。"""
         self._upload_dir.mkdir(parents=True, exist_ok=True)
 
         suffix = Path(original_filename).suffix or ".bin"
@@ -37,7 +37,7 @@ class AudioService:
     def _run_ffmpeg(
         input_path: Path, output_path: Path, audio_enhance: bool = True
     ) -> None:
-        """Run ffmpeg synchronously (called via asyncio.to_thread).
+        """同步执行 ffmpeg（通过 asyncio.to_thread 调用）。
 
         Args:
             audio_enhance: 启用音频增强滤镜（会议场景优化）
@@ -95,5 +95,5 @@ class AudioService:
 
     @staticmethod
     def cleanup(path: Path) -> None:
-        """Remove temporary audio file after processing."""
+        """处理完成后删除临时音频文件。"""
         path.unlink(missing_ok=True)

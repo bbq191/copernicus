@@ -23,10 +23,10 @@ async def submit_compliance_audit(
     parent_task_id: str | None = Form(default=None),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
-    """Submit async compliance audit task.
+    """提交异步合规审核任务。
 
-    Accepts transcript entries (JSON) and a rules file (CSV/XLSX).
-    Poll GET /tasks/{task_id} for progress and result.
+    接受转写条目（JSON）和规则文件（CSV/XLSX）。
+    通过 GET /tasks/{task_id} 轮询进度与结果。
     """
     rules_bytes = await rules_file.read()
     if len(rules_bytes) > 2 * 1024 * 1024:
@@ -67,7 +67,7 @@ async def update_violation_statuses(
     body: ViolationBatchUpdate,
     store: TaskStore = Depends(get_task_store),
 ) -> dict:
-    """Persist violation review statuses (confirmed / rejected / pending)."""
+    """持久化违规条目的审核状态（已确认/已驳回/待审核）。"""
     persistence = store.persistence
     data = persistence.load_json(task_id, "compliance.json")
     if data is None:

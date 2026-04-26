@@ -58,7 +58,7 @@ _EVALUATION_SYSTEM_PROMPT = """\
         "key_data": ["提及的关键数据1", "提及的关键数据2"],
         "sentiment": "整体情感倾向(积极/中立/消极)"
     },
-    "summary": "300字以内的深度摘要"
+    "summary": "200字以内的精炼摘要"
 }"""
 
 # Map 阶段：每个分段提取要点（非 JSON，纯文本输出，速度快）

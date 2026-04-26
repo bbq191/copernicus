@@ -1,7 +1,7 @@
-"""Ollama native API client using httpx.
+"""Ollama 原生 API 客户端（基于 httpx）。
 
-Provides async chat completion with support for num_ctx, temperature,
-and JSON format — features not available via Ollama's OpenAI-compatible endpoint.
+提供异步对话补全，支持 num_ctx、temperature 和 JSON 格式——
+这些特性在 Ollama 的 OpenAI 兼容端点中不可用。
 
 关键设计：使用流式响应 (stream=True) 避免长推理超时
 - 非流式模式下，httpx 必须等待 Ollama 完成整个推理才能收到响应
@@ -36,7 +36,7 @@ class ChatResponse:
 
 
 class OllamaClient:
-    """Async client for Ollama's native /api/chat endpoint."""
+    """Ollama 原生 /api/chat 端点的异步客户端。"""
 
     def __init__(self, settings: Settings) -> None:
         base_url = settings.llm_base_url.rstrip("/")
@@ -73,7 +73,7 @@ class OllamaClient:
         num_predict: int | None = None,
         timeout: float | None = None,
     ) -> ChatResponse:
-        """Send a streaming chat completion request to Ollama native API.
+        """向 Ollama 原生 API 发送流式对话补全请求。
 
         使用流式响应避免长推理超时：Ollama 会逐 token 返回，
         只要 token 生成间隔 < read_timeout，连接就不会断开。
@@ -130,7 +130,7 @@ class OllamaClient:
         num_predict: int | None = None,
         timeout: float | None = None,
     ) -> ChatResponse:
-        """Execute a single streaming chat request (no retry logic)."""
+        """执行单次流式对话请求（不含重试逻辑）。"""
         options: dict = {
             "num_ctx": num_ctx if num_ctx is not None else self._num_ctx,
             "temperature": temperature if temperature is not None else self._temperature,
@@ -196,7 +196,7 @@ class OllamaClient:
         )
 
     async def is_reachable(self) -> bool:
-        """Check if the Ollama server is reachable."""
+        """检查 Ollama 服务端是否可达。"""
         try:
             response = await self._client.get(
                 f"{self._base_url}/api/tags",

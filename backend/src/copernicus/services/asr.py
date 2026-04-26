@@ -38,7 +38,7 @@ _MAX_AUDIO_DURATION_MS = 36_000_000     # 合理性上限：10 小时
 
 @dataclass
 class SubSentence:
-    """Original ASR sentence boundary preserved through pre-merge."""
+    """预合并时保留的原始 ASR 句子边界。"""
 
     text: str
     start_ms: int = 0
@@ -924,7 +924,7 @@ class ASRService:
     def _build_segments_from_sentences(
         sentences: list[str], token_conf: list[float]
     ) -> list[Segment]:
-        """Build Segment objects from plain sentences (fallback path)."""
+        """从纯句子列表构建 Segment 对象（降级路径）。"""
         if not token_conf:
             return [Segment(text=s) for s in sentences]
 
@@ -950,7 +950,7 @@ class ASRService:
         sentence_info: list[dict],
         token_conf: list[float],
     ) -> list[Segment]:
-        """Build Segment objects from FunASR sentence_info with timestamps and speaker."""
+        """从带时间戳和说话人信息的 FunASR sentence_info 构建 Segment 对象。"""
         segments: list[Segment] = []
         conf_offset = 0
 
@@ -983,7 +983,7 @@ class ASRService:
 
     @staticmethod
     def _log_confidence_stats(segments: list[Segment]) -> None:
-        """Log confidence statistics for segments."""
+        """记录分段的置信度统计信息。"""
         if not segments or segments[0].confidence == 0.0:
             return
 

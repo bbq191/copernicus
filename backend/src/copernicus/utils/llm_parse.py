@@ -1,6 +1,6 @@
-"""LLM output parsing utilities.
+"""LLM 输出解析工具函数。
 
-Shared helpers for stripping think tags and extracting JSON from LLM responses.
+用于剥离 think 标签和从 LLM 响应中提取 JSON 的公共函数。
 """
 
 import re
@@ -11,7 +11,7 @@ _THINK_CLOSE_RE = re.compile(r"^.*?</think>", re.DOTALL)
 
 
 def strip_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags from LLM output."""
+    """移除 LLM 输出中的 <think>...</think> 标签。"""
     text = _THINK_PAIR_RE.sub("", text)
     text = _THINK_OPEN_RE.sub("", text)
     text = _THINK_CLOSE_RE.sub("", text)
@@ -19,7 +19,7 @@ def strip_think_tags(text: str) -> str:
 
 
 def extract_json_object(text: str) -> str:
-    """Extract a JSON object from LLM output, stripping think tags and markdown fences."""
+    """从 LLM 输出中提取 JSON 对象，自动剥离 think 标签和 Markdown 代码块。"""
     text = strip_think_tags(text)
     text = text.replace("```json", "").replace("```", "").strip()
     idx = text.find("{")
@@ -32,7 +32,7 @@ def extract_json_object(text: str) -> str:
 
 
 def extract_json_array(text: str) -> str:
-    """Extract a JSON array from LLM output, stripping think tags and markdown fences."""
+    """从 LLM 输出中提取 JSON 数组，自动剥离 think 标签和 Markdown 代码块。"""
     text = strip_think_tags(text)
     text = text.replace("```json", "").replace("```", "").strip()
     start = text.find("[")

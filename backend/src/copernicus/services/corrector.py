@@ -173,6 +173,9 @@ class CorrectorService:
         self._text_corrector = text_corrector
         self._hotword_replacer = hotword_replacer
 
+    async def is_reachable(self) -> bool:
+        return await self._client.is_reachable()
+
     async def correct(
         self, raw_text: str, on_progress: ProgressCallback | None = None
     ) -> str:

@@ -14,10 +14,21 @@ from copernicus.schemas.transcription import (
 from copernicus.config import Settings
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
+from copernicus.services.model_manager import ModelManager
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
 
 logger = logging.getLogger(__name__)
+
+_PIPELINE_STAGE_STATUS: dict[str, "TaskStatus"] = {
+    "video_preprocess": "extracting_frames",
+    "keyframe_extract": "extracting_frames",
+    "ocr_scan": "scanning_visual",
+    "face_detect": "scanning_visual",
+    "audio_preprocess": "processing_asr",
+    "asr_transcribe": "processing_asr",
+    "text_correction": "correcting",
+}
 
 
 class TaskInfo:
@@ -105,11 +116,13 @@ class TaskStore:
         settings: Settings,
         evaluator: EvaluatorService | None = None,
         compliance: ComplianceService | None = None,
+        model_manager: ModelManager | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._evaluator = evaluator
         self._compliance = compliance
         self._persistence = persistence
+        self._model_manager = model_manager
         self._task_timeout = settings.task_timeout_seconds
         self._max_tasks = settings.task_max_in_memory
         self._tasks: dict[str, TaskInfo] = {}
@@ -212,6 +225,37 @@ class TaskStore:
         if file_hash:
             self._register_hash(file_hash, task_id)
         logger.info("Task %s submitted (transcript, visual_scan=%s)", task_id, visual_scan)
+        return task_id
+
+    def submit_standard_minutes(
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None = None,
+        *,
+        file_hash: str = "",
+        visual_scan: bool = False,
+        generate_summary: bool = True,
+    ) -> str:
+        """提交标准纪要任务：Pipeline 完成后自动生成摘要。"""
+        task_id = uuid.uuid4().hex
+        self._register_task(task_id)
+        asyncio.create_task(
+            self._run_with_timeout(
+                task_id,
+                self._run_standard_minutes(
+                    task_id, audio_bytes, filename, hotwords,
+                    visual_scan=visual_scan,
+                    generate_summary=generate_summary,
+                ),
+            )
+        )
+        if file_hash:
+            self._register_hash(file_hash, task_id)
+        logger.info(
+            "Task %s submitted (standard_minutes, visual_scan=%s, summary=%s)",
+            task_id, visual_scan, generate_summary,
+        )
         return task_id
 
     def submit_text_evaluation(
@@ -390,6 +434,58 @@ class TaskStore:
                     task.parent_task_id, "evaluation.json", evaluation
                 )
 
+    async def _execute_pipeline(
+        self,
+        task: TaskInfo,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None,
+        visual_scan: bool,
+        task_id: str,
+    ) -> TranscriptResponse:
+        """执行 Pipeline 并返回 TranscriptResponse，同时保存 transcript.json。"""
+        task.status = TaskStatus.PROCESSING_ASR
+
+        def on_stage_change(stage_name: str) -> None:
+            new_status = _PIPELINE_STAGE_STATUS.get(stage_name)
+            if new_status:
+                task.status = TaskStatus(new_status)
+                task.current_chunk = 0
+                task.total_chunks = 0
+
+        def on_progress(current: int, total: int) -> None:
+            task.current_chunk = current
+            task.total_chunks = total
+
+        if self._model_manager:
+            await self._model_manager.ensure("asr")
+
+        result = await self._pipeline.process_transcript(
+            audio_bytes, filename, hotwords,
+            on_progress=on_progress,
+            on_stage_change=on_stage_change,
+            task_id=task_id,
+            visual_scan=visual_scan,
+        )
+
+        transcript_response = TranscriptResponse(
+            transcript=[
+                TranscriptEntrySchema(
+                    timestamp=entry.timestamp,
+                    timestamp_ms=entry.timestamp_ms,
+                    end_ms=entry.end_ms,
+                    speaker=entry.speaker,
+                    text=entry.text,
+                    text_corrected=entry.text_corrected,
+                )
+                for entry in result.transcript
+            ],
+            processing_time_ms=result.processing_time_ms,
+        )
+        task.result = transcript_response
+        self._persistence.save_json(task_id, "transcript.json", transcript_response)
+        return transcript_response
+
     async def _run_transcript(
         self,
         task_id: str,
@@ -399,54 +495,40 @@ class TaskStore:
         *,
         visual_scan: bool = False,
     ) -> None:
-        _STAGE_STATUS = {
-            "video_preprocess": TaskStatus.EXTRACTING_FRAMES,
-            "keyframe_extract": TaskStatus.EXTRACTING_FRAMES,
-            "ocr_scan": TaskStatus.SCANNING_VISUAL,
-            "face_detect": TaskStatus.SCANNING_VISUAL,
-            "audio_preprocess": TaskStatus.PROCESSING_ASR,
-            "asr_transcribe": TaskStatus.PROCESSING_ASR,
-            "text_correction": TaskStatus.CORRECTING,
-        }
-
         async with self._task_lifecycle(task_id, "transcript") as task:
-            task.status = TaskStatus.PROCESSING_ASR
+            await self._execute_pipeline(task, audio_bytes, filename, hotwords, visual_scan, task_id)
 
-            def on_stage_change(stage_name: str) -> None:
-                status = _STAGE_STATUS.get(stage_name)
-                if status:
-                    task.status = status
-                    task.current_chunk = 0
-                    task.total_chunks = 0
-
-            def on_progress(current: int, total: int) -> None:
-                task.current_chunk = current
-                task.total_chunks = total
-
-            result = await self._pipeline.process_transcript(
-                audio_bytes, filename, hotwords,
-                on_progress=on_progress,
-                on_stage_change=on_stage_change,
-                task_id=task_id,
-                visual_scan=visual_scan,
+    async def _run_standard_minutes(
+        self,
+        task_id: str,
+        audio_bytes: bytes,
+        filename: str,
+        hotwords: list[str] | None,
+        *,
+        visual_scan: bool = False,
+        generate_summary: bool = True,
+    ) -> None:
+        async with self._task_lifecycle(task_id, "standard_minutes") as task:
+            transcript_response = await self._execute_pipeline(
+                task, audio_bytes, filename, hotwords, visual_scan, task_id
             )
 
-            transcript_response = TranscriptResponse(
-                transcript=[
-                    TranscriptEntrySchema(
-                        timestamp=entry.timestamp,
-                        timestamp_ms=entry.timestamp_ms,
-                        end_ms=entry.end_ms,
-                        speaker=entry.speaker,
-                        text=entry.text,
-                        text_corrected=entry.text_corrected,
+            if generate_summary and self._evaluator:
+                task.status = TaskStatus.EVALUATING
+                task.current_chunk = 0
+                task.total_chunks = 0
+
+                full_text = "\n".join(e.text_corrected for e in transcript_response.transcript)
+                if full_text.strip():
+                    def on_eval_progress(current: int, total: int) -> None:
+                        task.current_chunk = current
+                        task.total_chunks = total
+
+                    evaluation = await self._evaluator.evaluate(
+                        full_text, on_progress=on_eval_progress
                     )
-                    for entry in result.transcript
-                ],
-                processing_time_ms=result.processing_time_ms,
-            )
-            task.result = transcript_response
-            self._persistence.save_json(task_id, "transcript.json", transcript_response)
+                    self._persistence.save_json(task_id, "evaluation.json", evaluation)
+                    logger.info("Task %s: summary generated (standard_minutes)", task_id)
 
     async def _run_compliance_audit(
         self,
@@ -466,6 +548,10 @@ class TaskStore:
             rules, few_shot_examples = self._compliance.parse_rules(
                 rules_bytes, rules_filename
             )
+
+            # 卸载 ASR 以释放 VRAM 供 14B LLM 推理使用
+            if self._model_manager:
+                await self._model_manager.unload("asr")
 
             # 从持久化层加载 OCR 数据（如果存在）
             ocr_results: list[dict] | None = None

@@ -25,133 +25,264 @@ _VIDEO_EXTENSIONS = {
     if e.strip()
 }
 
-router = APIRouter(prefix="/api/v1", tags=["tasks"])
+# 不设置 router 级 tags，各路由按逻辑层单独标注
+router = APIRouter(prefix="/api/v1")
 
 
-@router.post("/tasks/transcript", response_model=TaskSubmitResponse, status_code=202)
-async def submit_transcript_task(
-    file: UploadFile = File(...),
-    hotwords: str | None = Form(default=None),
-    visual_scan: bool = Form(default=False),
-    store: TaskStore = Depends(get_task_store),
-) -> TaskSubmitResponse:
-    """提交异步转写任务，包含时间戳和说话人标注。"""
-    audio_bytes = await file.read()
-
-    if len(audio_bytes) > settings.max_upload_size_bytes:
-        raise HTTPException(status_code=413, detail="File too large")
-
-    # file dedup via SHA-256
-    file_hash = hashlib.sha256(audio_bytes).hexdigest()
-    existing_id = store.lookup_by_hash(file_hash)
-    if existing_id:
-        existing_task = store.get(existing_id)
-        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
-        return TaskSubmitResponse(
-            task_id=existing_id, status=existing_status, existing=True
-        )
-
-    try:
-        hw = parse_hotwords(hotwords)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    task_id = store.submit_transcript(
-        audio_bytes, file.filename or "upload.bin", hw,
-        file_hash=file_hash,
-        visual_scan=visual_scan,
-    )
-
-    # persist media and meta to task directory
+def _persist_task_media(
+    store: TaskStore,
+    task_id: str,
+    audio_bytes: bytes,
+    filename: str,
+    file_hash: str,
+) -> None:
+    """保存上传媒体文件和 meta.json，并更新任务的 audio_path。"""
     persistence = store.persistence
-    filename = file.filename or "upload.bin"
     suffix = Path(filename).suffix or ".bin"
     is_video = suffix.lower() in _VIDEO_EXTENSIONS
 
     if is_video:
         video_path = persistence.save_video(task_id, audio_bytes, suffix)
         persistence.save_meta(
-            task_id,
-            filename=filename,
-            file_hash=file_hash,
-            audio_suffix=suffix,
-            media_type="video",
-            video_suffix=suffix,
+            task_id, filename=filename, file_hash=file_hash,
+            audio_suffix=suffix, media_type="video", video_suffix=suffix,
         )
         task = store.get(task_id)
         if task:
             task.audio_path = str(video_path)
     else:
         audio_path = persistence.save_audio(task_id, audio_bytes, suffix)
-        persistence.save_meta(
-            task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix
-        )
+        persistence.save_meta(task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix)
         task = store.get(task_id)
         if task:
             task.audio_path = str(audio_path)
 
+
+# ---------------------------------------------------------------------------
+# 基础 AI — 任务提交
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/tasks/standard_minutes",
+    response_model=TaskSubmitResponse,
+    status_code=202,
+    tags=["基础 AI"],
+    summary="提交标准纪要任务（主入口）",
+)
+async def submit_standard_minutes_task(
+    file: UploadFile = File(..., description="音频或视频文件，最大 500 MB"),
+    hotwords: str | None = Form(default=None, description="热词列表，JSON 字符串数组，如 [\"公司名\"]"),
+    visual_scan: bool = Form(default=False, description="是否提取关键帧并执行 OCR/人脸检测"),
+    generate_summary: bool = Form(default=True, description="是否在转写完成后自动生成摘要"),
+    store: TaskStore = Depends(get_task_store),
+) -> TaskSubmitResponse:
+    """上传音视频文件，执行完整的 Base AI 流水线。
+
+    **流程**：ASR 转写（SenseVoice）→ 物理清洗 → LLM 文字纠错 → 智能摘要（Map-Reduce）
+
+    重复上传同一文件（SHA-256 相同）时直接返回已有任务，`existing=true`。
+
+    `visual_scan=true` 时额外执行关键帧提取、OCR 和人脸检测，结果存入
+    `ocr_results.json` 与 `visual_events.json`，可供后续合规审核使用。
+    """
+    audio_bytes = await file.read()
+
+    if len(audio_bytes) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    file_hash = hashlib.sha256(audio_bytes).hexdigest()
+    existing_id = store.lookup_by_hash(file_hash)
+    if existing_id:
+        existing_task = store.get(existing_id)
+        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
+        return TaskSubmitResponse(task_id=existing_id, status=existing_status, existing=True)
+
+    try:
+        hw = parse_hotwords(hotwords)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    filename = file.filename or "upload.bin"
+    task_id = store.submit_standard_minutes(
+        audio_bytes, filename, hw,
+        file_hash=file_hash,
+        visual_scan=visual_scan,
+        generate_summary=generate_summary,
+    )
+    _persist_task_media(store, task_id, audio_bytes, filename, file_hash)
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 
-@router.get("/tasks/{task_id}/media")
-async def get_task_media(
+@router.post(
+    "/tasks/transcript",
+    response_model=TaskSubmitResponse,
+    status_code=202,
+    tags=["基础 AI"],
+    summary="提交转写任务（轻量，不含摘要）",
+)
+async def submit_transcript_task(
+    file: UploadFile = File(..., description="音频或视频文件，最大 500 MB"),
+    hotwords: str | None = Form(default=None, description="热词列表，JSON 字符串数组"),
+    visual_scan: bool = Form(default=False, description="是否执行视觉扫描"),
+    store: TaskStore = Depends(get_task_store),
+) -> TaskSubmitResponse:
+    """上传音视频文件，执行 ASR 转写 + 文字纠错，不生成摘要。
+
+    比 `standard_minutes` 快约 30%（省去评估阶段的 LLM 调用）。
+    适用于只需要转写文本、后续自行处理摘要的场景。
+    """
+    audio_bytes = await file.read()
+
+    if len(audio_bytes) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    file_hash = hashlib.sha256(audio_bytes).hexdigest()
+    existing_id = store.lookup_by_hash(file_hash)
+    if existing_id:
+        existing_task = store.get(existing_id)
+        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
+        return TaskSubmitResponse(task_id=existing_id, status=existing_status, existing=True)
+
+    try:
+        hw = parse_hotwords(hotwords)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    filename = file.filename or "upload.bin"
+    task_id = store.submit_transcript(
+        audio_bytes, filename, hw,
+        file_hash=file_hash,
+        visual_scan=visual_scan,
+    )
+    _persist_task_media(store, task_id, audio_bytes, filename, file_hash)
+    return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
+
+
+@router.post(
+    "/tasks/{task_id}/rerun-transcript",
+    response_model=TaskSubmitResponse,
+    tags=["基础 AI"],
+    summary="重新执行转写",
+)
+async def rerun_transcript(
+    task_id: str,
+    hotwords: str | None = Form(default=None),
+    store: TaskStore = Depends(get_task_store),
+) -> TaskSubmitResponse:
+    """对已保存的音频重新运行 ASR + 纠错流水线。
+
+    原始媒体文件必须仍存在（未被生命周期清理）。
+    执行后会清除旧的 `evaluation.json` 和 `compliance.json`，
+    需重新提交评估或合规审核。
+    """
+    try:
+        hw = parse_hotwords(hotwords)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    try:
+        store.rerun_transcript(task_id, hw)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
+
+
+@router.post(
+    "/tasks/{task_id}/rerun-evaluation",
+    response_model=TaskSubmitResponse,
+    tags=["基础 AI"],
+    summary="重新执行摘要评估",
+)
+async def rerun_evaluation(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
-) -> FileResponse:
-    """返回原始上传的媒体文件（音频或视频）。"""
-    persistence = store.persistence
+) -> TaskSubmitResponse:
+    """基于已有转写结果重新生成评分与摘要。
 
-    # Try video first
-    video_path = persistence.find_video(task_id)
-    if video_path and video_path.exists():
-        mime = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
-        return FileResponse(video_path, media_type=mime)
+    不重新执行 ASR，直接读取 `transcript.json` 的纠正文本送入评估模型。
+    适用于更换 LLM 模型后刷新摘要质量。
+    """
+    try:
+        child_task_id = store.rerun_evaluation(task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return TaskSubmitResponse(task_id=child_task_id, status=TaskStatus.PENDING)
 
-    # Fall back to audio
-    audio_path = persistence.find_audio(task_id)
-    if audio_path and audio_path.exists():
-        mime = mimetypes.guess_type(str(audio_path))[0] or "audio/mpeg"
-        return FileResponse(audio_path, media_type=mime)
 
-    # Legacy fallback
+# ---------------------------------------------------------------------------
+# 任务管理 — 查询与媒体
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/tasks/lookup",
+    response_model=TaskSubmitResponse,
+    tags=["任务管理"],
+    summary="按文件哈希查询任务",
+)
+async def lookup_task_by_hash(
+    hash: str,
+    store: TaskStore = Depends(get_task_store),
+) -> TaskSubmitResponse:
+    """根据文件 SHA-256 查询是否已有对应任务。
+
+    用于上传前预检：若返回 200，说明文件已处理过，直接使用 `task_id` 获取结果，
+    无需重新上传。返回 404 时再发起上传流程。
+    """
+    existing_id = store.lookup_by_hash(hash)
+    if not existing_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    existing_task = store.get(existing_id)
+    status = existing_task.status if existing_task else TaskStatus.COMPLETED
+    return TaskSubmitResponse(task_id=existing_id, status=status, existing=True)
+
+
+@router.get(
+    "/tasks/{task_id}",
+    response_model=TaskStatusResponse,
+    tags=["任务管理"],
+    summary="查询任务状态与进度",
+)
+async def get_task_status(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> TaskStatusResponse:
+    """轮询任务的实时状态与进度百分比。
+
+    `status` 状态机：`pending` → `processing_asr` / `extracting_frames` /
+    `scanning_visual` → `correcting` → `evaluating` / `auditing` →
+    `completed` / `failed`。
+
+    `progress.percent` 为 0–100 的浮点数。任务完成后 `result` 字段包含
+    最终结果（转写、评估或合规报告）。
+    """
     task = store.get(task_id)
-    if task and task.audio_path:
-        legacy = Path(task.audio_path)
-        if legacy.exists():
-            mime = mimetypes.guess_type(str(legacy))[0] or "audio/mpeg"
-            return FileResponse(legacy, media_type=mime)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-    raise HTTPException(status_code=404, detail="Media file not found")
-
-
-@router.get("/tasks/{task_id}/audio")
-async def get_task_audio(
-    task_id: str,
-    store: TaskStore = Depends(get_task_store),
-) -> FileResponse:
-    """向后兼容的音频端点，委托给媒体逻辑处理。"""
-    return await get_task_media(task_id, store)
+    return TaskStatusResponse(
+        task_id=task.task_id,
+        status=task.status,
+        progress=task.progress,
+        result=task.result,
+        error=task.error,
+    )
 
 
-@router.get("/tasks/{task_id}/frames/{filename}")
-async def get_task_frame(
-    task_id: str,
-    filename: str,
-    store: TaskStore = Depends(get_task_store),
-) -> FileResponse:
-    """返回指定关键帧图像。"""
-    frames_path = store.persistence.task_dir(task_id) / "frames" / filename
-    if not frames_path.exists():
-        raise HTTPException(status_code=404, detail="Frame not found")
-    mime = mimetypes.guess_type(str(frames_path))[0] or "image/jpeg"
-    return FileResponse(frames_path, media_type=mime)
-
-
-@router.get("/tasks/{task_id}/results", response_model=TaskResultsResponse)
+@router.get(
+    "/tasks/{task_id}/results",
+    response_model=TaskResultsResponse,
+    tags=["任务管理"],
+    summary="获取任务全部持久化结果",
+)
 async def get_task_results(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
 ) -> TaskResultsResponse:
-    """返回任务的所有持久化结果。"""
+    """一次性返回任务的所有已持久化数据。
+
+    包含：`transcript`（转写）、`evaluation`（评分摘要）、`compliance`（合规报告）。
+    各字段在对应任务完成前为 `null`。
+    `has_video`、`keyframe_count`、`ocr_text_count`、`visual_event_count`
+    反映视觉扫描的完成情况，可用于判断是否需要提交合规审核。
+    """
     persistence = store.persistence
 
     if not persistence.has_file(task_id, "meta.json"):
@@ -198,65 +329,59 @@ async def get_task_results(
     )
 
 
-@router.post("/tasks/{task_id}/rerun-transcript", response_model=TaskSubmitResponse)
-async def rerun_transcript(
-    task_id: str,
-    hotwords: str | None = Form(default=None),
-    store: TaskStore = Depends(get_task_store),
-) -> TaskSubmitResponse:
-    """对已有音频重新执行 ASR 和纠正。"""
-    try:
-        hw = parse_hotwords(hotwords)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    try:
-        store.rerun_transcript(task_id, hw)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
-
-
-@router.post("/tasks/{task_id}/rerun-evaluation", response_model=TaskSubmitResponse)
-async def rerun_evaluation(
+@router.get(
+    "/tasks/{task_id}/media",
+    tags=["任务管理"],
+    summary="下载原始媒体文件",
+)
+async def get_task_media(
     task_id: str,
     store: TaskStore = Depends(get_task_store),
-) -> TaskSubmitResponse:
-    """基于已有转写结果重新执行评估。"""
-    try:
-        child_task_id = store.rerun_evaluation(task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return TaskSubmitResponse(task_id=child_task_id, status=TaskStatus.PENDING)
+) -> FileResponse:
+    """返回任务对应的原始上传文件（音频或视频）。
 
+    优先返回视频；无视频则返回音频。生命周期清理（24 小时）后文件将不再存在，
+    此时返回 404。
+    """
+    persistence = store.persistence
 
-@router.get("/tasks/lookup", response_model=TaskSubmitResponse)
-async def lookup_task_by_hash(
-    hash: str,
-    store: TaskStore = Depends(get_task_store),
-) -> TaskSubmitResponse:
-    """根据文件 SHA-256 查询是否已有对应任务，用于上传前预检。"""
-    existing_id = store.lookup_by_hash(hash)
-    if not existing_id:
-        raise HTTPException(status_code=404, detail="Task not found")
-    existing_task = store.get(existing_id)
-    status = existing_task.status if existing_task else TaskStatus.COMPLETED
-    return TaskSubmitResponse(task_id=existing_id, status=status, existing=True)
+    video_path = persistence.find_video(task_id)
+    if video_path and video_path.exists():
+        mime = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
+        return FileResponse(video_path, media_type=mime)
 
+    audio_path = persistence.find_audio(task_id)
+    if audio_path and audio_path.exists():
+        mime = mimetypes.guess_type(str(audio_path))[0] or "audio/mpeg"
+        return FileResponse(audio_path, media_type=mime)
 
-@router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(
-    task_id: str,
-    store: TaskStore = Depends(get_task_store),
-) -> TaskStatusResponse:
-    """查询任务进度与结果。"""
     task = store.get(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    if task and task.audio_path:
+        legacy = Path(task.audio_path)
+        if legacy.exists():
+            mime = mimetypes.guess_type(str(legacy))[0] or "audio/mpeg"
+            return FileResponse(legacy, media_type=mime)
 
-    return TaskStatusResponse(
-        task_id=task.task_id,
-        status=task.status,
-        progress=task.progress,
-        result=task.result,
-        error=task.error,
-    )
+    raise HTTPException(status_code=404, detail="Media file not found")
+
+
+@router.get(
+    "/tasks/{task_id}/frames/{filename}",
+    tags=["任务管理"],
+    summary="下载指定关键帧图像",
+)
+async def get_task_frame(
+    task_id: str,
+    filename: str,
+    store: TaskStore = Depends(get_task_store),
+) -> FileResponse:
+    """返回视觉扫描提取的单张关键帧（JPEG）。
+
+    `filename` 格式通常为 `frame_0001.jpg`，可从 `keyframe_count` 推算范围，
+    或通过合规报告中的 `evidence_url` 字段直接获取完整路径。
+    """
+    frames_path = store.persistence.task_dir(task_id) / "frames" / filename
+    if not frames_path.exists():
+        raise HTTPException(status_code=404, detail="Frame not found")
+    mime = mimetypes.guess_type(str(frames_path))[0] or "image/jpeg"
+    return FileResponse(frames_path, media_type=mime)

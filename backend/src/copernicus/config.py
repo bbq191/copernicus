@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     task_timeout_seconds: int = 3600  # 单任务超时（秒），防止 ASR/LLM 卡住
     task_max_in_memory: int = 500  # 内存中最大任务数，超出时淘汰最早的已完成任务
 
+    # VRAM budget (ModelManager 热插拔阈值)
+    vram_budget_gb: float = 12.0
+
+    # Lifecycle (原始媒体文件生命周期)
+    media_retention_hours: int = 24
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 

@@ -27,17 +27,38 @@ class ModelManager:
         self._loaded: dict[str, Any] = {}
         self._loaders: dict[str, Callable[[], Any]] = {}
         self._unloaders: dict[str, Callable[[Any], None]] = {}
+        self._vram_estimates: dict[str, float] = {}
 
     def register_loader(
         self,
         model_type: str,
         loader: Callable[[], Any],
         unloader: Callable[[Any], None] | None = None,
+        vram_estimate_gb: float = 0.0,
     ) -> None:
         """注册模型的加载/卸载函数（插件式）。"""
         self._loaders[model_type] = loader
         if unloader:
             self._unloaders[model_type] = unloader
+        self._vram_estimates[model_type] = vram_estimate_gb
+
+    def mark_loaded(self, model_type: str, model: Any) -> None:
+        """标记某模型为已加载状态（用于外部初始化的模型，无需通过 loader）。"""
+        self._loaded[model_type] = model
+
+    @property
+    def loaded_models(self) -> list[str]:
+        return list(self._loaded)
+
+    @property
+    def estimated_vram_gb(self) -> float:
+        return sum(self._vram_estimates.get(m, 0.0) for m in self._loaded)
+
+    async def ensure(self, model_type: str) -> None:
+        """确保指定模型已加载，不影响其他已加载模型（与 acquire() 不同）。"""
+        async with self._lock:
+            if model_type not in self._loaded:
+                await self._do_load(model_type)
 
     @asynccontextmanager
     async def acquire(self, model_type: str):

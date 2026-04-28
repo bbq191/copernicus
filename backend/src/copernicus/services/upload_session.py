@@ -33,6 +33,7 @@ class UploadSessionService:
         total_size: int,
         hotwords: list[str] | None = None,
         visual_scan: bool = False,
+        generate_summary: bool = True,
     ) -> int:
         """查找或创建会话，返回当前已接收字节数（0 = 新会话）。"""
         meta_path = self._meta_path(file_hash)
@@ -51,6 +52,7 @@ class UploadSessionService:
             "total_size": total_size,
             "hotwords": hotwords or [],
             "visual_scan": visual_scan,
+            "generate_summary": generate_summary,
         }
         meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         logger.info("New session %.8s total=%d bytes", file_hash, total_size)

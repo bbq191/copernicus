@@ -1,6 +1,7 @@
 from fastapi import Request
 
 from copernicus.services.compliance import ComplianceService
+from copernicus.services.model_manager import ModelManager
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
 from copernicus.services.upload_session import UploadSessionService
@@ -20,3 +21,7 @@ def get_compliance_service(request: Request) -> ComplianceService:
 
 def get_upload_session_service(request: Request) -> UploadSessionService:
     return request.app.state.upload_session
+
+
+def get_model_manager(request: Request) -> ModelManager | None:
+    return getattr(request.app.state, "model_manager", None)

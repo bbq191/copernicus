@@ -65,6 +65,7 @@ class ASRService:
     """双模式 ASR 服务：Paraformer (说话人分离) 或 SenseVoice (抗噪增强)"""
 
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings  # 保存配置用于热重载
         self._mode = settings.asr_mode
         self._batch_size = settings.asr_batch_size
         device = settings.resolve_asr_device()
@@ -980,6 +981,35 @@ class ASRService:
                 )
             )
         return segments
+
+    def is_loaded(self) -> bool:
+        """ASR 模型权重是否在 VRAM 中。"""
+        return self._model is not None
+
+    def unload_weights(self) -> None:
+        """释放 GPU 显存中的 ASR 模型权重。调用 reload() 可恢复。"""
+        self._model = None
+        if getattr(self, "_spk_model", None) is not None:
+            self._spk_model = None
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        import gc
+        gc.collect()
+        logger.info("ASR model weights unloaded from VRAM")
+
+    def reload(self) -> None:
+        """重新加载 ASR 模型权重（unload_weights 后恢复）。"""
+        if self._model is not None:
+            return
+        device = self._settings.resolve_asr_device()
+        if self._mode == "sensevoice":
+            self._init_sensevoice_mode(self._settings, device)
+        else:
+            self._init_paraformer_mode(self._settings, device)
+        logger.info("ASR model weights reloaded into VRAM")
 
     @staticmethod
     def _log_confidence_stats(segments: list[Segment]) -> None:

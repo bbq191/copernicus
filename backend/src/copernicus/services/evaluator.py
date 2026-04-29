@@ -23,55 +23,38 @@ from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
-# 单次直接评估 & Reduce 阶段共用的 JSON 输出 prompt
-_EVALUATION_SYSTEM_PROMPT = """\
-你是一个严格的数据提取引擎，不是聊天助手。
-任务：根据用户输入的转写文本，提取关键评估指标。
 
-### 评分维度 (满分 100 分)
-请基于以下 3 个维度进行打分：
-1. 逻辑连贯性 (35分)：开场、正文、结尾是否清晰，观点是否连贯。
-2. 信息密度 (35分)：是否输出了有价值的干货（如数据、案例、论据），内容是否充实。
-3. 表达清晰度 (30分)：语言是否清晰易懂，是否有歧义或冗余。
+def build_map_prompt(template_prompt: str) -> str:
+    return f"""你是一个专业的内容分析助手。
+任务：阅读给定的文本片段，为最终的【目标模版】提取所有相关的核心素材。
+
+【最终要生成的模版参考】
+{template_prompt}
+
+要求：
+1. 仔细阅读模版要求，宁可多提取素材，绝不遗漏模版中可能需要的任何数据、观点或计划。
+2. 忽略 ASR 转写的轻微同音字错误，关注语义。
+3. 不要写开场白或结束语，直接列出提取的要点。"""
+
+
+def build_reduce_prompt(template_prompt: str) -> str:
+    return f"""你是一个严格的数据提取与排版引擎。
+任务：根据用户输入的文本，严格按照以下【目标模版】生成会议纪要。
+
+【目标模版与输出要求】
+{template_prompt}
 
 ### 绝对格式约束
 1. 你必须且只能输出一段合法的 JSON 字符串。
-2. 严禁输出任何 Markdown 标记、开场白、结束语或解释文字。
-3. 忽略 ASR 转写产生的轻微同音字错误，关注语义本身。
-4. 如果无法提取某些字段，请填空字符串或 0。
+2. 将你按照模版排版好的完整 Markdown 文本全部放入 JSON 的 `formatted_content` 字段。
+3. 另外提炼一个简短的会议标题放入 `title` 字段（不超过 20 字）。
+4. 严禁输出任何开场白、结束语或多余的解释文字。
 
-### JSON 输出结构
-{
-    "meta": {
-        "title": "拟定一个精准的标题",
-        "category": "推测内容分类(如: 宏观经济/科技/企业培训/产品介绍)",
-        "keywords": ["关键词1", "关键词2", "关键词3"]
-    },
-    "scores": {
-        "logic": 0,
-        "info_density": 0,
-        "expression": 0,
-        "total": 0
-    },
-    "analysis": {
-        "main_points": ["核心观点1", "核心观点2", "核心观点3"],
-        "key_data": ["提及的关键数据1", "提及的关键数据2"],
-        "sentiment": "整体情感倾向(积极/中立/消极)"
-    },
-    "summary": "200字以内的精炼摘要"
-}"""
-
-# Map 阶段：每个分段提取要点（非 JSON，纯文本输出，速度快）
-_MAP_SYSTEM_PROMPT = """\
-你是一个专业的内容分析助手。
-任务：阅读给定的文本片段，提炼核心内容。
-
-要求：
-1. 提取该片段的核心观点（2-5 条）。
-2. 提取提到的关键数据或事实（如有）。
-3. 简要概括该片段的主题（1-2 句话）。
-4. 不要写开场白或结束语，直接输出要点。
-5. 忽略 ASR 转写的轻微同音字错误，关注语义。"""
+### 强制 JSON 输出结构
+{{
+    "formatted_content": "# 会议纪要\\n\\n## 今日总结\\n- 张三完成了前端开发...",
+    "title": "前端开发进度复盘夕会"
+}}"""
 
 
 class EvaluatorService:
@@ -84,6 +67,7 @@ class EvaluatorService:
     async def evaluate(
         self,
         text: str,
+        template_prompt: str,
         *,
         max_retries: int = 2,
         on_progress: ProgressCallback | None = None,
@@ -98,16 +82,15 @@ class EvaluatorService:
             text = text[: self._max_text_chars]
 
         if len(text) <= self._chunk_size:
-            # 短文本：直接评估，总步骤 = 1
             if on_progress:
                 on_progress(0, 1)
-            result = await self._evaluate_direct(text, max_retries=max_retries)
+            result = await self._evaluate_direct(text, template_prompt, max_retries=max_retries)
             if on_progress:
                 on_progress(1, 1)
             return result
 
         return await self._evaluate_map_reduce(
-            text, max_retries=max_retries, on_progress=on_progress
+            text, template_prompt, max_retries=max_retries, on_progress=on_progress
         )
 
     # ------------------------------------------------------------------ #
@@ -115,10 +98,10 @@ class EvaluatorService:
     # ------------------------------------------------------------------ #
 
     async def _evaluate_direct(
-        self, text: str, *, max_retries: int = 2
+        self, text: str, template_prompt: str, *, max_retries: int = 2
     ) -> EvaluationResult:
         logger.info("Direct evaluation: %d chars", len(text))
-        return await self._call_evaluation_llm(text, max_retries=max_retries)
+        return await self._call_evaluation_llm(text, template_prompt, max_retries=max_retries)
 
     # ------------------------------------------------------------------ #
     #  长文本：Map-Reduce
@@ -127,12 +110,13 @@ class EvaluatorService:
     async def _evaluate_map_reduce(
         self,
         text: str,
+        template_prompt: str,
         *,
         max_retries: int = 2,
         on_progress: ProgressCallback | None = None,
     ) -> EvaluationResult:
         chunks = chunk_text(text, self._chunk_size, overlap=0)
-        total_steps = len(chunks) + 1  # map chunks + reduce
+        total_steps = len(chunks) + 1
         logger.info(
             "Map-Reduce evaluation: %d chars -> %d chunks (chunk_size=%d)",
             len(text),
@@ -142,13 +126,12 @@ class EvaluatorService:
         if on_progress:
             on_progress(0, total_steps)
 
-        # Map：并发提取每个分段的要点，每完成一个报告进度
         completed = 0
         lock = asyncio.Lock()
 
         async def _map_with_progress(i: int, chunk: str) -> str:
             nonlocal completed
-            result = await self._map_chunk(i, chunk, len(chunks))
+            result = await self._map_chunk(i, chunk, len(chunks), template_prompt)
             async with lock:
                 completed += 1
                 if on_progress:
@@ -160,7 +143,6 @@ class EvaluatorService:
         ]
         summaries = await asyncio.gather(*map_tasks)
 
-        # Reduce：合并所有分段要点，生成最终 JSON
         combined = "\n\n---\n\n".join(
             f"【片段 {i + 1}/{len(chunks)}】\n{s}" for i, s in enumerate(summaries)
         )
@@ -168,18 +150,19 @@ class EvaluatorService:
             "Map phase done, combined summary: %d chars. Starting reduce...",
             len(combined),
         )
-        result = await self._reduce(combined, max_retries=max_retries)
+        result = await self._reduce(combined, template_prompt, max_retries=max_retries)
         if on_progress:
             on_progress(total_steps, total_steps)
         return result
 
-    async def _map_chunk(self, index: int, chunk: str, total: int) -> str:
-        """Map 阶段：提取单个分段的要点。"""
+    async def _map_chunk(
+        self, index: int, chunk: str, total: int, template_prompt: str
+    ) -> str:
         logger.info("Map chunk %d/%d (%d chars)...", index + 1, total, len(chunk))
         try:
             response = await self._client.chat(
                 messages=[
-                    {"role": "system", "content": _MAP_SYSTEM_PROMPT},
+                    {"role": "system", "content": build_map_prompt(template_prompt)},
                     {
                         "role": "user",
                         "content": (
@@ -190,44 +173,41 @@ class EvaluatorService:
                 ],
                 num_ctx=self._num_ctx,
                 think=False,
-                num_predict=1024,
+                num_predict=2048,
             )
             content = strip_think_tags(response.content).strip()
             logger.info("Map chunk %d/%d done: %d chars", index + 1, total, len(content))
             return content or f"（片段 {index + 1} 无法提取要点）"
         except Exception as e:
             logger.warning("Map chunk %d/%d failed: %s", index + 1, total, e)
-            # fallback：截取原文前 500 字作为摘要
             return chunk[:500]
 
     async def _reduce(
-        self, combined_summary: str, *, max_retries: int = 2
+        self, combined_summary: str, template_prompt: str, *, max_retries: int = 2
     ) -> EvaluationResult:
-        """Reduce 阶段：基于所有分段要点生成最终评估 JSON。"""
         reduce_text = (
-            "以下是一篇长文的分段要点合集。"
-            "请综合这些要点，对原文整体进行评估并生成最终报告。\n\n"
+            "以下是一篇长文的分段要点合集。\n\n"
             f"{combined_summary}"
         )
-        return await self._call_evaluation_llm(reduce_text, max_retries=max_retries)
+        return await self._call_evaluation_llm(reduce_text, template_prompt, max_retries=max_retries)
 
     # ------------------------------------------------------------------ #
     #  共用：调用 LLM 生成评估 JSON
     # ------------------------------------------------------------------ #
 
     async def _call_evaluation_llm(
-        self, text: str, *, max_retries: int = 2
+        self, text: str, template_prompt: str, *, max_retries: int = 2
     ) -> EvaluationResult:
         last_error: Exception | None = None
 
         for attempt in range(1, max_retries + 1):
             messages: list[dict[str, str]] = [
-                {"role": "system", "content": _EVALUATION_SYSTEM_PROMPT},
+                {"role": "system", "content": build_reduce_prompt(template_prompt)},
                 {
                     "role": "user",
                     "content": (
-                        f"【待分析文本开始】\n{text}\n【待分析文本结束】\n\n"
-                        "再次提醒：请忽略文本中的口语化表达，仅输出 JSON 格式的评估报告。"
+                        f"【待整理文本开始】\n{text}\n【待整理文本结束】\n\n"
+                        "再次提醒：请严格按照模版排版，仅输出 JSON 格式结果。"
                     ),
                 },
             ]
@@ -255,11 +235,10 @@ class EvaluatorService:
                 data = json.loads(content)
                 result = EvaluationResult(**data)
                 logger.info(
-                    "Evaluation succeeded on attempt %d/%d: title=%s, total_score=%s",
+                    "Evaluation succeeded on attempt %d/%d: title=%s",
                     attempt,
                     max_retries,
-                    result.meta.title,
-                    result.scores.total,
+                    result.title,
                 )
                 return result
             except (json.JSONDecodeError, Exception) as e:
@@ -274,5 +253,3 @@ class EvaluatorService:
 
         logger.error("All %d evaluate attempts failed", max_retries)
         raise last_error  # type: ignore[misc]
-
-

@@ -17,6 +17,7 @@ from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.template_manager import TemplateManager
 
 logger = logging.getLogger(__name__)
 
@@ -117,12 +118,14 @@ class TaskStore:
         evaluator: EvaluatorService | None = None,
         compliance: ComplianceService | None = None,
         model_manager: ModelManager | None = None,
+        template_manager: TemplateManager | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._evaluator = evaluator
         self._compliance = compliance
         self._persistence = persistence
         self._model_manager = model_manager
+        self._template_manager = template_manager
         self._task_timeout = settings.task_timeout_seconds
         self._max_tasks = settings.task_max_in_memory
         self._tasks: dict[str, TaskInfo] = {}
@@ -236,6 +239,7 @@ class TaskStore:
         file_hash: str = "",
         visual_scan: bool = False,
         generate_summary: bool = True,
+        template_id: str = "universal",
     ) -> str:
         """提交标准纪要任务：Pipeline 完成后自动生成摘要。"""
         task_id = uuid.uuid4().hex
@@ -247,14 +251,15 @@ class TaskStore:
                     task_id, audio_bytes, filename, hotwords,
                     visual_scan=visual_scan,
                     generate_summary=generate_summary,
+                    template_id=template_id,
                 ),
             )
         )
         if file_hash:
             self._register_hash(file_hash, task_id)
         logger.info(
-            "Task %s submitted (standard_minutes, visual_scan=%s, summary=%s)",
-            task_id, visual_scan, generate_summary,
+            "Task %s submitted (standard_minutes, visual_scan=%s, summary=%s, template=%s)",
+            task_id, visual_scan, generate_summary, template_id,
         )
         return task_id
 
@@ -262,6 +267,7 @@ class TaskStore:
         self,
         text: str,
         *,
+        template_id: str = "universal",
         parent_task_id: str | None = None,
     ) -> str:
         """提交纯文本评估任务（不需要 ASR）。"""
@@ -270,9 +276,14 @@ class TaskStore:
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
         asyncio.create_task(
-            self._run_with_timeout(task_id, self._run_text_evaluation(task_id, text))
+            self._run_with_timeout(
+                task_id, self._run_text_evaluation(task_id, text, template_id)
+            )
         )
-        logger.info("Task %s submitted (text evaluation, parent=%s)", task_id, parent_task_id)
+        logger.info(
+            "Task %s submitted (text evaluation, template=%s, parent=%s)",
+            task_id, template_id, parent_task_id,
+        )
         return task_id
 
     def submit_compliance_audit(
@@ -338,7 +349,7 @@ class TaskStore:
         logger.info("Task %s rerun (transcript)", task_id)
         return task_id
 
-    def rerun_evaluation(self, parent_task_id: str) -> str:
+    def rerun_evaluation(self, parent_task_id: str, template_id: str = "universal") -> str:
         """基于已有转写结果重新执行评估，返回子任务 task_id。"""
         data = self._persistence.load_json(parent_task_id, "transcript.json")
         if data is None:
@@ -350,7 +361,9 @@ class TaskStore:
             raise ValueError("Transcript text is empty")
 
         self._persistence.delete_file(parent_task_id, "evaluation.json")
-        return self.submit_text_evaluation(full_text, parent_task_id=parent_task_id)
+        return self.submit_text_evaluation(
+            full_text, template_id=template_id, parent_task_id=parent_task_id
+        )
 
     # -- get -----------------------------------------------------------------
 
@@ -406,7 +419,9 @@ class TaskStore:
                 "Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True
             )
 
-    async def _run_text_evaluation(self, task_id: str, text: str) -> None:
+    async def _run_text_evaluation(
+        self, task_id: str, text: str, template_id: str
+    ) -> None:
         async with self._task_lifecycle(task_id, "text evaluation") as task:
             task.status = TaskStatus.EVALUATING
             task.current_chunk = 0
@@ -414,12 +429,18 @@ class TaskStore:
             if self._evaluator is None:
                 raise RuntimeError("EvaluatorService not configured")
 
+            template_prompt = (
+                self._template_manager.get_prompt(template_id)
+                if self._template_manager
+                else "你是一个会议助手，请根据以下转写文本生成会议纪要。"
+            )
+
             def on_eval_progress(current: int, total: int) -> None:
                 task.current_chunk = current
                 task.total_chunks = total
 
             evaluation = await self._evaluator.evaluate(
-                text, on_progress=on_eval_progress
+                text, template_prompt, on_progress=on_eval_progress
             )
 
             task.result = EvaluationResponse(
@@ -507,6 +528,7 @@ class TaskStore:
         *,
         visual_scan: bool = False,
         generate_summary: bool = True,
+        template_id: str = "universal",
     ) -> None:
         async with self._task_lifecycle(task_id, "standard_minutes") as task:
             transcript_response = await self._execute_pipeline(
@@ -520,15 +542,24 @@ class TaskStore:
 
                 full_text = "\n".join(e.text_corrected for e in transcript_response.transcript)
                 if full_text.strip():
+                    template_prompt = (
+                        self._template_manager.get_prompt(template_id)
+                        if self._template_manager
+                        else "你是一个会议助手，请根据以下转写文本生成会议纪要。"
+                    )
+
                     def on_eval_progress(current: int, total: int) -> None:
                         task.current_chunk = current
                         task.total_chunks = total
 
                     evaluation = await self._evaluator.evaluate(
-                        full_text, on_progress=on_eval_progress
+                        full_text, template_prompt, on_progress=on_eval_progress
                     )
                     self._persistence.save_json(task_id, "evaluation.json", evaluation)
-                    logger.info("Task %s: summary generated (standard_minutes)", task_id)
+                    logger.info(
+                        "Task %s: summary generated (standard_minutes, template=%s)",
+                        task_id, template_id,
+                    )
 
     async def _run_compliance_audit(
         self,

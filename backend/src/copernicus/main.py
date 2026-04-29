@@ -35,6 +35,7 @@ from copernicus.services.ocr import OCRService
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
+from copernicus.services.template_manager import TemplateManager
 from copernicus.services.upload_session import UploadSessionService
 from copernicus.routers import compliance, task, transcription, evaluation, upload
 
@@ -48,6 +49,8 @@ async def lifespan(app: FastAPI):
 
     llm_client = OllamaClient(settings)
     try:
+        app.state.template_manager = TemplateManager(settings.templates_dir)
+
         audio_service = AudioService(settings)
         asr_service = ASRService(settings)
         text_corrector = TextCorrectorService(settings)
@@ -95,6 +98,7 @@ async def lifespan(app: FastAPI):
             evaluator=app.state.evaluator,
             compliance=app.state.compliance,
             model_manager=model_manager,
+            template_manager=app.state.template_manager,
         )
         app.state.task_store.restore_from_disk()
 
@@ -140,7 +144,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "系统",
-        "description": "健康检查与 VRAM 水位监控。",
+        "description": "健康检查、VRAM 水位监控与纪要模板管理。",
     },
 ]
 

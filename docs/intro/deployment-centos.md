@@ -553,6 +553,16 @@ FACE_DETECT_MODEL=models/yolov8n-face.pt
 
 ```
 
+系统服务无法解析注释，需要做如下操作：
+
+```
+# 剥离行内注释（保留纯值行）
+sed -i 's/[[:blank:]]*#.*$//' /opt/copernicus/backend/.env
+
+# 清除处理后产生的空行（可选，不影响启动）
+sed -i '/^[[:blank:]]*$/d' /opt/copernicus/backend/.env
+```
+
 模型下载完成后，将以下变量写入 `~/.bashrc` 开启离线模式，避免每次启动时联网检查。**不要**写入 `.env`，该变量不是应用配置字段，写入会导致 Pydantic 校验报错。
 
 ```

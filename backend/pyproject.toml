@@ -25,6 +25,7 @@ dependencies = [
     "ultralytics>=8.3",
     "opencv-python-headless>=4.9",
     "pypinyin>=0.51",
+    "python-frontmatter>=1.0,<2.0",
 ]
 
 [project.optional-dependencies]

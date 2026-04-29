@@ -74,6 +74,7 @@ async def submit_standard_minutes_task(
     hotwords: str | None = Form(default=None, description="热词列表，JSON 字符串数组，如 [\"公司名\"]"),
     visual_scan: bool = Form(default=False, description="是否提取关键帧并执行 OCR/人脸检测"),
     generate_summary: bool = Form(default=True, description="是否在转写完成后自动生成摘要"),
+    template_id: str = Form(default="universal", description="纪要模板 ID，可通过 GET /api/v1/templates 查询可用列表"),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
     """上传音视频文件，执行完整的 Base AI 流水线。
@@ -108,6 +109,7 @@ async def submit_standard_minutes_task(
         file_hash=file_hash,
         visual_scan=visual_scan,
         generate_summary=generate_summary,
+        template_id=template_id,
     )
     _persist_task_media(store, task_id, audio_bytes, filename, file_hash)
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)

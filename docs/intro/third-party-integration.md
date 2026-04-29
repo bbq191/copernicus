@@ -2,7 +2,7 @@
 title: Copernicus 第三方系统接入指南
 author: afu
 version: V1.1
-date: 2026-04-28
+date: 2026-04-29
 ---
 
 # Copernicus 第三方系统接入指南
@@ -18,7 +18,7 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 | 层级 | 主入口 | 适用场景 |
 |---|---|---|
 | 存储层 | `PATCH /api/v1/uploads/{hash}` | 大文件分片上传（> 50 MB 推荐） |
-| 基础 AI | `POST /api/v1/tasks/standard_minutes` | 转写 + 纠错 + 摘要（90% 场景） |
+| 基础 AI | `POST /api/v1/tasks/standard_minutes` | 转写 + 纠错 + 纪要（90% 场景） |
 | 高阶 AI | `POST /api/v1/tasks/compliance_audit` | 多模态合规推理（10% 场景） |
 
 **调用模型**：全部接口采用异步任务模式——提交请求后立即返回 `task_id`，调用方通过轮询接口获取进度和结果。
@@ -26,10 +26,13 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 **服务地址**：默认运行在 `http://<host>:8000`。
 
 **V1.1 主要变化**：
-- `standard_minutes` 将转写与摘要合并为一次提交，无需再单独触发评估；
+- `standard_minutes` 将转写与纪要合并为一次提交，无需再单独触发评估；
 - 合规审核入口统一为 `POST /api/v1/tasks/compliance_audit`；
 - 新增分片上传流程，支持断点续传；
-- `/health` 新增 VRAM 水位字段。
+- `/health` 新增 VRAM 水位字段；
+- **新增纪要模板系统**：`standard_minutes` 支持 `template_id` 参数，可按夕会、周例会、公文等不同格式生成纪要；
+- **`evaluation` 结果结构变更**：废弃原有评分字段（`scores`、`analysis`、`meta`），改为 `formatted_content`（按模板排版的 Markdown 正文）和 `title`（会议标题）；
+- 新增 `GET /api/v1/templates`（查询可用模板）和 `POST /api/v1/templates/reload`（热重载模板）。
 
 ---
 
@@ -40,7 +43,7 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 ```
 1. POST /api/v1/tasks/standard_minutes
         上传音视频，返回 task_id
-        服务端自动执行：ASR 转写 → 文字纠错 → 智能摘要
+        服务端自动执行：ASR 转写 → 文字纠错 → 纪要生成（按指定模板）
         （相同文件自动去重，existing=true 时直接跳至步骤 4）
         |
         v
@@ -57,12 +60,12 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
         |
         v
 5. GET /api/v1/tasks/{task_id}/results
-        一次性获取转写、摘要、合规三项结果
+        一次性获取转写、纪要、合规三项结果
 ```
 
-与 V1.0 相比，评估（摘要）已内置于 `standard_minutes`，调用链路从 7 步缩短为 4 步。
+与 V1.0 相比，评估（纪要）已内置于 `standard_minutes`，调用链路从 7 步缩短为 4 步。
 
-### 2.2 仅获取标准纪要（转写 + 摘要）
+### 2.2 仅获取标准纪要（转写 + 纪要）
 
 ```
 1. POST /api/v1/tasks/standard_minutes → task_id
@@ -70,9 +73,9 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 3. GET /api/v1/tasks/{task_id}/results
 ```
 
-### 2.3 仅获取转写（不含摘要，更快）
+### 2.3 仅获取转写（不含纪要，更快）
 
-适用于只需要转写文本、不需要摘要评分的场景，省去评估阶段，处理速度提升约 30%。
+适用于只需要转写文本、不需要纪要的场景，省去纪要生成阶段，处理速度提升约 30%。
 
 ```
 1. POST /api/v1/tasks/transcript → task_id
@@ -104,14 +107,15 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 5. GET /api/v1/tasks/{task_id}/results
 ```
 
-### 2.5 仅评估（已有文本）
+### 2.5 纯文本评估（已有转写文本）
 
-适合第三方系统已有转写结果、只需要内容评估的场景：
+适合第三方系统已有转写结果、只需要生成纪要的场景。支持指定纪要模板（见 4.13）。
 
 ```
-1. POST /api/v1/evaluate/transcript/async → task_id（直接传入文本）
-2. 轮询 GET /api/v1/tasks/{task_id}，等待 completed
-   （result 字段中直接包含评估结果）
+1. （可选）GET /api/v1/templates  查询可用模板，获取合法的 template_id
+2. POST /api/v1/evaluate/text/async → task_id（传入文本和 template_id）
+3. 轮询 GET /api/v1/tasks/{task_id}，等待 completed
+   （result 字段中直接包含纪要结果）
 ```
 
 ---
@@ -154,18 +158,19 @@ Content-Type: multipart/form-data
 | file | 二进制 | 是 | 音频或视频文件，上限 500 MB，支持 mp3/wav/m4a/mp4/mov/mkv 等 |
 | hotwords | string | 否 | 热词列表，JSON 数组字符串，如 `["产说会","理财师"]` |
 | visual_scan | bool | 否 | 是否提取关键帧并执行 OCR + 人脸检测，仅视频有效，默认 false |
-| generate_summary | bool | 否 | 是否在转写完成后自动生成摘要评分，默认 true |
+| generate_summary | bool | 否 | 是否在转写完成后自动生成纪要，默认 true |
+| template_id | string | 否 | 纪要模板 ID，默认 `universal`（通用模版）。可通过 `GET /api/v1/templates` 查询可用列表 |
 
 响应字段：`task_id`、`status`（初始为 `pending`）、`existing`（`true` 表示去重命中）。
 
-### 4.2 提交转写任务（轻量，不含摘要）
+### 4.2 提交转写任务（轻量，不含纪要）
 
 ```
 POST /api/v1/tasks/transcript
 Content-Type: multipart/form-data
 ```
 
-参数与 `standard_minutes` 相同，但无 `generate_summary` 字段。
+参数与 `standard_minutes` 相同，但无 `generate_summary` 和 `template_id` 字段。
 完成后仅有 `transcript` 结果，无 `evaluation`。
 
 ### 4.3 分片上传——查询或创建会话
@@ -180,7 +185,8 @@ GET /api/v1/uploads/{sha256}?filename={filename}&total_size={bytes}
 | total_size | int | 是 | 文件总字节数 |
 | hotwords | string[] | 否 | 热词列表（Query 数组参数） |
 | visual_scan | bool | 否 | 是否执行视觉扫描，默认 false |
-| generate_summary | bool | 否 | 是否生成摘要，默认 true |
+| generate_summary | bool | 否 | 是否生成纪要，默认 true |
+| template_id | string | 否 | 纪要模板 ID，默认 `universal` |
 
 | 响应字段 | 说明 |
 |---|---|
@@ -214,7 +220,7 @@ GET /api/v1/tasks/{task_id}
 | extracting_frames | 提取视频关键帧（视频任务） |
 | scanning_visual | 视觉扫描（OCR + 人脸检测） |
 | correcting | 文字纠错中，`progress.percent` 有效 |
-| evaluating | 摘要评估中，`progress.percent` 有效 |
+| evaluating | 纪要生成中，`progress.percent` 有效 |
 | auditing | 合规审核中，`progress.percent` 有效 |
 | completed | 处理完成 |
 | failed | 处理失败，见 `error` 字段 |
@@ -245,7 +251,7 @@ GET /api/v1/tasks/{task_id}/results
 | 字段 | 说明 |
 |---|---|
 | transcript | 完整转写结果，含所有条目和处理耗时 |
-| evaluation | 摘要评分结果（`standard_minutes` 自动生成；`transcript` 任务需另行触发） |
+| evaluation | 纪要结果（`standard_minutes` 自动生成；`transcript` 任务需另行触发）。包含 `formatted_content`（按模板排版的 Markdown 正文）和 `title`（会议标题） |
 | compliance | 合规审核结果（需主动提交 `compliance_audit` 后才有值） |
 | has_audio | 是否有音频文件 |
 | has_video | 是否为视频任务 |
@@ -277,14 +283,15 @@ Content-Type: multipart/form-data
 对已保存的音频重新执行 ASR + 纠错。原始媒体文件须仍存在（未被 24 小时生命周期清理）。
 执行后会清除旧的 `evaluation.json` 和 `compliance.json`，需重新提交相应任务。
 
-### 4.10 重新生成摘要
+### 4.10 重新生成纪要
 
 ```
 POST /api/v1/tasks/{task_id}/rerun-evaluation
 ```
 
-无需请求体。基于已有 `transcript.json` 重新生成摘要评分。
-适用于更换 LLM 模型后刷新摘要质量。返回子任务 `task_id`，评估完成后结果写入父任务的 `results`。
+无需请求体。基于已有 `transcript.json` 重新生成纪要，使用默认模板（`universal`）。
+若需要指定模板，建议改用 `POST /api/v1/evaluate/text/async`（见 4.13），将转写文本和目标 `template_id` 一并传入。
+返回子任务 `task_id`，纪要生成完成后结果写入父任务的 `results`。
 
 ### 4.11 媒体文件访问
 
@@ -310,6 +317,64 @@ GET /api/v1/health
 | vram.budget_gb | 配置的 VRAM 预算上限（默认 12.0 GB） |
 
 建议接入前调用确认服务就绪（`asr_loaded=true` 且 `llm_reachable=true`）。
+
+### 4.13 纯文本评估（含模板选择）
+
+已有转写文本时，可直接提交文本并指定纪要模板，跳过 ASR 阶段：
+
+```
+POST /api/v1/evaluate/text/async
+Content-Type: multipart/form-data
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| text | string | 是 | 待生成纪要的转写文本 |
+| template_id | string | 否 | 纪要模板 ID，默认 `universal`。传入非法 ID 时自动 fallback 到通用模版 |
+| parent_task_id | string | 否 | 关联父任务 ID，结果将持久化到该任务的 `evaluation.json` |
+
+返回 `task_id`，通过 `GET /api/v1/tasks/{task_id}` 轮询，结果结构与 4.7 中的 `evaluation` 字段一致。
+
+第三方 ASR 系统可通过 `POST /api/v1/evaluate/transcript/async` 直推原始文本（`text/plain` 请求体），格式支持 `[时间戳]{JSON}` 或纯文本，使用默认通用模版，不支持 `template_id`。
+
+### 4.14 查询可用纪要模板
+
+```
+GET /api/v1/templates
+```
+
+返回所有已加载模板的元数据列表，无需鉴权：
+
+```json
+[
+  { "id": "universal",     "name": "通用模版", "description": "适用于一般会议..." },
+  { "id": "official",      "name": "公文模版", "description": "适用于正式公文类会议..." },
+  { "id": "weekly",        "name": "周例会",   "description": "适用于周例会..." },
+  { "id": "daily_evening", "name": "夕会",     "description": "适用于每日复盘夕会..." }
+]
+```
+
+建议在提交 `standard_minutes` 或 `evaluate/text/async` 前调用一次，获取当前服务支持的合法 `template_id`。
+
+### 4.15 热重载纪要模板
+
+```
+POST /api/v1/templates/reload
+```
+
+无需请求体。重新扫描服务器 `templates/` 目录，将最新模板内容加载到内存，无需重启服务。正在运行的推理任务不受影响。
+
+响应示例：
+
+```json
+{
+  "reloaded": 4,
+  "templates": [
+    { "id": "universal", "name": "通用模版", "description": "..." },
+    ...
+  ]
+}
+```
 
 ---
 
@@ -339,9 +404,9 @@ GET /api/v1/health
 POST /api/v1/tasks/standard_minutes
 Content-Type: multipart/form-data
 
-file:             <二进制文件内容>
-hotwords:         ["产说会", "理财师"]
-generate_summary: true
+file:        <二进制文件内容>
+hotwords:    ["产说会", "理财师"]
+template_id: daily_evening
 ```
 
 响应（首次提交，202）：
@@ -431,23 +496,8 @@ GET /api/v1/tasks/a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d/results
     "processing_time_ms": 18400
   },
   "evaluation": {
-    "meta": {
-      "title": "保险产品说明会",
-      "category": "金融产品推介",
-      "keywords": ["产说会", "保险责任", "收益率"]
-    },
-    "scores": {
-      "logic": 78,
-      "info_density": 82,
-      "expression": 75,
-      "total": 79
-    },
-    "analysis": {
-      "main_points": ["产品收益说明", "保障责任介绍", "投保注意事项"],
-      "key_data": ["年化收益 3.5%", "保障期 20 年"],
-      "sentiment": "正面，整体表达积极"
-    },
-    "summary": "本次产说会主要介绍了某款终身寿险产品..."
+    "title": "保险产品说明会",
+    "formatted_content": "【会议主题】\n保险产品说明会\n\n【会议概述】\n本次会议围绕某款终身寿险产品展开，介绍了产品保障责任和投保注意事项。\n\n【会议内容】\n- 介绍年化收益 3.5%、保障期 20 年的核心产品条款\n- 说明投保适合人群及健康告知要求\n\n【会议结论】\n1. 产品整体符合客户保障需求\n2. 建议客户结合自身情况选择缴费期\n\n【待办事项】\n- 向客户发送完整产品说明书"
   },
   "compliance": null,
   "has_audio": true,
@@ -527,6 +577,7 @@ parent_task_id: a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d
 第三方系统                               Copernicus API
     |                                         |
     |-- POST /tasks/standard_minutes -------->|
+    |   (file + template_id=daily_evening)    |
     |<-- 202 {task_id: "abc"} ---------------|
     |                                         |
     |-- GET /tasks/abc ---------------------->| (correcting, 45%)
@@ -540,6 +591,7 @@ parent_task_id: a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d
     |                                         |
     |-- GET /tasks/abc/results ------------->|
     |<-- 200 {transcript, evaluation} -------|
+    |   evaluation.formatted_content = "..."  |
 ```
 
 **全链路（含合规审核）**
@@ -590,9 +642,11 @@ parent_task_id: a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d
 | 服务就绪等待 | ASR 模型首次启动加载需数十秒，建议接入前调 `/health` 确认 `asr_loaded=true` |
 | asr_loaded 短暂为 false | 合规审核执行期间系统主动卸载 ASR 权重以释放 VRAM，下一次转写任务自动重载，无需干预 |
 | GPU 串行机制 | ASR 推理串行执行，多任务并发提交时后续任务排队等待前一任务 ASR 阶段完成 |
-| 摘要自动生成 | `standard_minutes` 默认 `generate_summary=true`，评估与转写在同一任务内完成，无需额外调用 |
+| 纪要自动生成 | `standard_minutes` 默认 `generate_summary=true`，纪要与转写在同一任务内完成，无需额外调用 |
+| template_id 容错 | 传入不存在的 `template_id` 时，系统自动 fallback 到通用模版（`universal`）并写入警告日志，不返回错误 |
+| evaluation 结构变更 | V1.1 废弃原有 `scores`/`analysis`/`meta` 字段，改为 `formatted_content`（Markdown 正文）和 `title`（标题）。接入方需同步更新对 `evaluation` 字段的解析逻辑 |
 | 文件去重 | 直接重传相同文件不会触发重复处理，`existing=true` 时直接查询已有结果即可 |
-| 媒体文件生命周期 | 原始音视频文件在任务完成 24 小时后自动清理，转写/评估/合规 JSON 结果永久保留 |
+| 媒体文件生命周期 | 原始音视频文件在任务完成 24 小时后自动清理，转写/纪要/合规 JSON 结果永久保留 |
 | 任务持久化 | 结果持久化在服务器 `uploads/{task_id}/` 目录，服务重启后仍可通过 results 端点访问 |
 | 任务内存上限 | 内存中最多保留 500 个任务，超出后已完成任务淘汰，但磁盘结果仍可访问 |
 | 规则文件编码 | CSV 自动尝试 utf-8-sig / gbk / gb18030 三种编码，XLSX 无需特别处理 |

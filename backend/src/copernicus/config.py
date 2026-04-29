@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     face_detect_confidence: float = 0.5
     face_missing_threshold_ms: int = 10000
 
+    # Templates
+    templates_dir: Path = Path("./templates")
+
     # Upload settings
     upload_dir: Path = Path("./uploads")
     max_upload_size_mb: int = 500

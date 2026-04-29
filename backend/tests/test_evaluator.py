@@ -7,6 +7,13 @@ from copernicus.config import Settings
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.llm import ChatResponse
 
+_TEMPLATE_PROMPT = "你是一个会议助手，请生成夕会纪要。"
+
+SAMPLE_EVALUATION_JSON = {
+    "formatted_content": "## 今日总结\n- 张三完成了前端开发\n\n## 明日计划\n- 与前端联调模板",
+    "title": "前端开发进度复盘夕会",
+}
+
 
 @pytest.fixture
 def mock_settings() -> Settings:
@@ -28,30 +35,11 @@ def evaluator(mock_client: MagicMock, mock_settings: Settings) -> EvaluatorServi
     return EvaluatorService(mock_client, mock_settings)
 
 
-SAMPLE_EVALUATION_JSON = {
-    "meta": {
-        "title": "2025全球经济格局分析",
-        "category": "宏观经济",
-        "keywords": ["全球经济", "关税", "贸易战"],
-    },
-    "scores": {
-        "logic": 32,
-        "info_density": 30,
-        "expression": 25,
-        "total": 87,
-    },
-    "analysis": {
-        "main_points": ["全球经济增速放缓", "贸易摩擦加剧"],
-        "key_data": ["GDP增速2.8%", "关税上调25%"],
-        "sentiment": "中立",
-    },
-    "summary": "本视频分析了2025年全球经济格局。",
-}
-
-
 class TestEvaluate:
     @pytest.mark.asyncio
-    async def test_evaluate_returns_structured_result(self, evaluator: EvaluatorService, mock_client: MagicMock):
+    async def test_evaluate_returns_structured_result(
+        self, evaluator: EvaluatorService, mock_client: MagicMock
+    ):
         mock_client.chat = AsyncMock(
             return_value=ChatResponse(
                 content=json.dumps(SAMPLE_EVALUATION_JSON, ensure_ascii=False),
@@ -59,33 +47,38 @@ class TestEvaluate:
             )
         )
 
-        result = await evaluator.evaluate("测试文本")
-        assert result.meta.title == "2025全球经济格局分析"
-        assert result.scores.total == 87
-        assert result.analysis.sentiment == "中立"
+        result = await evaluator.evaluate("测试文本", _TEMPLATE_PROMPT)
+        assert result.title == "前端开发进度复盘夕会"
+        assert "今日总结" in result.formatted_content
 
     @pytest.mark.asyncio
-    async def test_evaluate_strips_markdown_fences(self, evaluator: EvaluatorService, mock_client: MagicMock):
+    async def test_evaluate_strips_markdown_fences(
+        self, evaluator: EvaluatorService, mock_client: MagicMock
+    ):
         wrapped = f"```json\n{json.dumps(SAMPLE_EVALUATION_JSON, ensure_ascii=False)}\n```"
         mock_client.chat = AsyncMock(
             return_value=ChatResponse(content=wrapped, model="test-model")
         )
 
-        result = await evaluator.evaluate("测试文本")
-        assert result.scores.total == 87
+        result = await evaluator.evaluate("测试文本", _TEMPLATE_PROMPT)
+        assert result.title == "前端开发进度复盘夕会"
 
     @pytest.mark.asyncio
-    async def test_evaluate_raises_on_invalid_json(self, evaluator: EvaluatorService, mock_client: MagicMock):
+    async def test_evaluate_raises_on_invalid_json(
+        self, evaluator: EvaluatorService, mock_client: MagicMock
+    ):
         mock_client.chat = AsyncMock(
             return_value=ChatResponse(content="这不是JSON", model="test-model")
         )
 
-        with pytest.raises(json.JSONDecodeError):
-            await evaluator.evaluate("测试文本")
+        with pytest.raises(Exception):
+            await evaluator.evaluate("测试文本", _TEMPLATE_PROMPT)
 
     @pytest.mark.asyncio
-    async def test_evaluate_uses_defaults_for_missing_fields(self, evaluator: EvaluatorService, mock_client: MagicMock):
-        minimal_json = {"meta": {"title": "测试"}, "summary": "摘要"}
+    async def test_evaluate_uses_defaults_for_missing_fields(
+        self, evaluator: EvaluatorService, mock_client: MagicMock
+    ):
+        minimal_json = {"formatted_content": "会议纪要内容"}
         mock_client.chat = AsyncMock(
             return_value=ChatResponse(
                 content=json.dumps(minimal_json, ensure_ascii=False),
@@ -93,7 +86,6 @@ class TestEvaluate:
             )
         )
 
-        result = await evaluator.evaluate("测试文本")
-        assert result.meta.title == "测试"
-        assert result.scores.total == 0
-        assert result.analysis.main_points == []
+        result = await evaluator.evaluate("测试文本", _TEMPLATE_PROMPT)
+        assert result.formatted_content == "会议纪要内容"
+        assert result.title == ""

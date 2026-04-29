@@ -4,6 +4,7 @@ from copernicus.services.compliance import ComplianceService
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
+from copernicus.services.template_manager import TemplateManager
 from copernicus.services.upload_session import UploadSessionService
 
 
@@ -25,3 +26,7 @@ def get_upload_session_service(request: Request) -> UploadSessionService:
 
 def get_model_manager(request: Request) -> ModelManager | None:
     return getattr(request.app.state, "model_manager", None)
+
+
+def get_template_manager(request: Request) -> TemplateManager:
+    return request.app.state.template_manager

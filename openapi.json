@@ -1,0 +1,1526 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Copernicus",
+    "description": "ASR + NLP text correction service",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/transcribe/transcript": {
+      "post": {
+        "tags": ["transcription"],
+        "summary": "Transcribe Transcript",
+        "description": "上传音频文件，获取带说话人标注和时间戳的转写结果。",
+        "operationId": "transcribe_transcript_api_v1_transcribe_transcript_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_transcribe_transcript_api_v1_transcribe_transcript_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": ["transcription"],
+        "summary": "Health",
+        "description": "检查服务健康状态：ASR 模型是否已加载，LLM 是否可达。",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/transcript": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "Submit Transcript Task",
+        "description": "提交异步转写任务，包含时间戳和说话人标注。",
+        "operationId": "submit_transcript_task_api_v1_tasks_transcript_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_submit_transcript_task_api_v1_tasks_transcript_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/media": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "Get Task Media",
+        "description": "返回原始上传的媒体文件（音频或视频）。",
+        "operationId": "get_task_media_api_v1_tasks__task_id__media_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/audio": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "Get Task Audio",
+        "description": "向后兼容的音频端点，委托给媒体逻辑处理。",
+        "operationId": "get_task_audio_api_v1_tasks__task_id__audio_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/frames/{filename}": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "Get Task Frame",
+        "description": "返回指定关键帧图像。",
+        "operationId": "get_task_frame_api_v1_tasks__task_id__frames__filename__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Filename"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/results": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "Get Task Results",
+        "description": "返回任务的所有持久化结果。",
+        "operationId": "get_task_results_api_v1_tasks__task_id__results_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResultsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/rerun-transcript": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "Rerun Transcript",
+        "description": "对已有音频重新执行 ASR 和纠正。",
+        "operationId": "rerun_transcript_api_v1_tasks__task_id__rerun_transcript_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_rerun_transcript_api_v1_tasks__task_id__rerun_transcript_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/rerun-evaluation": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "Rerun Evaluation",
+        "description": "基于已有转写结果重新执行评估。",
+        "operationId": "rerun_evaluation_api_v1_tasks__task_id__rerun_evaluation_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/lookup": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "Lookup Task By Hash",
+        "description": "根据文件 SHA-256 查询是否已有对应任务，用于上传前预检。",
+        "operationId": "lookup_task_by_hash_api_v1_tasks_lookup_get",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hash"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "Get Task Status",
+        "description": "查询任务进度与结果。",
+        "operationId": "get_task_status_api_v1_tasks__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/uploads/{file_hash}": {
+      "get": {
+        "tags": ["uploads"],
+        "summary": "Query Upload",
+        "description": "查询上传状态；若会话不存在则自动创建（幂等）。\n\n- 文件已处理完成：返回 complete=True + task_id\n- 会话已有部分数据：返回当前 offset（断点续传）\n- 全新文件：创建会话并返回 offset=0",
+        "operationId": "query_upload_api_v1_uploads__file_hash__get",
+        "parameters": [
+          {
+            "name": "file_hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Hash"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Filename"
+            }
+          },
+          {
+            "name": "total_size",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Total Size"
+            }
+          },
+          {
+            "name": "hotwords",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Hotwords"
+            }
+          },
+          {
+            "name": "visual_scan",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Visual Scan"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadQueryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["uploads"],
+        "summary": "Upload Chunk",
+        "description": "接收数据块并追加。最后一块到达后校验 SHA-256，通过则自动创建转写任务。\n\n请求头：Content-Range: bytes {start}-{end}/{total}\n请求体：raw binary（application/octet-stream）",
+        "operationId": "upload_chunk_api_v1_uploads__file_hash__patch",
+        "parameters": [
+          {
+            "name": "file_hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Hash"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadChunkResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/evaluate/text/async": {
+      "post": {
+        "tags": ["evaluation"],
+        "summary": "Submit Text Evaluation Task",
+        "description": "提交异步文本评估任务，通过 GET /tasks/{task_id} 轮询进度。",
+        "operationId": "submit_text_evaluation_task_api_v1_evaluate_text_async_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_submit_text_evaluation_task_api_v1_evaluate_text_async_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/evaluate/transcript/async": {
+      "post": {
+        "tags": ["evaluation"],
+        "summary": "Submit Transcript Evaluation Task",
+        "description": "接收第三方转写结果，提取正文后生成带评分的50字摘要。\n\n直接接受原始请求体（text/plain），第三方无需对内容做任何转义。\n支持两种格式：\n- 第三方格式：`[时间戳]{JSON}`，自动提取 JSON 中的 content 字段\n- 纯文本：直接作为转写内容处理",
+        "operationId": "submit_transcript_evaluation_task_api_v1_evaluate_transcript_async_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmitResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/compliance/audit/async": {
+      "post": {
+        "tags": ["compliance"],
+        "summary": "Submit Compliance Audit",
+        "description": "提交异步合规审核任务。\n\n接受转写条目（JSON）和规则文件（CSV/XLSX）。\n通过 GET /tasks/{task_id} 轮询进度与结果。",
+        "operationId": "submit_compliance_audit_api_v1_compliance_audit_async_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_submit_compliance_audit_api_v1_compliance_audit_async_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/compliance/violations": {
+      "patch": {
+        "tags": ["compliance"],
+        "summary": "Update Violation Statuses",
+        "description": "持久化违规条目的审核状态（已确认/已驳回/待审核）。",
+        "operationId": "update_violation_statuses_api_v1_tasks__task_id__compliance_violations_patch",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViolationBatchUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Violation Statuses Api V1 Tasks  Task Id  Compliance Violations Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_rerun_transcript_api_v1_tasks__task_id__rerun_transcript_post": {
+        "properties": {
+          "hotwords": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hotwords"
+          }
+        },
+        "type": "object",
+        "title": "Body_rerun_transcript_api_v1_tasks__task_id__rerun_transcript_post"
+      },
+      "Body_submit_compliance_audit_api_v1_compliance_audit_async_post": {
+        "properties": {
+          "rules_file": {
+            "type": "string",
+            "format": "binary",
+            "title": "Rules File",
+            "description": "CSV/XLSX compliance rules file"
+          },
+          "transcript": {
+            "type": "string",
+            "title": "Transcript",
+            "description": "JSON array of transcript entries"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          }
+        },
+        "type": "object",
+        "required": ["rules_file", "transcript"],
+        "title": "Body_submit_compliance_audit_api_v1_compliance_audit_async_post"
+      },
+      "Body_submit_text_evaluation_task_api_v1_evaluate_text_async_post": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          }
+        },
+        "type": "object",
+        "required": ["text"],
+        "title": "Body_submit_text_evaluation_task_api_v1_evaluate_text_async_post"
+      },
+      "Body_submit_transcript_task_api_v1_tasks_transcript_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "hotwords": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hotwords"
+          },
+          "visual_scan": {
+            "type": "boolean",
+            "title": "Visual Scan",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": ["file"],
+        "title": "Body_submit_transcript_task_api_v1_tasks_transcript_post"
+      },
+      "Body_transcribe_transcript_api_v1_transcribe_transcript_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "hotwords": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hotwords"
+          }
+        },
+        "type": "object",
+        "required": ["file"],
+        "title": "Body_transcribe_transcript_api_v1_transcribe_transcript_post"
+      },
+      "ComplianceReport": {
+        "properties": {
+          "total_rules": {
+            "type": "integer",
+            "title": "Total Rules"
+          },
+          "total_segments_checked": {
+            "type": "integer",
+            "title": "Total Segments Checked"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/components/schemas/Violation"
+            },
+            "type": "array",
+            "title": "Violations"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          },
+          "compliance_score": {
+            "type": "number",
+            "title": "Compliance Score",
+            "default": 100
+          },
+          "source_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Source Counts"
+          }
+        },
+        "type": "object",
+        "required": ["total_rules", "total_segments_checked"],
+        "title": "ComplianceReport",
+        "description": "Full compliance audit report."
+      },
+      "ComplianceResponse": {
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ComplianceRule"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "report": {
+            "$ref": "#/components/schemas/ComplianceReport"
+          },
+          "processing_time_ms": {
+            "type": "number",
+            "title": "Processing Time Ms"
+          }
+        },
+        "type": "object",
+        "required": ["rules", "report", "processing_time_ms"],
+        "title": "ComplianceResponse",
+        "description": "API response for compliance audit."
+      },
+      "ComplianceRule": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": ["id", "content"],
+        "title": "ComplianceRule",
+        "description": "Single audit rule parsed from CSV/XLSX."
+      },
+      "EvaluationAnalysis": {
+        "properties": {
+          "main_points": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Main Points"
+          },
+          "key_data": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Key Data"
+          },
+          "sentiment": {
+            "type": "string",
+            "title": "Sentiment",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "EvaluationAnalysis"
+      },
+      "EvaluationMeta": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "default": ""
+          },
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Keywords"
+          }
+        },
+        "type": "object",
+        "title": "EvaluationMeta"
+      },
+      "EvaluationResponse": {
+        "properties": {
+          "raw_text": {
+            "type": "string",
+            "title": "Raw Text"
+          },
+          "corrected_text": {
+            "type": "string",
+            "title": "Corrected Text"
+          },
+          "evaluation": {
+            "$ref": "#/components/schemas/EvaluationResult"
+          },
+          "processing_time_ms": {
+            "type": "number",
+            "title": "Processing Time Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "raw_text",
+          "corrected_text",
+          "evaluation",
+          "processing_time_ms"
+        ],
+        "title": "EvaluationResponse"
+      },
+      "EvaluationResult": {
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/EvaluationMeta"
+          },
+          "scores": {
+            "$ref": "#/components/schemas/EvaluationScores"
+          },
+          "analysis": {
+            "$ref": "#/components/schemas/EvaluationAnalysis"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "EvaluationResult"
+      },
+      "EvaluationScores": {
+        "properties": {
+          "logic": {
+            "type": "integer",
+            "title": "Logic",
+            "default": 0
+          },
+          "info_density": {
+            "type": "integer",
+            "title": "Info Density",
+            "default": 0
+          },
+          "expression": {
+            "type": "integer",
+            "title": "Expression",
+            "default": 0
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "EvaluationScores"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "asr_loaded": {
+            "type": "boolean",
+            "title": "Asr Loaded"
+          },
+          "llm_reachable": {
+            "type": "boolean",
+            "title": "Llm Reachable"
+          }
+        },
+        "type": "object",
+        "required": ["asr_loaded", "llm_reachable"],
+        "title": "HealthResponse"
+      },
+      "TaskProgress": {
+        "properties": {
+          "current_chunk": {
+            "type": "integer",
+            "title": "Current Chunk",
+            "default": 0
+          },
+          "total_chunks": {
+            "type": "integer",
+            "title": "Total Chunks",
+            "default": 0
+          },
+          "percent": {
+            "type": "number",
+            "title": "Percent",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "TaskProgress"
+      },
+      "TaskResultsResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evaluation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compliance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ComplianceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_audio": {
+            "type": "boolean",
+            "title": "Has Audio",
+            "default": false
+          },
+          "has_video": {
+            "type": "boolean",
+            "title": "Has Video",
+            "default": false
+          },
+          "keyframe_count": {
+            "type": "integer",
+            "title": "Keyframe Count",
+            "default": 0
+          },
+          "ocr_text_count": {
+            "type": "integer",
+            "title": "Ocr Text Count",
+            "default": 0
+          },
+          "visual_event_count": {
+            "type": "integer",
+            "title": "Visual Event Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": ["task_id"],
+        "title": "TaskResultsResponse",
+        "description": "Persisted results for a task (used for restoring state on page refresh)."
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "processing_asr",
+          "extracting_frames",
+          "scanning_visual",
+          "correcting",
+          "evaluating",
+          "auditing",
+          "completed",
+          "failed"
+        ],
+        "title": "TaskStatus"
+      },
+      "TaskStatusResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/TaskProgress"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationResponse"
+              },
+              {
+                "$ref": "#/components/schemas/TranscriptResponse"
+              },
+              {
+                "$ref": "#/components/schemas/ComplianceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": ["task_id", "status", "progress"],
+        "title": "TaskStatusResponse"
+      },
+      "TaskSubmitResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "existing": {
+            "type": "boolean",
+            "title": "Existing",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": ["task_id", "status"],
+        "title": "TaskSubmitResponse"
+      },
+      "TranscriptEntrySchema": {
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "timestamp_ms": {
+            "type": "integer",
+            "title": "Timestamp Ms"
+          },
+          "end_ms": {
+            "type": "integer",
+            "title": "End Ms",
+            "default": 0
+          },
+          "speaker": {
+            "type": "string",
+            "title": "Speaker"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "text_corrected": {
+            "type": "string",
+            "title": "Text Corrected"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "timestamp_ms",
+          "speaker",
+          "text",
+          "text_corrected"
+        ],
+        "title": "TranscriptEntrySchema"
+      },
+      "TranscriptResponse": {
+        "properties": {
+          "transcript": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptEntrySchema"
+            },
+            "type": "array",
+            "title": "Transcript"
+          },
+          "processing_time_ms": {
+            "type": "number",
+            "title": "Processing Time Ms"
+          }
+        },
+        "type": "object",
+        "required": ["transcript", "processing_time_ms"],
+        "title": "TranscriptResponse"
+      },
+      "UploadChunkResponse": {
+        "properties": {
+          "received": {
+            "type": "integer",
+            "title": "Received"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "required": ["received", "complete"],
+        "title": "UploadChunkResponse"
+      },
+      "UploadQueryResponse": {
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete",
+            "default": false
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "title": "UploadQueryResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": ["loc", "msg", "type"],
+        "title": "ValidationError"
+      },
+      "Violation": {
+        "properties": {
+          "rule_id": {
+            "type": "integer",
+            "title": "Rule Id"
+          },
+          "rule_content": {
+            "type": "string",
+            "title": "Rule Content"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+            "title": "Severity",
+            "default": "low"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "confirmed", "rejected"],
+            "title": "Status",
+            "default": "pending"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp",
+            "default": ""
+          },
+          "timestamp_ms": {
+            "type": "integer",
+            "title": "Timestamp Ms",
+            "default": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "title": "End Ms",
+            "default": 0
+          },
+          "speaker": {
+            "type": "string",
+            "title": "Speaker",
+            "default": ""
+          },
+          "original_text": {
+            "type": "string",
+            "title": "Original Text",
+            "default": ""
+          },
+          "source": {
+            "type": "string",
+            "enum": ["transcript", "ocr", "vision"],
+            "title": "Source",
+            "default": "transcript"
+          },
+          "evidence_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Url"
+          },
+          "evidence_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Text"
+          },
+          "rule_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Ref"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
+          }
+        },
+        "type": "object",
+        "required": ["rule_id", "rule_content", "reason", "confidence"],
+        "title": "Violation",
+        "description": "Single violation detected by LLM."
+      },
+      "ViolationBatchUpdate": {
+        "properties": {
+          "updates": {
+            "items": {
+              "$ref": "#/components/schemas/ViolationStatusUpdate"
+            },
+            "type": "array",
+            "title": "Updates"
+          }
+        },
+        "type": "object",
+        "required": ["updates"],
+        "title": "ViolationBatchUpdate"
+      },
+      "ViolationStatusUpdate": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "confirmed", "rejected"],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": ["index", "status"],
+        "title": "ViolationStatusUpdate"
+      }
+    }
+  }
+}

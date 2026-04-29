@@ -3,9 +3,10 @@ import re
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 
-from copernicus.dependencies import get_task_store
+from copernicus.dependencies import get_task_store, get_template_manager
 from copernicus.schemas.task import TaskStatus, TaskSubmitResponse
 from copernicus.services.task_store import TaskStore
+from copernicus.services.template_manager import TemplateManager
 
 router = APIRouter(prefix="/api/v1", tags=["基础 AI"])
 
@@ -27,6 +28,38 @@ def _extract_transcript(raw: str) -> str:
     return raw
 
 
+@router.get(
+    "/templates",
+    summary="获取所有可用纪要模板",
+    tags=["系统"],
+)
+async def list_templates(
+    tm: TemplateManager = Depends(get_template_manager),
+) -> list[dict]:
+    """返回所有已加载纪要模板的元数据列表（id / name / description）。
+
+    API 调用方在提交评估任务前，可先调用此接口获取合法的 `template_id`。
+    """
+    return tm.get_all_metadata()
+
+
+@router.post(
+    "/templates/reload",
+    summary="热重载纪要模板",
+    tags=["系统"],
+)
+async def reload_templates(
+    tm: TemplateManager = Depends(get_template_manager),
+) -> dict:
+    """重新扫描 templates/ 目录，将最新的模板内容加载到内存，无需重启服务。
+
+    正在运行的推理任务不受影响：重载在当前 asyncio 事件循环的空闲时隙执行，
+    读取完成后原子替换内存字典，并发请求始终能读到完整的模板数据。
+    """
+    count = tm.reload()
+    return {"reloaded": count, "templates": tm.get_all_metadata()}
+
+
 @router.post(
     "/evaluate/text/async",
     response_model=TaskSubmitResponse,
@@ -35,20 +68,23 @@ def _extract_transcript(raw: str) -> str:
 )
 async def submit_text_evaluation_task(
     text: str = Form(...),
+    template_id: str = Form(default="universal"),
     parent_task_id: str | None = Form(default=None),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
-    """对已有文本执行 Map-Reduce 评估，生成评分与摘要。
+    """对已有文本执行 Map-Reduce 评估，按指定模板生成会议纪要。
 
-    适用于已有转写文本、不需要重新 ASR 的场景。长文本自动分段后并发提取要点，
-    再由 Reduce 阶段合并生成最终 JSON（含标题、分类、评分、摘要）。
+    `template_id` 可选，默认使用通用模版（`universal`）。传入非法 `template_id`
+    时自动 fallback 到通用模版，不返回错误。
 
     `parent_task_id` 可选，填写后评估结果将写入对应任务的
     `evaluation.json`，供 `GET /tasks/{task_id}/results` 返回。
     """
     if not text.strip():
         raise HTTPException(status_code=422, detail="Text must not be empty")
-    task_id = store.submit_text_evaluation(text, parent_task_id=parent_task_id)
+    task_id = store.submit_text_evaluation(
+        text, template_id=template_id, parent_task_id=parent_task_id
+    )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 
@@ -62,18 +98,18 @@ async def submit_transcript_evaluation_task(
     request: Request,
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
-    """接收第三方 ASR 转写结果，提取正文后生成评分与摘要。
+    """接收第三方 ASR 转写结果，提取正文后按通用模版生成会议纪要。
 
     直接接受原始请求体（`text/plain`），支持两种格式：
 
     - **第三方格式**：`[时间戳]{JSON}`，自动提取 JSON 中的 `content` 字段。
     - **纯文本**：直接作为转写内容处理。
 
-    无需对内容做任何转义，适合第三方系统 webhook 直推。
+    如需指定模板，请改用 `POST /evaluate/text/async`。
     """
     raw = (await request.body()).decode("utf-8")
     transcript = _extract_transcript(raw)
     if not transcript.strip():
         raise HTTPException(status_code=422, detail="Text must not be empty")
-    task_id = store.submit_text_evaluation(transcript)
+    task_id = store.submit_text_evaluation(transcript, template_id="universal")
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)

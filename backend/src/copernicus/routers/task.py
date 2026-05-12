@@ -213,6 +213,27 @@ async def rerun_evaluation(
 # 任务管理 — 查询与媒体
 # ---------------------------------------------------------------------------
 
+@router.delete(
+    "/tasks/{task_id}",
+    status_code=204,
+    tags=["任务管理"],
+    summary="作废任务缓存（不删除磁盘文件）",
+)
+async def invalidate_task(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> None:
+    """从内存和哈希索引中移除指定任务的缓存记录。
+
+    清除后，使用相同文件重新调用 `POST /api/v1/tasks/standard_minutes`
+    将触发完整流水线重新处理，而不是返回 `existing=true`。
+    磁盘上的原始媒体和结果文件不会被删除。
+    """
+    found = store.invalidate_task(task_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+
 @router.get(
     "/tasks/lookup",
     response_model=TaskSubmitResponse,

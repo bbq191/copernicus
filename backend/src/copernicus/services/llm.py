@@ -52,6 +52,7 @@ class OllamaClient:
         self._max_retries = settings.llm_max_retries
         self._retry_delay = settings.llm_retry_delay
         self._semaphore = asyncio.Semaphore(settings.llm_max_concurrent)
+        self._keep_alive = settings.ollama_keep_alive
         # 使用较长的连接超时，但读取超时保持合理（流式模式下每个 chunk 间隔不会太长）
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -143,6 +144,7 @@ class OllamaClient:
             "messages": messages,
             "stream": True,  # 关键：使用流式响应
             "options": options,
+            "keep_alive": self._keep_alive,
         }
         # 仅当显式指定时才设置 think 参数
         if think is not None:

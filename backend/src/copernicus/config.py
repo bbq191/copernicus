@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     llm_max_concurrent: int = 3  # 全局 LLM 并发上限
     ollama_num_ctx: int = 32768
     ollama_num_ctx_correction: int = 4096
+    # 推理完成后模型在显存中驻留的时间（秒）。
+    # 设为 0 可在每次请求结束后立即释放显存，避免 ASR 与 LLM 模型同时占用 VRAM 导致 OOM。
+    ollama_keep_alive: int = 0
 
     # Text correction chunking
     correction_chunk_size: int = 800

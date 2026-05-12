@@ -52,8 +52,8 @@ def build_reduce_prompt(template_prompt: str) -> str:
 
 ### 强制 JSON 输出结构
 {{
-    "formatted_content": "# 会议纪要\\n\\n## 今日总结\\n- 张三完成了前端开发...",
-    "title": "前端开发进度复盘夕会"
+    "formatted_content": "（严格按照上方【目标模版】要求排版的完整 Markdown 文本，格式完全由模版决定）",
+    "title": "（不超过20字的会议主题标题）"
 }}"""
 
 

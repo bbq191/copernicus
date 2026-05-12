@@ -157,6 +157,20 @@ class TaskStore:
         self._hash_index[file_hash] = task_id
         self._persistence.save_hash_index(self._hash_index)
 
+    def invalidate_task(self, task_id: str) -> bool:
+        """从内存和哈希索引中移除任务，使同一文件可以重新提交处理。
+
+        不删除磁盘上的任何文件，仅清除缓存状态。
+        返回 True 表示任务存在并已清除，False 表示任务不在内存中。
+        """
+        task = self._tasks.pop(task_id, None)
+        stale_hashes = [h for h, tid in self._hash_index.items() if tid == task_id]
+        for h in stale_hashes:
+            del self._hash_index[h]
+        if stale_hashes:
+            self._persistence.save_hash_index(self._hash_index)
+        return task is not None or bool(stale_hashes)
+
     # -- restore from disk ---------------------------------------------------
 
     def restore_from_disk(self) -> None:

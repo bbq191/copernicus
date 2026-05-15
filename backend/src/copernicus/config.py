@@ -129,6 +129,35 @@ class Settings(BaseSettings):
     face_detect_confidence: float = 0.5
     face_missing_threshold_ms: int = 10000
 
+    # TTS (ChatTTS — Phase 4: Audio Synthesis)
+    # 安装：pip install ChatTTS pydub soundfile
+    tts_vram_estimate_gb: float = 4.0
+    # 音色池：纯数字字符串直接作为 torch seed，其他字符串通过 MD5 映射
+    tts_default_voices: list[str] = ["2222", "3333", "4444", "5555"]
+    tts_pause_switch_speaker_ms: int = 800   # 换说话人间隔（ms）
+    tts_synthesis_batch_chars: int = 1000    # 每批最大字符数，批间清空 VRAM 缓存
+    tts_max_sentence_chars: int = 40         # 单次推理最大字符数，防 OOM 和幻读
+    tts_oral_level: int = 2                  # [oral_N] 口语化程度（0=播音腔，9=口语）
+    tts_break_level: int = 4                 # [break_N] 停顿换气频率（0-9），4=带货换气质感
+    tts_laugh_level: int = 0                 # [laugh_N] 笑声频率（0=禁用，建议 0-2）
+    # 激情程度 0-9：控制 ChatTTS 语速 + LLM 改写风格
+    # 0-2=平静叙述  3-5=自然口语（默认）  6-7=热情有感染力  8-9=带货主播风格
+    tts_energy_level: int = 5
+    # ChatTTS InferCodeParams 推理参数
+    tts_temperature: float = 0.1             # 核心防幻读参数，0.1=锁死稳定性，高于 0.3 易幻读
+    tts_top_p: float = 0.7                   # 概率采样范围
+    tts_top_k: int = 20                      # top-k 采样
+    tts_max_new_token: int = 2048            # 单次推理最大 audio token 数（默认 384 会截断长文本）
+    # 合成前 LLM 口语改写：将逐字转写文本重构为自然短句再送入 ChatTTS
+    tts_rewrite_enabled: bool = False        # 开启后每个 chunk 并发改写，增加约 5-15s 延迟
+    # 改写专用 LLM（独立于主 LLM，固定走本地 Ollama，避免与 DeepSeek 等云端格式冲突）
+    tts_rewrite_base_url: str = "http://localhost:11434"
+    tts_rewrite_model: str = "qwen3:latest"
+    tts_rewrite_num_ctx: int = 1024          # 改写任务专用 num_ctx（每次输入短，无需大窗口）
+
+    # 日志模式：true → 写文件（开发环境），false → stdout（systemctl/journald）
+    log_to_file: bool = False
+
     # Templates
     templates_dir: Path = Path("./templates")
 

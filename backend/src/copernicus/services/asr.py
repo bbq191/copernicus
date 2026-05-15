@@ -1,5 +1,9 @@
+import contextlib
 import logging
+import os
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +38,47 @@ _SPK_BATCH_CAP = 60                     # 说话人分离模式 batch_size 上�
 _MIN_EMB_WINDOW_MS = 500                # 声纹提取最短有效窗口（毫秒）
 _MAX_SLIDING_WINDOWS = 500              # 单段最大滑动窗口数（防 OOM）
 _MAX_AUDIO_DURATION_MS = 36_000_000     # 合理性上限：10 小时
+
+
+_MODELSCOPE_CACHE = Path(
+    os.environ.get("MODELSCOPE_CACHE", Path.home() / ".cache" / "modelscope" / "hub")
+)
+
+
+def _is_modelscope_cached(model_id: str) -> bool:
+    """检查 ModelScope 模型是否已在本地缓存（路径格式：{cache}/models/{org}/{name}）。"""
+    return (_MODELSCOPE_CACHE / "models" / model_id).exists()
+
+
+class _DownloadHeartbeat:
+    """后台线程：下载期间每隔 interval 秒向日志写入进度心跳。
+
+    使用方式：
+        with _DownloadHeartbeat(model_ids, logger.info, interval=30):
+            model = AutoModel(...)
+    """
+
+    def __init__(self, model_ids: list[str], log_fn, interval: int = 30) -> None:
+        self._model_ids = model_ids
+        self._log_fn = log_fn
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._beat, daemon=True)
+
+    def _beat(self) -> None:
+        elapsed = 0
+        while not self._stop.wait(self._interval):
+            elapsed += self._interval
+            for mid in self._model_ids:
+                self._log_fn("  [DOWNLOAD] %s — %ds elapsed ...", mid, elapsed)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        self._thread.join(timeout=1)
 
 
 @dataclass
@@ -127,7 +172,37 @@ class ASRService:
             model_kwargs["spk_model"] = settings.spk_model_dir
             logger.info("  SPK model: %s", settings.spk_model_dir)
 
-        self._model = AutoModel(**model_kwargs)
+        _model_ids = [
+            mid for mid in [
+                settings.asr_model_dir,
+                settings.vad_model_dir if settings.vad_model_dir else None,
+                settings.punc_model_dir if settings.punc_model_dir else None,
+                settings.spk_model_dir if settings.spk_model_dir else None,
+            ]
+            if mid
+        ]
+        _missing = [mid for mid in _model_ids if not _is_modelscope_cached(mid)]
+        if _missing:
+            logger.info("=" * 60)
+            logger.info("  [DOWNLOAD] Models not in cache — downloading now")
+            for mid in _missing:
+                logger.info("  [DOWNLOAD] %s", mid)
+            logger.info("  [DOWNLOAD] This may take several minutes ...")
+            logger.info("=" * 60)
+
+        _t0 = time.monotonic()
+        _ctx = _DownloadHeartbeat(_missing, logger.info) if _missing else contextlib.nullcontext()
+        with _ctx:
+            self._model = AutoModel(**model_kwargs)
+        _elapsed = time.monotonic() - _t0
+
+        if _missing:
+            logger.info("=" * 60)
+            logger.info("  [DOWNLOAD] Complete — all models ready in %.1fs", _elapsed)
+            logger.info("=" * 60)
+        else:
+            logger.info("Paraformer models loaded from cache in %.1fs", _elapsed)
+
         self._has_spk = bool(settings.spk_model_dir)
         self._spk_model = None  # Paraformer 模式不需要单独的 spk_model
         logger.info("Paraformer model loaded successfully")
@@ -153,10 +228,30 @@ class ASRService:
         if settings.asr_disable_pbar:
             asr_kwargs["disable_pbar"] = True
 
-        self._model = AutoModel(**asr_kwargs)
+        _sv_ids = [
+            mid for mid in [settings.sensevoice_model_dir, settings.vad_model_dir or None]
+            if mid
+        ]
+        _sv_missing = [mid for mid in _sv_ids if not _is_modelscope_cached(mid)]
+        if _sv_missing:
+            logger.info("=" * 60)
+            logger.info("  [DOWNLOAD] SenseVoice models not in cache — downloading now")
+            for mid in _sv_missing:
+                logger.info("  [DOWNLOAD] %s", mid)
+            logger.info("=" * 60)
+
+        _t0 = time.monotonic()
+        _ctx = _DownloadHeartbeat(_sv_missing, logger.info) if _sv_missing else contextlib.nullcontext()
+        with _ctx:
+            self._model = AutoModel(**asr_kwargs)
+        _elapsed = time.monotonic() - _t0
+
         self._sensevoice_language = settings.sensevoice_language
-        logger.info("SenseVoice model loaded: %s, language=%s",
-                    settings.sensevoice_model_dir, self._sensevoice_language)
+        if _sv_missing:
+            logger.info("  [DOWNLOAD] Complete — SenseVoice ready in %.1fs", _elapsed)
+        else:
+            logger.info("SenseVoice model loaded from cache in %.1fs: language=%s",
+                        _elapsed, self._sensevoice_language)
 
         # 声纹模型 (Campplus) - 用于解耦说话人分离
         if settings.spk_model_dir:
@@ -168,9 +263,21 @@ class ASRService:
             if settings.asr_disable_pbar:
                 spk_kwargs["disable_pbar"] = True
 
-            self._spk_model = AutoModel(**spk_kwargs)
+            _spk_missing = [] if _is_modelscope_cached(settings.spk_model_dir) else [settings.spk_model_dir]
+            if _spk_missing:
+                logger.info("  [DOWNLOAD] SPK model not in cache : %s", settings.spk_model_dir)
+
+            _t0 = time.monotonic()
+            _ctx = _DownloadHeartbeat(_spk_missing, logger.info) if _spk_missing else contextlib.nullcontext()
+            with _ctx:
+                self._spk_model = AutoModel(**spk_kwargs)
+            _elapsed = time.monotonic() - _t0
+
             self._has_spk = True
-            logger.info("Speaker embedding model loaded: %s", settings.spk_model_dir)
+            if _spk_missing:
+                logger.info("  [DOWNLOAD] Complete — SPK model ready in %.1fs", _elapsed)
+            else:
+                logger.info("SPK model loaded from cache in %.1fs", _elapsed)
         else:
             self._spk_model = None
             self._has_spk = False

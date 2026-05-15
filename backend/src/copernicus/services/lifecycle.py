@@ -20,7 +20,7 @@ _KEEP_FILES = frozenset({
     "visual_events.json",
 })
 
-_MEDIA_STEMS = frozenset({"audio", "video"})
+_MEDIA_STEMS = frozenset({"audio", "video", "synthesis"})
 
 
 class LifecycleService:

@@ -63,6 +63,24 @@ class OllamaClient:
             )
         )
 
+    @classmethod
+    def _make_rewrite_client(cls, settings: Settings) -> "OllamaClient":
+        """创建改写专用客户端，固定指向本地 Ollama，与主 LLM 配置解耦。"""
+        inst = object.__new__(cls)
+        inst._base_url = settings.tts_rewrite_base_url.rstrip("/")
+        inst._model = settings.tts_rewrite_model
+        inst._temperature = 0.75
+        inst._num_ctx = settings.tts_rewrite_num_ctx
+        inst._timeout = 60.0
+        inst._max_retries = 1
+        inst._retry_delay = 1.0
+        inst._semaphore = asyncio.Semaphore(settings.llm_max_concurrent)
+        inst._keep_alive = 0
+        inst._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+        )
+        return inst
+
     async def chat(
         self,
         messages: list[dict[str, str]],

@@ -1,7 +1,6 @@
 """开发服务器启动脚本。
 
-将 uvicorn（含 reloader 主进程）的所有日志写入带时间戳的文件，
-终端不输出任何内容（仅打印一行日志文件路径）。
+所有日志写入带时间戳的文件，终端静默。
 
 用法：
     python run_dev.py              # 默认 reload
@@ -15,7 +14,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# 日志目录：backend/ 的上级目录（项目根）下的 logs/
+# 修复 Windows 下 joblib/loky 物理核心检测问题（必须在 joblib 导入前设置）
+os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count() or 8)
+os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 8)
+
 _log_dir = Path(__file__).resolve().parent.parent / "logs"
 _log_dir.mkdir(parents=True, exist_ok=True)
 _log_file = _log_dir / f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
@@ -49,14 +51,15 @@ logging.config.dictConfig({
     },
 })
 
-# 唯一一行终端输出
-print(f"[dev] logging → {_log_file}", flush=True)
+logging.getLogger(__name__).info("logging → %s", _log_file)
 
 import uvicorn
 
 if __name__ == "__main__":
     uvicorn.run(
         "copernicus.main:app",
+        host="0.0.0.0",
+        port=8000,
         reload="--no-reload" not in sys.argv,
-        log_config=None,  # 禁用 uvicorn 默认 dictConfig，沿用上面的配置
+        log_config=None,
     )

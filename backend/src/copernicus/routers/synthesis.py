@@ -206,7 +206,7 @@ async def synthesize_task_audio(
         synthesis_ms = (time.perf_counter() - t0) * 1000
         duration_ms = sum(sf.info(str(p)).duration * 1000 for p in parts)
 
-        await asyncio.to_thread(tts_service.concat_parts_to_mp3, parts, output_path)
+        await tts_service.concat_parts_to_mp3(parts, output_path)
         # TemporaryDirectory 退出时自动清理所有 WAV 部分文件
 
     return SynthesisResponse(

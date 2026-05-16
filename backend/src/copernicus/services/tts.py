@@ -12,9 +12,10 @@ import gc
 import hashlib
 import logging
 import re
-import subprocess
 import tempfile
 from pathlib import Path
+
+from copernicus.utils.ffmpeg import run as ffmpeg_run
 
 _CHATTTS_TOKEN_RE = re.compile(r'\[[a-z_]+(?:_\d+)?\]')
 
@@ -62,11 +63,20 @@ class _ChatTTSHandle:
         return self._speaker_cache[seed]
 
 
-def load_chattts() -> _ChatTTSHandle:
-    """供 ModelManager.register_loader 使用的加载函数。"""
+def load_chattts(model_dir: Path | None = None) -> _ChatTTSHandle:
+    """供 ModelManager.register_loader 使用的加载函数。
+
+    model_dir 指向包含 safetensors 权重的本地目录（settings.chattts_model_dir）。
+    传 None 时让 ChatTTS 自行查找默认路径（HuggingFace 缓存）。
+    """
     import ChatTTS
     chat = ChatTTS.Chat()
-    chat.load(compile=False)
+    if model_dir is not None:
+        ok = chat.load(source="local", custom_path=str(model_dir), compile=False)
+    else:
+        ok = chat.load(compile=False)
+    if not ok:
+        raise RuntimeError(f"ChatTTS load() returned False — check model files in {model_dir}")
     return _ChatTTSHandle(chat)
 
 
@@ -427,11 +437,8 @@ def synthesize_dialogue_batched(
     )
 
 
-def concat_parts_to_mp3(parts: list[Path], dest: Path) -> None:
-    """将多个 WAV 片段用 ffmpeg concat 拼接为 192k MP3。
-
-    单片段时直接转码，多片段时写 concat list 文件后批量合并。
-    """
+async def concat_parts_to_mp3(parts: list[Path], dest: Path) -> None:
+    """将多个 WAV 片段用 ffmpeg concat 拼接为 192k MP3。"""
     if len(parts) == 1:
         cmd = [
             "ffmpeg", "-y",
@@ -439,9 +446,9 @@ def concat_parts_to_mp3(parts: list[Path], dest: Path) -> None:
             "-codec:a", "libmp3lame", "-b:a", "192k",
             str(dest),
         ]
-        proc = subprocess.run(cmd, capture_output=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg MP3 encode failed: {proc.stderr.decode()}")
+        rc, stderr = await ffmpeg_run(cmd, timeout=300)
+        if rc != 0:
+            raise RuntimeError(f"ffmpeg MP3 encode failed: {stderr}")
         return
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -456,8 +463,8 @@ def concat_parts_to_mp3(parts: list[Path], dest: Path) -> None:
             "-codec:a", "libmp3lame", "-b:a", "192k",
             str(dest),
         ]
-        proc = subprocess.run(cmd, capture_output=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg concat+encode failed: {proc.stderr.decode()}")
+        rc, stderr = await ffmpeg_run(cmd, timeout=300)
+        if rc != 0:
+            raise RuntimeError(f"ffmpeg concat+encode failed: {stderr}")
     finally:
         concat_list.unlink(missing_ok=True)

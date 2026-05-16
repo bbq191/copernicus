@@ -12,6 +12,10 @@ os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count() or 8)
 os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 8)
 # 必须在 CUDA 首次初始化前设置，允许分配器跨非连续内存页组合大块分配，消除碎片化 OOM
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# 统一模型目录：必须在 modelscope / funasr 导入前设置，否则 ModelScope 的下载缓存路径会错误
+# 优先使用 OS 环境变量（生产部署可覆盖），默认指向 backend/models/funasr/
+_default_funasr_cache = str(Path(__file__).resolve().parents[2] / "models" / "funasr")
+os.environ.setdefault("MODELSCOPE_CACHE", _default_funasr_cache)
 
 def _flag_from_env_or_dotenv(key: str) -> bool:
     """读取布尔环境变量，OS 环境优先，其次从 backend/.env 逐行解析。
@@ -80,6 +84,7 @@ else:
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 
 from copernicus.config import settings
@@ -155,12 +160,12 @@ async def lifespan(app: FastAPI):
             "asr",
             loader=lambda: (asr_service.reload(), asr_service)[1],
             unloader=lambda _: asr_service.unload_weights(),
-            vram_estimate_gb=2.0,
+            vram_estimate_gb=4.5,
         )
         model_manager.mark_loaded("asr", asr_service)  # ASRService.__init__ 已加载
         model_manager.register_loader(
             "tts",
-            loader=tts_service.load_chattts,
+            loader=lambda: tts_service.load_chattts(settings.chattts_model_dir),
             unloader=tts_service.unload_chattts,
             vram_estimate_gb=settings.tts_vram_estimate_gb,
         )
@@ -230,6 +235,8 @@ _OPENAPI_TAGS = [
     },
 ]
 
+_NPMMIRROR = "https://registry.npmmirror.com/swagger-ui-dist/5/files"
+
 app = FastAPI(
     title="Copernicus",
     description="""\
@@ -247,7 +254,18 @@ app = FastAPI(
     version="1.1.0",
     lifespan=lifespan,
     openapi_tags=_OPENAPI_TAGS,
+    docs_url=None,
 )
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title,
+        swagger_js_url=f"{_NPMMIRROR}/swagger-ui-bundle.js",
+        swagger_css_url=f"{_NPMMIRROR}/swagger-ui.css",
+    )
 
 app.add_middleware(
     CORSMiddleware,

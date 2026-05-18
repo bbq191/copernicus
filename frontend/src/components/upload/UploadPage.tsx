@@ -1,7 +1,9 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Upload, FileAudio, ScanText } from "lucide-react";
-import { submitTranscriptTask } from "../../api/task";
+import { submitStandardMinutesTask } from "../../api/task";
+import { listTemplates } from "../../api/templates";
+import type { TemplateInfo } from "../../api/templates";
 import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { UploadProgress } from "./UploadProgress";
@@ -21,8 +23,16 @@ export function UploadPage() {
   const [visualScan, setVisualScan] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ received: number; total: number } | null>(null);
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [templateId, setTemplateId] = useState("universal");
   const setTask = useTaskStore((s) => s.setTask);
   const taskId = useTaskStore((s) => s.taskId);
+
+  useEffect(() => {
+    listTemplates()
+      .then(setTemplates)
+      .catch(() => {});
+  }, []);
 
   const submitFile = useCallback(
     async (file: File, withVisualScan: boolean) => {
@@ -31,7 +41,8 @@ export function UploadPage() {
       setUploading(true);
       setUploadProgress(null);
       try {
-        const res = await submitTranscriptTask(file, undefined, withVisualScan, {
+        const res = await submitStandardMinutesTask(file, undefined, withVisualScan, {
+          templateId,
           onProgress: (received, total) => setUploadProgress({ received, total }),
         });
         if (!res.existing) {
@@ -56,7 +67,7 @@ export function UploadPage() {
         setUploadProgress(null);
       }
     },
-    [navigate, setTask],
+    [navigate, setTask, templateId],
   );
 
   const handleFile = useCallback(
@@ -158,42 +169,61 @@ export function UploadPage() {
           )}
         </div>
       ) : (
-        <div
-          className={`border-2 border-dashed rounded-xl p-16 w-full max-w-lg text-center cursor-pointer transition-colors ${
-            dragging
-              ? "border-primary bg-primary/5"
-              : "border-base-300 hover:border-primary/50"
-          }`}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
-          onClick={() => inputRef.current?.click()}
-        >
-          <input
-            ref={inputRef}
-            type="file"
-            accept="audio/*,video/*"
-            className="hidden"
-            onChange={onFileChange}
-          />
-          <div className="flex flex-col items-center gap-4">
-            {dragging ? (
-              <FileAudio className="h-12 w-12 text-primary" />
-            ) : (
-              <Upload className="h-12 w-12 text-base-content/30" />
-            )}
-            <div>
-              <p className="font-medium">
-                拖拽音视频文件到此处，或点击选择
-              </p>
-              <p className="text-sm text-base-content/50 mt-1">
-                支持 MP3, WAV, MP4, M4A 等格式，最大 500MB
-              </p>
+        <div className="flex flex-col items-center gap-4 w-full max-w-lg">
+          <div
+            className={`border-2 border-dashed rounded-xl p-16 w-full text-center cursor-pointer transition-colors ${
+              dragging
+                ? "border-primary bg-primary/5"
+                : "border-base-300 hover:border-primary/50"
+            }`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}
+            onClick={() => inputRef.current?.click()}
+          >
+            <input
+              ref={inputRef}
+              type="file"
+              accept="audio/*,video/*"
+              className="hidden"
+              onChange={onFileChange}
+            />
+            <div className="flex flex-col items-center gap-4">
+              {dragging ? (
+                <FileAudio className="h-12 w-12 text-primary" />
+              ) : (
+                <Upload className="h-12 w-12 text-base-content/30" />
+              )}
+              <div>
+                <p className="font-medium">
+                  拖拽音视频文件到此处，或点击选择
+                </p>
+                <p className="text-sm text-base-content/50 mt-1">
+                  支持 MP3, WAV, MP4, M4A 等格式，最大 500MB
+                </p>
+              </div>
             </div>
           </div>
+
+          {templates.length > 1 && (
+            <div className="flex items-center gap-3 w-full">
+              <label className="text-sm text-base-content/60 shrink-0">纪要模板</label>
+              <select
+                className="select select-bordered select-sm flex-1"
+                value={templateId}
+                onChange={(e) => setTemplateId(e.target.value)}
+              >
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id} title={t.description}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       )}
 

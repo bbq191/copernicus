@@ -13,6 +13,7 @@ const UPLOAD_MAX_RETRIES = 3;
 
 export interface SubmitOptions {
   onProgress?: (received: number, total: number) => void;
+  templateId?: string;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -29,7 +30,7 @@ async function uploadWithRetry(form: FormData): Promise<TaskSubmitResponse> {
     }
     try {
       const { data } = await client.post<TaskSubmitResponse>(
-        "/tasks/transcript",
+        "/tasks/standard_minutes",
         form,
       );
       return data;
@@ -41,7 +42,7 @@ async function uploadWithRetry(form: FormData): Promise<TaskSubmitResponse> {
   throw lastError;
 }
 
-export async function submitTranscriptTask(
+export async function submitStandardMinutesTask(
   file: File,
   hotwords?: string,
   visualScan?: boolean,
@@ -49,7 +50,8 @@ export async function submitTranscriptTask(
 ): Promise<TaskSubmitResponse> {
   const hash = await computeFileSHA256(file);
 
-  // 大文件：分片上传（断点续传）— 状态查询/去重由服务端在 GET /uploads/{hash} 统一处理
+  // 大文件：分片上传（断点续传）
+  // 注：分片路径服务端固定使用 universal 模板，完成后可在摘要面板切换重新评估
   if (file.size >= CHUNKED_THRESHOLD) {
     return chunkedUploadFile(file, hash, {
       hotwords,
@@ -72,6 +74,7 @@ export async function submitTranscriptTask(
   form.append("file", file);
   if (hotwords) form.append("hotwords", hotwords);
   if (visualScan) form.append("visual_scan", "true");
+  form.append("template_id", options?.templateId ?? "universal");
 
   return uploadWithRetry(form);
 }
@@ -101,14 +104,6 @@ export async function rerunTranscript(
   return data;
 }
 
-export async function rerunEvaluation(
-  taskId: string,
-): Promise<TaskSubmitResponse> {
-  const { data } = await client.post<TaskSubmitResponse>(
-    `/tasks/${taskId}/rerun-evaluation`,
-  );
-  return data;
-}
 
 export function getTaskMediaUrl(taskId: string): string {
   return `/api/v1/tasks/${taskId}/media`;
@@ -129,7 +124,6 @@ export function resolveEvidenceUrl(
   if (!evidenceUrl || !taskId) return null;
   if (evidenceUrl.startsWith("http") || evidenceUrl.startsWith("/api"))
     return evidenceUrl;
-  // 提取 filename：兼容 Windows 反斜杠和 Unix 正斜杠
   const filename = evidenceUrl.includes("/") || evidenceUrl.includes("\\")
     ? evidenceUrl.split(/[/\\]/).pop()!
     : evidenceUrl;

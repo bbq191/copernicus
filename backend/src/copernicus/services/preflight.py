@@ -5,6 +5,7 @@
 """
 
 import logging
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -27,22 +28,64 @@ def _skip(msg: str) -> str:
     return f"  [SKIP] {msg}"
 
 
+def _is_modelscope_cached(cache_root: Path, model_id: str) -> bool:
+    return (cache_root / "models" / model_id).exists()
+
+
+def _check_asr_models(settings: Settings) -> list[tuple[str, bool]]:
+    cache_root = Path(os.environ.get("MODELSCOPE_CACHE", str(settings.funasr_cache_dir)))
+
+    if settings.asr_mode == "sensevoice":
+        mid = settings.sensevoice_model_dir
+        if _is_modelscope_cached(cache_root, mid):
+            return [(_ok(f"SenseVoice model  : {mid}"), True)]
+        return [(_warn(
+            f"SenseVoice model missing : {cache_root / 'models' / mid}"
+            "  — run: python scripts/download_models.py"
+        ), False)]
+
+    # paraformer 模式：需要 4 个模型
+    model_ids = [
+        (settings.asr_model_dir,  "seaco_paraformer"),
+        (settings.vad_model_dir,  "VAD"),
+        (settings.punc_model_dir, "punctuation"),
+        (settings.spk_model_dir,  "speaker embedding"),
+    ]
+    items: list[tuple[str, bool]] = []
+    for mid, label in model_ids:
+        if _is_modelscope_cached(cache_root, mid):
+            items.append((_ok(f"ASR model [{label}] : {mid}"), True))
+        else:
+            items.append((_warn(
+                f"ASR model [{label}] missing : {cache_root / 'models' / mid}"
+                "  — run: python scripts/download_models.py"
+            ), False))
+    return items
+
+
 def _check_tts_paths(settings: Settings) -> list[tuple[str, bool]]:
+    results: list[tuple[str, bool]] = []
     try:
         import ChatTTS  # noqa: F401
-        return [(_ok("ChatTTS package installed"), True)]
+        results.append((_ok("ChatTTS package installed"), True))
     except ImportError:
-        return [(_warn("ChatTTS not installed — run: pip install ChatTTS"), False)]
+        results.append((_warn("ChatTTS not installed — run: pip install ChatTTS"), False))
+    chattts_dir = settings.chattts_model_dir
+    if chattts_dir.exists() and any(chattts_dir.glob("*.safetensors")):
+        results.append((_ok(f"ChatTTS weights : {chattts_dir}"), True))
+    else:
+        results.append((_warn(f"ChatTTS weights missing : {chattts_dir}"), False))
+    return results
 
 
 def _check_face_model(settings: Settings) -> list[tuple[str, bool]]:
     if not settings.face_detect_enabled:
         return [(_skip("Face detection disabled, YOLO check skipped"), True)]
 
-    model = Path(settings.face_detect_model)
+    model = settings.yolo_model_path
     if model.exists():
         return [(_ok(f"YOLO face model : {model}"), True)]
-    return [(_warn(f"YOLO face model missing : {model}"), False)]
+    return [(_warn(f"YOLO face model missing : {model}  — place yolov8n-face.pt in backend/models/yolo/"), False)]
 
 
 async def _check_llm(settings: Settings) -> list[tuple[str, bool]]:
@@ -60,9 +103,19 @@ async def _check_llm(settings: Settings) -> list[tuple[str, bool]]:
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(f"{base_url}/api/tags")
-            if resp.status_code == 200:
-                return [(_ok(f"Ollama reachable : {base_url}  model={settings.llm_model_name}"), True)]
-            return [(_warn(f"Ollama HTTP {resp.status_code} : {base_url}"), False)]
+            if resp.status_code != 200:
+                return [(_warn(f"Ollama HTTP {resp.status_code} : {base_url}"), False)]
+            installed = {m["name"] for m in (resp.json().get("models") or [])}
+            target = settings.llm_model_name
+            # 精确匹配或前缀匹配（"qwen3:latest" 匹配 "qwen3"）
+            found = target in installed or any(n.startswith(target.split(":")[0]) for n in installed)
+            if found:
+                return [(_ok(f"Ollama reachable, model found : {target}"), True)]
+            available = ", ".join(sorted(installed)) or "(none)"
+            return [(_warn(
+                f"Ollama model not found : '{target}'  — run: ollama pull {target}"
+                f"  (installed: {available})"
+            ), False)]
         except Exception as exc:
             return [(_warn(f"Ollama not reachable : {base_url}  ({exc})"), False)]
     else:
@@ -117,6 +170,7 @@ async def run_preflight(settings: Settings) -> int:
     """运行全部预检，返回警告数量。结果以显著分隔线输出到日志。"""
     items = (
         _check_funasr_patches()
+        + _check_asr_models(settings)
         + _check_tts_paths(settings)
         + _check_face_model(settings)
         + await _check_llm(settings)

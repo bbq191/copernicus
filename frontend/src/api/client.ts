@@ -18,4 +18,6 @@ client.interceptors.response.use(
   },
 );
 
+export const POLL_INTERVAL_MS = 2000;
+
 export default client;

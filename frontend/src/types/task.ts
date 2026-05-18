@@ -1,5 +1,5 @@
 import type { ComplianceResponse } from "./compliance";
-import type { TranscriptionResponse, TranscriptResponse } from "./transcript";
+import type { TranscriptResponse } from "./transcript";
 import type { EvaluationResponse, EvaluationResult } from "./evaluation";
 
 export type TaskStatus =
@@ -29,12 +29,7 @@ export interface TaskStatusResponse {
   task_id: string;
   status: TaskStatus;
   progress: TaskProgress;
-  result:
-    | TranscriptionResponse
-    | EvaluationResponse
-    | TranscriptResponse
-    | ComplianceResponse
-    | null;
+  result: EvaluationResponse | TranscriptResponse | ComplianceResponse | null;
   error: string | null;
 }
 
@@ -45,6 +40,7 @@ export interface TaskResultsResponse {
   compliance: ComplianceResponse | null;
   has_audio: boolean;
   has_video: boolean;
+  has_synthesis: boolean;
   keyframe_count: number;
   ocr_text_count: number;
   visual_event_count: number;

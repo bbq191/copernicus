@@ -1,22 +1,33 @@
-import { Sparkles, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Sparkles, ShieldCheck, Mic2 } from "lucide-react";
 import { MediaPlayer } from "../player/MediaPlayer";
 import { SummaryPanel } from "../summary/SummaryPanel";
 import { CompliancePanel } from "../compliance/CompliancePanel";
+import { SynthesisPanel } from "../synthesis/SynthesisPanel";
 import { useEvaluationStore } from "../../stores/evaluationStore";
 import { useComplianceStore } from "../../stores/complianceStore";
+import { useSynthesisStore } from "../../stores/synthesisStore";
 
 export function LeftPanel() {
   const evaluation = useEvaluationStore((s) => s.evaluation);
   const report = useComplianceStore((s) => s.report);
+  const hasSynthesis = useSynthesisStore((s) => s.hasSynthesis);
 
-  const scoreBadge = evaluation ? `${evaluation.scores.total}分` : null;
+  const [synthesisOpen, setSynthesisOpen] = useState(false);
+
+  // 检测到已有合成音频时自动展开面板
+  useEffect(() => {
+    if (hasSynthesis) setSynthesisOpen(true);
+  }, [hasSynthesis]);
+
+  const evaluationBadge = evaluation ? "已生成" : null;
   const complianceBadge = report
     ? `${Math.round(report.compliance_score)}分`
     : null;
   const violationCount = report?.violations.length ?? 0;
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto border-r border-base-300">
+    <div className="flex flex-col border-r border-base-300">
       <MediaPlayer />
 
       <div className="divider my-0" />
@@ -27,9 +38,9 @@ export function LeftPanel() {
         <div className="collapse-title font-bold text-sm flex items-center gap-2 min-h-0 py-2 px-4">
           <Sparkles className="h-4 w-4 shrink-0" />
           智能摘要
-          {scoreBadge && (
+          {evaluationBadge && (
             <span className="badge badge-primary badge-sm ml-auto">
-              {scoreBadge}
+              {evaluationBadge}
             </span>
           )}
         </div>
@@ -71,6 +82,25 @@ export function LeftPanel() {
         </div>
         <div className="collapse-content px-0 pb-0">
           <CompliancePanel />
+        </div>
+      </div>
+
+      {/* SynthesisPanel collapse — 受控，检测到合成音频时自动展开 */}
+      <div className="collapse collapse-arrow border-t border-base-300">
+        <input
+          type="checkbox"
+          checked={synthesisOpen}
+          onChange={(e) => setSynthesisOpen(e.target.checked)}
+        />
+        <div className="collapse-title font-bold text-sm flex items-center gap-2 min-h-0 py-2 px-4">
+          <Mic2 className="h-4 w-4 shrink-0" />
+          音频重塑
+          {hasSynthesis && (
+            <span className="badge badge-success badge-sm ml-auto">已合成</span>
+          )}
+        </div>
+        <div className="collapse-content px-0 pb-0">
+          <SynthesisPanel />
         </div>
       </div>
     </div>

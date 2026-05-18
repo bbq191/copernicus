@@ -29,7 +29,7 @@ export function AppLayout() {
       {/* Three-column body */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left: media player + summary + compliance config */}
-        <div className="w-[420px] shrink-0">
+        <div className="w-[420px] shrink-0 overflow-y-auto">
           <LeftPanel />
         </div>
 

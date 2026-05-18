@@ -1,10 +1,8 @@
-import client from "./client";
+import client, { POLL_INTERVAL_MS } from "./client";
 import type { ComplianceResponse } from "../types/compliance";
 import type { TaskSubmitResponse, TaskStatusResponse } from "../types/task";
 import { useComplianceStore } from "../stores/complianceStore";
 import type { TranscriptEntry } from "../types/transcript";
-
-const POLL_INTERVAL_MS = 2000;
 
 const STATUS_TEXT: Record<string, string> = {
   pending: "排队中...",
@@ -31,7 +29,7 @@ export async function auditCompliance(
   if (parentTaskId) form.append("parent_task_id", parentTaskId);
 
   const { data: task } = await client.post<TaskSubmitResponse>(
-    "/compliance/audit/async",
+    "/tasks/compliance_audit",
     form,
   );
 

@@ -12,12 +12,6 @@ from copernicus.schemas.upload import UploadChunkResponse, UploadQueryResponse
 from copernicus.services.task_store import TaskStore
 from copernicus.services.upload_session import UploadSessionService
 
-_VIDEO_EXTENSIONS = {
-    e.strip().lower()
-    for e in settings.video_extensions.split(",")
-    if e.strip()
-}
-
 router = APIRouter(prefix="/api/v1/uploads", tags=["存储层"])
 
 
@@ -143,7 +137,7 @@ async def upload_chunk(
 
     persistence = store.persistence
     suffix = Path(filename).suffix or ".bin"
-    is_video = suffix.lower() in _VIDEO_EXTENSIONS
+    is_video = suffix.lower() in settings.video_extensions_set
     if is_video:
         video_path = persistence.save_video(task_id, assembled, suffix)
         persistence.save_meta(

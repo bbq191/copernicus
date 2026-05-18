@@ -1,9 +1,7 @@
-import client from "./client";
+import client, { POLL_INTERVAL_MS } from "./client";
 import type { EvaluationResult, EvaluationResponse } from "../types/evaluation";
 import type { TaskSubmitResponse, TaskStatusResponse } from "../types/task";
 import { useEvaluationStore } from "../stores/evaluationStore";
-
-const POLL_INTERVAL_MS = 2000;
 
 const STATUS_TEXT: Record<string, string> = {
   pending: "排队中...",
@@ -15,9 +13,11 @@ const STATUS_TEXT: Record<string, string> = {
 export async function evaluateText(
   text: string,
   parentTaskId?: string,
+  templateId = "universal",
 ): Promise<EvaluationResult> {
   const form = new FormData();
   form.append("text", text);
+  form.append("template_id", templateId);
   if (parentTaskId) form.append("parent_task_id", parentTaskId);
 
   const { data: task } = await client.post<TaskSubmitResponse>(
@@ -43,7 +43,6 @@ async function pollForEvaluation(taskId: string): Promise<EvaluationResult> {
       throw new Error(data.error || "评估失败");
     }
 
-    // 上报进度
     const percent = data.progress?.percent ?? 0;
     const statusText = STATUS_TEXT[data.status] || "处理中...";
     store().setProgress(percent, statusText);

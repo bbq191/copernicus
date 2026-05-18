@@ -370,13 +370,15 @@ ollama list
 
 **显存预估**（qwen3:7B Q4_K_M）：
 
-| 组件                         | 显存占用           |
-| ---------------------------- | ------------------ |
-| 模型权重（Q4_K_M）           | ~4.5 GB            |
-| KV Cache（num_ctx=16384）    | ~2.0 GB            |
-| ASR 模型（Paraformer Large） | ~1.5 GB            |
-| 系统余量                     | ~3.0 GB            |
-| 合计                         | ~11 GB（刚好满载） |
+| 组件                         | 显存占用 | 备注 |
+| ---------------------------- | -------- | ---- |
+| ASR 模型（Paraformer Large） | ~4.0 GB  | 常驻，TTS 合成时被 ModelManager 卸载 |
+| LLM 模型权重（Q4_K_M）       | ~4.5 GB  | Ollama 进程独立分配 |
+| KV Cache（num_ctx=16384）    | ~2.0 GB  | LLM 推理时叠加 |
+| 系统 + CUDA context          | ~0.5 GB  | 常驻 |
+| 合计（ASR + LLM 同时活跃）   | ~11 GB   | 满载，建议调低 num_ctx |
+
+**TTS 合成说明**：ChatTTS 约占 4 GB，通过 ModelManager 互斥锁在合成任务启动时卸载 ASR，合成完成后 ASR 可重新加载。默认关闭 `TTS_REWRITE_ENABLED`（不调用 LLM 改写），11 GB VRAM 下可安全运行 TTS。
 
 若推理过程中出现 OOM，调低 `OLLAMA_NUM_CTX` 至 8192。
 
@@ -514,7 +516,69 @@ EOF
 # 文件名：yolov8n-face.pt
 ```
 
-### 6.6 配置 .env
+### 6.6 部署 ChatTTS 模型
+
+ChatTTS 模型需放置在 `backend/models/chattts/`，目录结构如下：
+
+```
+backend/models/chattts/
+  asset/          # 静态配置文件
+  gpt/            # GPT 解码器权重
+  tokenizer/      # 分词器文件
+  Decoder.safetensors
+  DVAE.safetensors
+  Embed.safetensors
+  Vocos.safetensors
+```
+
+#### 方式 A：有公网访问（Python 自动下载）
+
+```
+cd /opt/copernicus/backend
+source .venv/bin/activate
+mkdir -p models/chattts
+
+python - <<'EOF'
+import ChatTTS
+chat = ChatTTS.Chat()
+chat.load(source='huggingface')
+
+# 将缓存中下载好的文件复制到项目 models 目录
+import shutil, os
+from pathlib import Path
+
+# ChatTTS 默认缓存在 ~/.cache/huggingface/hub/models--2noise--ChatTTS/
+# 执行后确认 models/chattts 目录有 *.safetensors 文件即可
+EOF
+```
+
+> 若上述 Python 方式报路径错误，可手动从 HuggingFace Hub (`2noise/ChatTTS`) 下载所有文件放入 `backend/models/chattts/`。
+
+#### 方式 B：离线导入（已在开发机下载好）
+
+在开发机上打包 chattts 目录：
+
+```
+# 开发机执行
+tar -czf chattts_model.tar.gz -C /path/to/copernicus/backend/models chattts
+# scp 上传到服务器 /root/chattts_model.tar.gz
+```
+
+在服务器上解压：
+
+```
+mkdir -p /opt/copernicus/backend/models
+tar -xzf /root/chattts_model.tar.gz -C /opt/copernicus/backend/models
+```
+
+验证目录结构：
+
+```
+ls /opt/copernicus/backend/models/chattts/
+# 应包含：asset  gpt  tokenizer  Decoder.safetensors  DVAE.safetensors  Embed.safetensors  Vocos.safetensors
+```
+
+### 6.7 配置 .env
 
 ```
 cp /opt/copernicus/backend/.env.example /opt/copernicus/backend/.env
@@ -548,8 +612,12 @@ CORS_ORIGINS=["http://130.100.100.167:3000"]
 UPLOAD_DIR=/data/copernicus/uploads
 MAX_UPLOAD_SIZE_MB=15000
 
-# YOLO 模型路径（相对后端工作目录）
-FACE_DETECT_MODEL=models/yolov8n-face.pt
+# YOLO/ChatTTS 模型路径由配置自动推导（models/yolo/ 和 models/chattts/），无需手动配置
+
+# TTS（ChatTTS 合成，11GB 下关闭 LLM 改写以节省显存）
+TTS_MAX_SENTENCE_CHARS=40
+TTS_SYNTHESIS_BATCH_CHARS=1000
+TTS_REWRITE_ENABLED=false
 
 ```
 
@@ -570,7 +638,7 @@ echo 'export HF_HUB_OFFLINE=1' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 6.7 验证后端启动
+### 6.8 验证后端启动
 
 ```
 cd /opt/copernicus/backend
@@ -661,23 +729,42 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # 后端 API
+    # 后端 DOCS
+    location ~ ^/(docs|redoc|openapi.json) {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # 分片上传（PATCH Content-Range，关闭请求缓冲，避免 nginx 将 chunk 全量缓存后再转发）
+    location /api/v1/uploads/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+        client_max_body_size 15000m;
+    }
+
+    # 媒体文件与合成音频（大文件下载，关闭响应缓冲）
+    location /api/v1/tasks/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_buffering off;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+        client_max_body_size 15000m;
+    }
+
+    # 后端 API（通用）
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 3600;
         proxy_send_timeout 3600;
-
-        # 支持大文件上传
-        client_max_body_size 15000m;
-    }
-
-    # 媒体文件（大文件，关闭缓冲）
-    location /api/v1/tasks/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_buffering off;
-        proxy_read_timeout 3600;
         client_max_body_size 15000m;
     }
 }
@@ -717,6 +804,7 @@ User=bht_admin
 Group=bht_admin
 WorkingDirectory=/opt/copernicus/backend
 Environment="PATH=/home/bht_admin/.pyenv/shims:/home/bht_admin/.pyenv/bin:/opt/copernicus/backend/.venv/bin:/usr/local/bin:/usr/bin"
+Environment="HF_HUB_OFFLINE=1"
 EnvironmentFile=/opt/copernicus/backend/.env
 ExecStart=/opt/copernicus/backend/.venv/bin/uvicorn copernicus.main:app \
     --host 0.0.0.0 \
@@ -805,6 +893,7 @@ curl http://130.100.100.167/api/v1/health
 | HF_HUB_OFFLINE            | 未设置         | 1                        | 离线模式，避免联网检查 |
 | EVALUATION_NUM_CTX        | 8192           | 8192（不变）             | 已在安全范围           |
 | COMPLIANCE_NUM_CTX        | 8192           | 8192（不变）             | 已在安全范围           |
+| TTS_REWRITE_ENABLED       | false          | false                    | 开启会调用 LLM 改写，占额外显存 |
 
 ---
 
@@ -850,6 +939,23 @@ ASR_BATCH_SIZE=20
 
 # 以 root 执行
 systemctl restart copernicus-backend
+```
+
+**TTS 合成时 OOM**: TTS 合成通过 ModelManager 先卸载 ASR 再加载 ChatTTS，但若同时有 LLM 推理占用显存，可能仍触发 OOM。确认 `TTS_REWRITE_ENABLED=false`（不触发额外 LLM 调用），并在合成前停止正在进行的 ASR 任务。
+
+### ChatTTS 模型加载失败
+
+现象：合成请求返回 500，日志出现 `ChatTTS load() returned False`。
+
+```
+journalctl -u copernicus-backend -n 100 | grep -i "tts\|error"
+
+# 检查模型文件是否完整
+ls /opt/copernicus/backend/models/chattts/
+# 应含：Decoder.safetensors  DVAE.safetensors  Embed.safetensors  Vocos.safetensors
+# 以及 asset/  gpt/  tokenizer/ 三个子目录
+
+# 若文件缺失，重新执行 6.6 节的模型部署步骤
 ```
 
 ### ASR 模型加载失败
@@ -924,7 +1030,7 @@ watch -n 1 nvidia-smi
 
 ### 磁盘占用
 
-上传文件持久化在 `/data/copernicus/uploads/`，每个任务目录包含音视频文件和关键帧图片，长期运行需定期清理已处理的历史任务：
+上传文件持久化在 `/data/copernicus/uploads/`，每个任务目录包含音视频文件、关键帧图片和 TTS 合成音频（synthesis.mp3），长期运行需定期清理已处理的历史任务：
 
 ```
 du -sh /data/copernicus/uploads/

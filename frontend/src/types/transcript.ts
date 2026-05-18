@@ -18,15 +18,3 @@ export interface TranscriptResponse {
   transcript: TranscriptEntry[];
   processing_time_ms: number;
 }
-
-export interface TranscriptionResponse {
-  raw_text: string;
-  corrected_text: string;
-  segments: SegmentSchema[];
-  processing_time_ms: number;
-}
-
-export interface HealthResponse {
-  asr_loaded: boolean;
-  llm_reachable: boolean;
-}

@@ -5,6 +5,7 @@ import { usePlayerStore } from "../stores/playerStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useEvaluationStore } from "../stores/evaluationStore";
 import { useComplianceStore } from "../stores/complianceStore";
+import { useSynthesisStore } from "../stores/synthesisStore";
 import { useTaskPolling } from "../hooks/useTaskPolling";
 import { getTaskResults, getTaskMediaUrl } from "../api/task";
 import { AppLayout } from "../components/layout/AppLayout";
@@ -54,6 +55,9 @@ export function WorkspacePage() {
             usePlayerStore.getState().setMediaSrc(
               getTaskMediaUrl(taskId), "video"
             );
+          }
+          if (res.has_synthesis) {
+            useSynthesisStore.getState().setHasSynthesis(true);
           }
           useTranscriptStore.getState().setRawEntries(res.transcript.transcript);
           updateStatus("completed", { current_chunk: 0, total_chunks: 0, percent: 100 });

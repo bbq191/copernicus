@@ -125,7 +125,6 @@ class Settings(BaseSettings):
 
     # Face Detection (YOLO)
     face_detect_enabled: bool = True
-    face_detect_model: str = "models/yolov8n-face.pt"
     face_detect_confidence: float = 0.5
     face_missing_threshold_ms: int = 10000
 
@@ -165,9 +164,31 @@ class Settings(BaseSettings):
     upload_dir: Path = Path("./uploads")
     max_upload_size_mb: int = 500
 
+    # Unified model storage root — all model weights live under this directory:
+    #   models/funasr/   FunASR / ModelScope cache (MODELSCOPE_CACHE)
+    #   models/chattts/  ChatTTS safetensors
+    #   models/yolo/     YOLO .pt weights
+    models_dir: Path = Path("./models")
+
+    @property
+    def funasr_cache_dir(self) -> Path:
+        return self.models_dir / "funasr"
+
+    @property
+    def chattts_model_dir(self) -> Path:
+        return self.models_dir / "chattts"
+
+    @property
+    def yolo_model_path(self) -> Path:
+        return self.models_dir / "yolo" / "yolov8n-face.pt"
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024
+
+    @property
+    def video_extensions_set(self) -> frozenset[str]:
+        return frozenset(e.strip().lower() for e in self.video_extensions.split(",") if e.strip())
 
     def resolve_asr_device(self) -> str:
         import logging

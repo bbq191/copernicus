@@ -21,7 +21,7 @@ class FaceDetectorService:
     """懒加载 YOLO 人脸检测器，支持时间轴事件分析。"""
 
     def __init__(self, settings: Settings) -> None:
-        self._model_path = settings.face_detect_model
+        self._model_path = str(settings.yolo_model_path)
         self._confidence = settings.face_detect_confidence
         self._missing_threshold_ms = settings.face_missing_threshold_ms
         self._model = None
@@ -33,7 +33,7 @@ class FaceDetectorService:
         if not model_path.exists():
             raise FileNotFoundError(
                 f"Face detection model not found: {model_path}. "
-                f"Download yolov8n-face.pt and place it in backend/models/"
+                f"Place yolov8n-face.pt in backend/models/yolo/"
             )
         from ultralytics import YOLO
 

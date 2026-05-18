@@ -48,6 +48,7 @@ class TaskResultsResponse(BaseModel):
     compliance: ComplianceResponse | None = None
     has_audio: bool = False
     has_video: bool = False
+    has_synthesis: bool = False
     keyframe_count: int = 0
     ocr_text_count: int = 0
     visual_event_count: int = 0

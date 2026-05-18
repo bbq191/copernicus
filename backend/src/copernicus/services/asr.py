@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from copernicus.config import Settings
+from copernicus.config import Settings, settings as _settings
 from copernicus.exceptions import ASRError
 from copernicus.utils.text import split_sentences
 
@@ -41,7 +41,7 @@ _MAX_AUDIO_DURATION_MS = 36_000_000     # 合理性上限：10 小时
 
 
 _MODELSCOPE_CACHE = Path(
-    os.environ.get("MODELSCOPE_CACHE", Path.home() / ".cache" / "modelscope" / "hub")
+    os.environ.get("MODELSCOPE_CACHE", str(_settings.funasr_cache_dir))
 )
 
 

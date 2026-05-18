@@ -1,6 +1,7 @@
 import hashlib
 import mimetypes
 from pathlib import Path
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
@@ -19,14 +20,39 @@ from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.task_store import TaskStore
 from copernicus.utils.request import parse_hotwords
 
-_VIDEO_EXTENSIONS = {
-    e.strip().lower()
-    for e in settings.video_extensions.split(",")
-    if e.strip()
-}
-
 # 不设置 router 级 tags，各路由按逻辑层单独标注
 router = APIRouter(prefix="/api/v1")
+
+
+class _UploadResult(NamedTuple):
+    audio_bytes: bytes
+    file_hash: str
+    hotwords: list[str]
+    filename: str
+    existing_response: TaskSubmitResponse | None
+
+
+async def _read_upload(
+    file: UploadFile,
+    hotwords_str: str | None,
+    store: TaskStore,
+) -> _UploadResult:
+    """读取并校验上传文件；文件已存在时在 existing_response 中返回缓存响应。"""
+    audio_bytes = await file.read()
+    if len(audio_bytes) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=413, detail="File too large")
+    file_hash = hashlib.sha256(audio_bytes).hexdigest()
+    existing_id = store.lookup_by_hash(file_hash)
+    if existing_id:
+        existing_task = store.get(existing_id)
+        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
+        existing_resp = TaskSubmitResponse(task_id=existing_id, status=existing_status, existing=True)
+        return _UploadResult(b"", file_hash, [], "", existing_resp)
+    try:
+        hw = parse_hotwords(hotwords_str)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return _UploadResult(audio_bytes, file_hash, hw, file.filename or "upload.bin", None)
 
 
 def _persist_task_media(
@@ -37,25 +63,12 @@ def _persist_task_media(
     file_hash: str,
 ) -> None:
     """保存上传媒体文件和 meta.json，并更新任务的 audio_path。"""
-    persistence = store.persistence
-    suffix = Path(filename).suffix or ".bin"
-    is_video = suffix.lower() in _VIDEO_EXTENSIONS
-
-    if is_video:
-        video_path = persistence.save_video(task_id, audio_bytes, suffix)
-        persistence.save_meta(
-            task_id, filename=filename, file_hash=file_hash,
-            audio_suffix=suffix, media_type="video", video_suffix=suffix,
-        )
-        task = store.get(task_id)
-        if task:
-            task.audio_path = str(video_path)
-    else:
-        audio_path = persistence.save_audio(task_id, audio_bytes, suffix)
-        persistence.save_meta(task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix)
-        task = store.get(task_id)
-        if task:
-            task.audio_path = str(audio_path)
+    path = store.persistence.persist_media(
+        task_id, filename, file_hash, audio_bytes, settings.video_extensions_set
+    )
+    task = store.get(task_id)
+    if task:
+        task.audio_path = str(path)
 
 
 # ---------------------------------------------------------------------------
@@ -86,32 +99,17 @@ async def submit_standard_minutes_task(
     `visual_scan=true` 时额外执行关键帧提取、OCR 和人脸检测，结果存入
     `ocr_results.json` 与 `visual_events.json`，可供后续合规审核使用。
     """
-    audio_bytes = await file.read()
-
-    if len(audio_bytes) > settings.max_upload_size_bytes:
-        raise HTTPException(status_code=413, detail="File too large")
-
-    file_hash = hashlib.sha256(audio_bytes).hexdigest()
-    existing_id = store.lookup_by_hash(file_hash)
-    if existing_id:
-        existing_task = store.get(existing_id)
-        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
-        return TaskSubmitResponse(task_id=existing_id, status=existing_status, existing=True)
-
-    try:
-        hw = parse_hotwords(hotwords)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    filename = file.filename or "upload.bin"
+    upload = await _read_upload(file, hotwords, store)
+    if upload.existing_response:
+        return upload.existing_response
     task_id = store.submit_standard_minutes(
-        audio_bytes, filename, hw,
-        file_hash=file_hash,
+        upload.audio_bytes, upload.filename, upload.hotwords,
+        file_hash=upload.file_hash,
         visual_scan=visual_scan,
         generate_summary=generate_summary,
         template_id=template_id,
     )
-    _persist_task_media(store, task_id, audio_bytes, filename, file_hash)
+    _persist_task_media(store, task_id, upload.audio_bytes, upload.filename, upload.file_hash)
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 
@@ -133,29 +131,15 @@ async def submit_transcript_task(
     比 `standard_minutes` 快约 30%（省去评估阶段的 LLM 调用）。
     适用于只需要转写文本、后续自行处理摘要的场景。
     """
-    audio_bytes = await file.read()
-
-    if len(audio_bytes) > settings.max_upload_size_bytes:
-        raise HTTPException(status_code=413, detail="File too large")
-
-    file_hash = hashlib.sha256(audio_bytes).hexdigest()
-    existing_id = store.lookup_by_hash(file_hash)
-    if existing_id:
-        existing_task = store.get(existing_id)
-        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
-        return TaskSubmitResponse(task_id=existing_id, status=existing_status, existing=True)
-
-    try:
-        hw = parse_hotwords(hotwords)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    filename = file.filename or "upload.bin"
+    upload = await _read_upload(file, hotwords, store)
+    if upload.existing_response:
+        return upload.existing_response
     task_id = store.submit_transcript(
-        audio_bytes, filename, hw,
-        file_hash=file_hash,
+        upload.audio_bytes, upload.filename, upload.hotwords,
+        file_hash=upload.file_hash,
         visual_scan=visual_scan,
     )
-    _persist_task_media(store, task_id, audio_bytes, filename, file_hash)
+    _persist_task_media(store, task_id, upload.audio_bytes, upload.filename, upload.file_hash)
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 
@@ -186,27 +170,6 @@ async def rerun_transcript(
         raise HTTPException(status_code=404, detail=str(e))
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
-
-@router.post(
-    "/tasks/{task_id}/rerun-evaluation",
-    response_model=TaskSubmitResponse,
-    tags=["基础 AI"],
-    summary="重新执行摘要评估",
-)
-async def rerun_evaluation(
-    task_id: str,
-    store: TaskStore = Depends(get_task_store),
-) -> TaskSubmitResponse:
-    """基于已有转写结果重新生成评分与摘要。
-
-    不重新执行 ASR，直接读取 `transcript.json` 的纠正文本送入评估模型。
-    适用于更换 LLM 模型后刷新摘要质量。
-    """
-    try:
-        child_task_id = store.rerun_evaluation(task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return TaskSubmitResponse(task_id=child_task_id, status=TaskStatus.PENDING)
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +293,7 @@ async def get_task_results(
 
     has_audio = persistence.find_audio(task_id) is not None
     has_video = persistence.find_video(task_id) is not None
+    has_synthesis = (persistence.task_dir(task_id) / "synthesis.mp3").exists()
     frames_path = persistence.task_dir(task_id) / "frames"
     keyframe_count = len(list(frames_path.glob("*"))) if frames_path.is_dir() else 0
 
@@ -346,6 +310,7 @@ async def get_task_results(
         compliance=compliance,
         has_audio=has_audio,
         has_video=has_video,
+        has_synthesis=has_synthesis,
         keyframe_count=keyframe_count,
         ocr_text_count=ocr_text_count,
         visual_event_count=visual_event_count,

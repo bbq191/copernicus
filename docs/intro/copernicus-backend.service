@@ -9,6 +9,7 @@ User=bht_admin
 Group=bht_admin
 WorkingDirectory=/opt/copernicus/backend
 Environment="PATH=/home/bht_admin/.pyenv/shims:/home/bht_admin/.pyenv/bin:/opt/copernicus/backend/.venv/bin:/usr/local/bin:/usr/bin"
+Environment="HF_HUB_OFFLINE=1"
 EnvironmentFile=/opt/copernicus/backend/.env
 ExecStart=/opt/copernicus/backend/.venv/bin/uvicorn copernicus.main:app \
     --host 0.0.0.0 \

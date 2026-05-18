@@ -107,6 +107,27 @@ class PersistenceService:
         logger.info("Saved video (%d bytes) for task %s", len(video_bytes), task_id)
         return dest
 
+    def persist_media(
+        self,
+        task_id: str,
+        filename: str,
+        file_hash: str,
+        data: bytes,
+        video_extensions: frozenset[str],
+    ) -> Path:
+        """保存媒体文件及 meta.json，返回保存路径。音频/视频自动按后缀区分。"""
+        suffix = Path(filename).suffix or ".bin"
+        if suffix.lower() in video_extensions:
+            path = self.save_video(task_id, data, suffix)
+            self.save_meta(
+                task_id, filename=filename, file_hash=file_hash,
+                audio_suffix=suffix, media_type="video", video_suffix=suffix,
+            )
+        else:
+            path = self.save_audio(task_id, data, suffix)
+            self.save_meta(task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix)
+        return path
+
     def find_video(self, task_id: str) -> Path | None:
         d = self._upload_dir / task_id
         if not d.exists():

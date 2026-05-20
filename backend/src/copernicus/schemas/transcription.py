@@ -1,4 +1,18 @@
+from typing import Literal
+
 from pydantic import BaseModel
+
+
+class ComponentStatus(BaseModel):
+    status: Literal["ok", "degraded", "down"]
+    detail: str | None = None
+
+
+class TaskStats(BaseModel):
+    active: int
+    completed: int
+    failed: int
+    synthesis_running: int
 
 
 class VramStatus(BaseModel):
@@ -8,8 +22,11 @@ class VramStatus(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    asr_loaded: bool
-    llm_reachable: bool
+    status: Literal["healthy", "degraded", "unhealthy"]
+    asr: ComponentStatus
+    llm: ComponentStatus
+    tts: ComponentStatus | None = None
+    tasks: TaskStats
     vram: VramStatus | None = None
 
 

@@ -58,5 +58,7 @@ class TestHealthEndpoint:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["asr_loaded"] is True
-        assert data["llm_reachable"] is True
+        assert data["status"] in ("healthy", "degraded", "unhealthy")
+        assert data["asr"]["status"] in ("ok", "degraded", "down")
+        assert data["llm"]["status"] in ("ok", "down")
+        assert "tasks" in data

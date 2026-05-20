@@ -16,3 +16,15 @@ class CorrectionError(CopernicusError):
 
 class ComplianceError(CopernicusError):
     """Raised when compliance audit fails."""
+
+
+class TaskNotFoundError(CopernicusError):
+    """Raised when a requested task does not exist."""
+
+
+class AudioNotFoundError(CopernicusError):
+    """Raised when the audio file for a task is missing."""
+
+
+class ServiceNotConfiguredError(CopernicusError):
+    """Raised when a required service was not initialized."""

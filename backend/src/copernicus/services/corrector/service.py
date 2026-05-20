@@ -11,148 +11,10 @@ from copernicus.utils.llm_parse import strip_think_tags
 from copernicus.utils.text import chunk_text, merge_chunks
 from copernicus.utils.types import ProgressCallback
 
+from .preprocess import preprocess_text
+from .prompts import SYSTEM_PROMPT, TRANSCRIPT_SYSTEM_PROMPT
+
 logger = logging.getLogger(__name__)
-
-
-# ============================================================
-# 阶段 1：规则预处理（快速过滤噪声和明显错误）
-# ============================================================
-
-# 纯噪声短语模式（英文 ASR 幻觉）
-_NOISE_PHRASE_RE = re.compile(
-    r"^\s*(?:the\s+)*(?:the|a|an|yeah|yes|no|ok|okay|um|uh|oh|ah|er|hmm|hm|mm)\s*[，。,.]?\s*$",
-    re.IGNORECASE,
-)
-
-# 中文语气词
-_NOISE_WORDS_CN = {"嗯", "啊", "哦", "呃", "唔", "嘿", "哈", "呵", "噢", "喔", "诶", "哎", "唉", "呀"}
-
-# 重复词模式（如 "那个那个" -> "那个"）
-_REPEAT_PATTERNS = [
-    (re.compile(r"(那个){2,}"), "那个"),
-    (re.compile(r"(这个){2,}"), "这个"),
-    (re.compile(r"(就是){2,}"), "就是"),
-    (re.compile(r"(然后){2,}"), "然后"),
-    (re.compile(r"(所以){2,}"), "所以"),
-    (re.compile(r"(但是){2,}"), "但是"),
-    (re.compile(r"(因为){2,}"), "因为"),
-    (re.compile(r"(可能){2,}"), "可能"),
-    (re.compile(r"(应该){2,}"), "应该"),
-    (re.compile(r"(终于){2,}"), "终于"),
-    (re.compile(r"(了解){2,}"), "了解"),
-    (re.compile(r"(不好意思){2,}"), "不好意思"),
-    # 语气词重复
-    (re.compile(r"(嗯){2,}"), "嗯"),
-    (re.compile(r"(啊){2,}"), "啊"),
-    (re.compile(r"(哦){2,}"), "哦"),
-    (re.compile(r"(呃){2,}"), "呃"),
-]
-
-# 英文噪声前缀清理
-_EN_NOISE_PREFIX_RE = re.compile(r"^\s*(?:the\s+)+", re.IGNORECASE)
-
-# ============================================================
-# 数字规范化：中文数字 -> 阿拉伯数字
-# ============================================================
-_CN_DIGIT_MAP = {
-    "零": "0", "〇": "0", "一": "1", "二": "2", "三": "3",
-    "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9",
-}
-
-# 年份模式：X零XX年 或 XXXX年（四位中文数字 + 年字）
-_YEAR_RE = re.compile(
-    r"([一二三四五六七八九])"
-    r"([零〇])"
-    r"([一二三四五六七八九零〇])"
-    r"([一二三四五六七八九零〇])"
-    r"(?=年)"
-)
-
-# 通用四位中文数字模式（如 "二零二五" 不跟 "年"，但在上下文中明显是年份）
-_FOUR_DIGIT_CN_RE = re.compile(
-    r"([一二三四五六七八九])"
-    r"([零〇])"
-    r"([一二三四五六七八九零〇])"
-    r"([一二三四五六七八九零〇])"
-)
-
-
-def _cn_digits_to_arabic(match: re.Match) -> str:
-    """将匹配到的四位中文数字转为阿拉伯数字"""
-    return "".join(_CN_DIGIT_MAP.get(c, c) for c in match.group())
-
-
-def preprocess_text(text: str) -> str | None:
-    """阶段 1：规则预处理，快速清理噪声和明显错误
-
-    Args:
-        text: 原始文本
-
-    Returns:
-        清理后的文本，如果是纯噪声则返回 None
-    """
-    if not text or not text.strip():
-        return None
-
-    cleaned = text.strip()
-
-    # 1. 检查是否为纯噪声短语
-    if _NOISE_PHRASE_RE.match(cleaned):
-        return None
-
-    # 2. 清理英文噪声前缀（如 "the 对他" -> "对他"）
-    cleaned = _EN_NOISE_PREFIX_RE.sub("", cleaned).strip()
-
-    # 3. 清理重复词
-    for pattern, replacement in _REPEAT_PATTERNS:
-        cleaned = pattern.sub(replacement, cleaned)
-
-    # 4. 数字规范化：中文数字年份 -> 阿拉伯数字
-    cleaned = _YEAR_RE.sub(_cn_digits_to_arabic, cleaned)
-    cleaned = _FOUR_DIGIT_CN_RE.sub(_cn_digits_to_arabic, cleaned)
-
-    # 5. 检查清理后是否为空或纯标点
-    stripped = cleaned
-    for punc in "，。、！？；：,.!?;: ":
-        stripped = stripped.replace(punc, "")
-    if not stripped:
-        return None
-
-    # 6. 检查是否为纯语气词
-    if stripped in _NOISE_WORDS_CN or len(stripped) <= 2 and all(c in _NOISE_WORDS_CN for c in stripped):
-        return None
-
-    return cleaned
-
-SYSTEM_PROMPT = """\
-你是一个专业的文本校对工具。
-任务：接收ASR语音转写文本，输出修正后的文本。
-要求：
-1. 仅输出修正后的正文，严禁输出任何开场白、解释、修正列表或Markdown标记。
-2. 修正同音字错误（如"受权"->"授权"）。
-3. 修正错误标点符号，使其符合阅读习惯。
-4. 保持原句意，不要重写或删减内容。
-5. 如果文本包含无法确定的口语，保留原样。"""
-
-TRANSCRIPT_SYSTEM_PROMPT = """\
-你是一个字幕校对专家。
-输入是一个JSON对象，entries字段包含句子ID和原始内容。
-任务：对每个 text 字段做轻度润色，使其更适合阅读。
-
-规则：
-1. 绝对严禁修改 id 字段。
-2. 绝对严禁合并或拆分句子。
-3. 去除无意义的口语填充词（如"那个""就是说""嗯"等），但保持句意完整。
-4. 修正口语倒装（如"我走了先"->"我先走了"）。
-5. 保留原有标点符号，仅在明显断句错误时微调。
-6. 严禁臆造原文中没有的事实，严禁大幅改写。
-7. 输出必须是包含 entries 字段的JSON对象。
-
-【输入示例】
-{"entries": [{"id": 1, "text": "嗯那个今天的会议呢主要是关于明年的计划。"}, {"id": 2, "text": "我觉得这个方案还是可以的就是说需要再优化一下。"}]}
-
-【输出示例】
-{"entries": [{"id": 1, "text": "今天的会议主要是关于明年的计划。"}, {"id": 2, "text": "我觉得这个方案还是可以的，需要再优化一下。"}]}"""
 
 
 class CorrectorService:
@@ -255,7 +117,7 @@ class CorrectorService:
         # 阶段 1：规则预处理
         # ============================================================
         preprocessed_entries: list[dict] = []
-        filtered_ids: set[int] = set()  # 被过滤的纯噪声条目
+        filtered_ids: set[int] = set()
 
         for entry in entries:
             entry_id = entry["id"]
@@ -263,13 +125,10 @@ class CorrectorService:
             cleaned = preprocess_text(original_text)
 
             if cleaned is None:
-                # 纯噪声，标记为过滤
                 filtered_ids.add(entry_id)
             elif cleaned != original_text.strip():
-                # 有变化，使用清理后的文本
                 preprocessed_entries.append({"id": entry_id, "text": cleaned})
             else:
-                # 无变化，保持原样
                 preprocessed_entries.append(entry)
 
         logger.info(
@@ -279,7 +138,6 @@ class CorrectorService:
             len(filtered_ids),
         )
 
-        # 如果所有条目都被过滤，直接返回空结果
         if not preprocessed_entries:
             return {entry["id"]: "" for entry in entries}
 
@@ -331,7 +189,6 @@ class CorrectorService:
         for batch_result in batch_results:
             merged.update(batch_result)
 
-        # 为被过滤的噪声条目设置空字符串
         for entry_id in filtered_ids:
             merged[entry_id] = ""
 
@@ -343,16 +200,7 @@ class CorrectorService:
         max_entries: int = 15,
         max_chars: int = 800,
     ) -> list[list[dict]]:
-        """创建同时满足条目数和字符数限制的批次
-
-        Args:
-            entries: 待处理的条目列表
-            max_entries: 每批最大条目数
-            max_chars: 每批最大字符数
-
-        Returns:
-            分批后的条目列表
-        """
+        """创建同时满足条目数和字符数限制的批次"""
         batches: list[list[dict]] = []
         current_batch: list[dict] = []
         current_chars = 0
@@ -360,18 +208,14 @@ class CorrectorService:
         for entry in entries:
             entry_chars = len(entry.get("text", ""))
 
-            # 单条条目超过字符限制：作为独立批次
             if entry_chars > max_chars:
-                # 先提交当前批次
                 if current_batch:
                     batches.append(current_batch)
                     current_batch = []
                     current_chars = 0
-                # 将超大条目作为独立批次
                 batches.append([entry])
                 continue
 
-            # 添加后会超过限制：提交当前批次
             would_exceed_entries = len(current_batch) >= max_entries
             would_exceed_chars = current_chars + entry_chars > max_chars
 
@@ -383,7 +227,6 @@ class CorrectorService:
             current_batch.append(entry)
             current_chars += entry_chars
 
-        # 提交最后一个批次
         if current_batch:
             batches.append(current_batch)
 
@@ -403,9 +246,6 @@ class CorrectorService:
                 len(batch),
                 batch_chars,
             )
-            # 使用 num_predict 限制输出长度，并显式禁用 thinking
-            # 公式：输入字符 * 2（中文token转换）+ 1024（JSON 格式开销）
-            # 禁用 thinking 后输出更简洁，不需要大缓冲区
             max_output_tokens = min(4096, batch_chars * 2 + 1024)
 
             response = await self._client.chat(
@@ -415,8 +255,8 @@ class CorrectorService:
                 ],
                 num_ctx=self._num_ctx,
                 json_format=True,
-                think=False,  # 禁用 thinking 确保输出完整
-                num_predict=max_output_tokens,  # 限制输出长度
+                think=False,
+                num_predict=max_output_tokens,
             )
             raw = response.content
             raw = strip_think_tags(raw).strip()
@@ -427,7 +267,6 @@ class CorrectorService:
 
             parsed = json.loads(raw)
 
-            # Extract entries array from wrapper object or handle bare array
             if isinstance(parsed, dict):
                 entries_list = parsed.get("entries", [])
             elif isinstance(parsed, list):

@@ -87,8 +87,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 
-from copernicus.config import settings
-from copernicus.exceptions import CopernicusError
+from copernicus.config import Settings, settings
+from copernicus.exceptions import (
+    AudioNotFoundError,
+    CopernicusError,
+    ServiceNotConfiguredError,
+    TaskNotFoundError,
+)
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.lifecycle import LifecycleService
@@ -114,78 +119,82 @@ from copernicus.services.preflight import run_preflight
 logger = logging.getLogger(__name__)
 
 
+async def _init_app_services(app: FastAPI, settings: Settings, llm_client: OllamaClient) -> asyncio.Task:
+    """构造并注册所有服务到 app.state，返回后台任务句柄。"""
+    # 基础依赖层
+    app.state.template_manager = TemplateManager(settings.templates_dir)
+    audio_service    = AudioService(settings)
+    asr_service      = ASRService(settings)
+    text_corrector   = TextCorrectorService(settings)
+    hotword_replacer = HotwordReplacerService(settings)
+    corrector_service = CorrectorService(llm_client, settings, text_corrector, hotword_replacer=hotword_replacer)
+    persistence = PersistenceService(settings.upload_dir)
+    app.state.upload_session = UploadSessionService(settings.upload_dir)
+    ocr_service   = OCRService(settings) if settings.ocr_enabled else None
+    face_detector = FaceDetectorService(settings) if settings.face_detect_enabled else None
+
+    # 管道层
+    app.state.pipeline = PipelineService(
+        audio_service=audio_service,
+        asr_service=asr_service,
+        corrector_service=corrector_service,
+        confidence_threshold=settings.confidence_threshold,
+        chunk_size=settings.correction_chunk_size,
+        run_merge_gap=settings.confidence_run_merge_gap,
+        pre_merge_gap_ms=settings.pre_merge_gap_ms,
+        hotword_replacer=hotword_replacer,
+        settings=settings,
+        persistence=persistence,
+        ocr_service=ocr_service,
+        face_detector=face_detector,
+    )
+
+    # LLM 衍生服务
+    app.state.llm_client = llm_client
+    app.state.evaluator  = EvaluatorService(llm_client, settings)
+    app.state.compliance = ComplianceService(llm_client, settings)
+
+    # 模型热插拔管理
+    model_manager = ModelManager()
+    model_manager.register_loader(
+        "asr",
+        loader=lambda: (asr_service.reload(), asr_service)[1],
+        unloader=lambda _: asr_service.unload_weights(),
+        vram_estimate_gb=4.5,
+    )
+    model_manager.mark_loaded("asr", asr_service)
+    model_manager.register_loader(
+        "tts",
+        loader=lambda: tts_service.load_chattts(settings.chattts_model_dir),
+        unloader=tts_service.unload_chattts,
+        vram_estimate_gb=settings.tts_vram_estimate_gb,
+    )
+    app.state.model_manager = model_manager
+
+    # 任务存储与恢复
+    app.state.task_store = TaskStore(
+        pipeline=app.state.pipeline,
+        persistence=persistence,
+        settings=settings,
+        evaluator=app.state.evaluator,
+        compliance=app.state.compliance,
+        model_manager=model_manager,
+        template_manager=app.state.template_manager,
+    )
+    app.state.task_store.restore_from_disk()
+
+    # 后台定时清理过期原始媒体文件
+    lifecycle = LifecycleService(settings.upload_dir, settings.media_retention_hours)
+    return asyncio.create_task(lifecycle.run_periodic())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时加载 ASR 模型，关闭时释放资源。"""
     logger.info("Starting Copernicus service ...")
     await run_preflight(settings)
-
     llm_client = OllamaClient(settings)
     try:
-        app.state.template_manager = TemplateManager(settings.templates_dir)
-
-        audio_service = AudioService(settings)
-        asr_service = ASRService(settings)
-        text_corrector = TextCorrectorService(settings)
-        hotword_replacer = HotwordReplacerService(settings)
-        corrector_service = CorrectorService(
-            llm_client, settings, text_corrector, hotword_replacer=hotword_replacer
-        )
-
-        persistence = PersistenceService(settings.upload_dir)
-        app.state.upload_session = UploadSessionService(settings.upload_dir)
-        ocr_service = OCRService(settings) if settings.ocr_enabled else None
-        face_detector = FaceDetectorService(settings) if settings.face_detect_enabled else None
-        app.state.pipeline = PipelineService(
-            audio_service=audio_service,
-            asr_service=asr_service,
-            corrector_service=corrector_service,
-            confidence_threshold=settings.confidence_threshold,
-            chunk_size=settings.correction_chunk_size,
-            run_merge_gap=settings.confidence_run_merge_gap,
-            pre_merge_gap_ms=settings.pre_merge_gap_ms,
-            hotword_replacer=hotword_replacer,
-            settings=settings,
-            persistence=persistence,
-            ocr_service=ocr_service,
-            face_detector=face_detector,
-        )
-        app.state.llm_client = llm_client
-        app.state.evaluator = EvaluatorService(llm_client, settings)
-        app.state.compliance = ComplianceService(llm_client, settings)
-
-        # ModelManager：注册 ASR 热插拔加载器
-        model_manager = ModelManager()
-        model_manager.register_loader(
-            "asr",
-            loader=lambda: (asr_service.reload(), asr_service)[1],
-            unloader=lambda _: asr_service.unload_weights(),
-            vram_estimate_gb=4.5,
-        )
-        model_manager.mark_loaded("asr", asr_service)  # ASRService.__init__ 已加载
-        model_manager.register_loader(
-            "tts",
-            loader=lambda: tts_service.load_chattts(settings.chattts_model_dir),
-            unloader=tts_service.unload_chattts,
-            vram_estimate_gb=settings.tts_vram_estimate_gb,
-        )
-        app.state.model_manager = model_manager
-
-        app.state.task_store = TaskStore(
-            pipeline=app.state.pipeline,
-            persistence=persistence,
-            settings=settings,
-            evaluator=app.state.evaluator,
-            compliance=app.state.compliance,
-            model_manager=model_manager,
-            template_manager=app.state.template_manager,
-        )
-        app.state.task_store.restore_from_disk()
-
-        # 后台定时清理过期原始媒体文件
-        lifecycle = LifecycleService(settings.upload_dir, settings.media_retention_hours)
-        lifecycle_task = asyncio.create_task(lifecycle.run_periodic())
-
+        lifecycle_task = await _init_app_services(app, settings, llm_client)
         logger.info("Copernicus service ready.")
         yield
     finally:
@@ -283,6 +292,21 @@ app.include_router(upload.router)
 app.include_router(evaluation.router)
 app.include_router(compliance.router)
 app.include_router(synthesis_router.router)
+
+
+@app.exception_handler(TaskNotFoundError)
+async def task_not_found_handler(request: Request, exc: TaskNotFoundError):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(AudioNotFoundError)
+async def audio_not_found_handler(request: Request, exc: AudioNotFoundError):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(ServiceNotConfiguredError)
+async def service_not_configured_handler(request: Request, exc: ServiceNotConfiguredError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(CopernicusError)

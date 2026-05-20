@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,7 +28,7 @@ class Settings(BaseSettings):
     spk_sliding_window_ms: int = 1500    # 声纹提取窗口大小（毫秒）
     spk_sliding_step_ms: int = 750       # 窗口滑动步长（毫秒）
     spk_sliding_threshold_ms: int = 3000 # 超过此时长启用滑动窗口（毫秒）
-    spk_distance_threshold: float = 0.5  # 余弦距离阈值（0-1，越小越严格）
+    spk_distance_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)  # 余弦距离阈值（0-1，越小越严格）
 
     # 噪声过滤
     filter_noise_segments: bool = True   # 是否过滤纯语气词段落
@@ -45,7 +46,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
     llm_model_name: str = "deepseek-chat"
-    llm_temperature: float = 0.1
+    llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     llm_timeout: float = 120.0  # 单次 LLM 请求超时，超时后使用原文作为 fallback
     llm_max_retries: int = 2  # LLM 调用失败重试次数（指数退避）
     llm_retry_delay: float = 2.0  # 首次重试延迟（秒），后续 2x 递增
@@ -69,7 +70,7 @@ class Settings(BaseSettings):
     pycorrector_model: str = "macbert"  # macbert | kenlm
 
     # Confidence-based filtering
-    confidence_threshold: float = 0.95
+    confidence_threshold: float = Field(default=0.95, gt=0.0, le=1.0)
     confidence_run_merge_gap: int = 3
 
     # Segment pre-merge
@@ -86,7 +87,7 @@ class Settings(BaseSettings):
     compliance_num_ctx: int = 8192
 
     # Cognitive Audit (Phase 3)
-    compliance_confidence_threshold: float = 0.7
+    compliance_confidence_threshold: float = Field(default=0.7, gt=0.0, le=1.0)
     compliance_dedup_window_ms: int = 30000
     compliance_group_by_source: bool = True
     compliance_ocr_margin_ms: int = 5000
@@ -95,8 +96,8 @@ class Settings(BaseSettings):
     hotwords_file: Path | None = None
 
     # Task execution
-    task_timeout_seconds: int = 3600  # 单任务超时（秒），防止 ASR/LLM 卡住
-    task_max_in_memory: int = 500  # 内存中最大任务数，超出时淘汰最早的已完成任务
+    task_timeout_seconds: int = Field(default=3600, ge=60)   # 单任务超时（秒），防止 ASR/LLM 卡住
+    task_max_in_memory: int = Field(default=500, ge=1)       # 内存中最大任务数，超出时淘汰最早的已完成任务
 
     # VRAM budget (ModelManager 热插拔阈值)
     vram_budget_gb: float = 12.0

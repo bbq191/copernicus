@@ -11,21 +11,14 @@ from fastapi.responses import FileResponse
 from copernicus.config import settings
 from copernicus.dependencies import get_model_manager, get_task_store
 from copernicus.schemas.synthesis import SynthesisRequest, SynthesisResponse
-from copernicus.schemas.task import TaskStatus
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.llm import OllamaClient
 from copernicus.services.model_manager import ModelManager
-from copernicus.services.task_store import TaskStore
+from copernicus.services.task_store import LLM_ACTIVE_STATUSES, TaskStore
 import copernicus.services.tts as tts_service
 
 logger = logging.getLogger(__name__)
 
-# LLM 活跃状态：这些阶段 Ollama 正在占用 VRAM
-_LLM_ACTIVE_STATUSES = {
-    TaskStatus.CORRECTING,
-    TaskStatus.EVALUATING,
-    TaskStatus.AUDITING,
-}
 
 def _build_rewrite_prompt(text: str, energy_level: int) -> str:
     if energy_level <= 2:
@@ -134,10 +127,7 @@ async def synthesize_task_audio(
         raise HTTPException(status_code=503, detail="ModelManager not available")
 
     # 若有 LLM 任务正在运行（Ollama 占用 VRAM），拒绝合成以避免 OOM
-    active_llm = [
-        tid for tid, t in store._tasks.items()
-        if t.status in _LLM_ACTIVE_STATUSES
-    ]
+    active_llm = store.get_active_llm_task_ids()
     if active_llm:
         raise HTTPException(
             status_code=503,

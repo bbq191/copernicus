@@ -164,10 +164,7 @@ async def rerun_transcript(
         hw = parse_hotwords(hotwords)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    try:
-        store.rerun_transcript(task_id, hw)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    store.rerun_transcript(task_id, hw)
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 

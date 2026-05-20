@@ -252,4 +252,4 @@ class EvaluatorService:
                 )
 
         logger.error("All %d evaluate attempts failed", max_retries)
-        raise last_error  # type: ignore[misc]
+        raise last_error or RuntimeError("All evaluate attempts failed")

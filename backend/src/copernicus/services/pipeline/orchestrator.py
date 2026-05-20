@@ -49,7 +49,10 @@ class PipelineOrchestrator:
                 stage_progress = _make_cb(stage.name, executed - 1)
 
             start = time.perf_counter()
-            ctx = await stage.execute(ctx, on_progress=stage_progress)
+            try:
+                ctx = await stage.execute(ctx, on_progress=stage_progress)
+            except Exception as exc:
+                raise RuntimeError(f"[stage:{stage.name}] {exc}") from exc
             elapsed = (time.perf_counter() - start) * 1000
             ctx.processing_times[stage.name] = elapsed
 

@@ -12,6 +12,7 @@ from copernicus.schemas.transcription import (
     TranscriptResponse,
 )
 from copernicus.config import Settings
+from copernicus.exceptions import AudioNotFoundError, ServiceNotConfiguredError, TaskNotFoundError
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.model_manager import ModelManager
@@ -20,6 +21,14 @@ from copernicus.services.pipeline import PipelineService
 from copernicus.services.template_manager import TemplateManager
 
 logger = logging.getLogger(__name__)
+
+# Statuses where the LLM (Ollama) is actively occupying VRAM.
+# Used by the synthesis router to reject concurrent TTS requests.
+LLM_ACTIVE_STATUSES: frozenset[TaskStatus] = frozenset({
+    TaskStatus.CORRECTING,
+    TaskStatus.EVALUATING,
+    TaskStatus.AUDITING,
+})
 
 _PIPELINE_STAGE_STATUS: dict[str, "TaskStatus"] = {
     "video_preprocess": "extracting_frames",
@@ -134,6 +143,10 @@ class TaskStore:
     @property
     def persistence(self) -> PersistenceService:
         return self._persistence
+
+    def get_active_llm_task_ids(self) -> list[str]:
+        """返回当前正在占用 LLM/VRAM 的任务 ID 列表（用于合成前的冲突检测）。"""
+        return [tid for tid, t in self._tasks.items() if t.status in LLM_ACTIVE_STATUSES]
 
     # -- hash dedup ----------------------------------------------------------
 
@@ -286,7 +299,7 @@ class TaskStore:
     ) -> str:
         """提交纯文本评估任务（不需要 ASR）。"""
         if self._evaluator is None:
-            raise RuntimeError("EvaluatorService not configured")
+            raise ServiceNotConfiguredError("EvaluatorService not configured")
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
         asyncio.create_task(
@@ -310,7 +323,7 @@ class TaskStore:
     ) -> str:
         """提交合规审核任务（纯文本，不需要 ASR）。"""
         if self._compliance is None:
-            raise RuntimeError("ComplianceService not configured")
+            raise ServiceNotConfiguredError("ComplianceService not configured")
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
         asyncio.create_task(
@@ -334,11 +347,11 @@ class TaskStore:
         """对已有音频重新执行 ASR 和纠正，返回相同的 task_id。"""
         task = self._tasks.get(task_id)
         if task is None:
-            raise ValueError(f"Task {task_id} not found")
+            raise TaskNotFoundError(f"Task {task_id} not found")
 
         audio_path = self._persistence.find_audio(task_id)
         if audio_path is None:
-            raise ValueError(f"Audio not found for task {task_id}")
+            raise AudioNotFoundError(f"Audio not found for task {task_id}")
 
         audio_bytes = audio_path.read_bytes()
         suffix = audio_path.suffix
@@ -367,7 +380,7 @@ class TaskStore:
         """基于已有转写结果重新执行评估，返回子任务 task_id。"""
         data = self._persistence.load_json(parent_task_id, "transcript.json")
         if data is None:
-            raise ValueError(f"transcript.json not found for task {parent_task_id}")
+            raise AudioNotFoundError(f"transcript.json not found for task {parent_task_id}")
 
         transcript = TranscriptResponse.model_validate(data)
         full_text = "\n".join(e.text_corrected for e in transcript.transcript)

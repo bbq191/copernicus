@@ -41,7 +41,10 @@ class ASRTranscribeStage:
                     self._asr.transcribe, ctx.wav_path, ctx.hotwords, use_ts
                 )
         finally:
-            self._audio.cleanup(ctx.wav_path)
+            try:
+                self._audio.cleanup(ctx.wav_path)
+            except Exception as _e:
+                logger.warning("Audio cleanup failed for %s: %s", ctx.wav_path, _e)
 
         ctx.asr_result = asr_result
         ctx.segments = list(asr_result.segments)

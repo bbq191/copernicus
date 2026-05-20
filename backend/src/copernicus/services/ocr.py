@@ -30,6 +30,8 @@ class OCRService:
         from rapidocr import RapidOCR
 
         self._engine = RapidOCR()
+        # "text detection result is empty" fires for every blank frame — suppress noise
+        logging.getLogger("RapidOCR").setLevel(logging.ERROR)
         logger.info("RapidOCR engine initialized (CPU)")
 
     def scan_frame(self, image_path: str, timestamp_ms: int) -> list[OCRRecord]:

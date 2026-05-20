@@ -1,18 +1,27 @@
 import client, { taskSynthesisAudioUrl } from "./client";
 
-export interface SynthesisResponse {
-  audio_url: string;
-  duration_ms: number;
-  synthesis_time_ms: number;
+export interface SynthesisStatusResponse {
+  status: "running" | "completed" | "failed";
+  error?: string | null;
+  audio_url?: string | null;
+  duration_ms?: number | null;
+  synthesis_time_ms?: number | null;
 }
 
-export async function synthesizeTask(
+export async function startSynthesis(
   taskId: string,
   voiceMap?: Record<string, string>,
-): Promise<SynthesisResponse> {
-  const { data } = await client.post<SynthesisResponse>(
-    `/tasks/${taskId}/synthesize`,
-    { voice_map: voiceMap ?? null },
+): Promise<void> {
+  await client.post(`/tasks/${taskId}/synthesize`, {
+    voice_map: voiceMap ?? null,
+  });
+}
+
+export async function getSynthesisStatus(
+  taskId: string,
+): Promise<SynthesisStatusResponse> {
+  const { data } = await client.get<SynthesisStatusResponse>(
+    `/tasks/${taskId}/synthesis/status`,
   );
   return data;
 }

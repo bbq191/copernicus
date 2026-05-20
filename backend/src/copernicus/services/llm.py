@@ -136,7 +136,7 @@ class OllamaClient:
                 )
                 await asyncio.sleep(delay)
 
-        raise last_error  # type: ignore[misc]
+        raise last_error or RuntimeError("LLM chat failed with no attempts")
 
     async def _do_chat(
         self,

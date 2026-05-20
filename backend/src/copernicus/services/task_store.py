@@ -30,6 +30,11 @@ LLM_ACTIVE_STATUSES: frozenset[TaskStatus] = frozenset({
     TaskStatus.AUDITING,
 })
 
+TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset({
+    TaskStatus.COMPLETED,
+    TaskStatus.FAILED,
+})
+
 _PIPELINE_STAGE_STATUS: dict[str, "TaskStatus"] = {
     "video_preprocess": "extracting_frames",
     "keyframe_extract": "extracting_frames",
@@ -118,6 +123,16 @@ class TaskInfo:
         )
 
 
+class _SynthesisJob:
+    __slots__ = ("status", "error", "duration_ms", "synthesis_time_ms")
+
+    def __init__(self) -> None:
+        self.status: str = "running"
+        self.error: str | None = None
+        self.duration_ms: float | None = None
+        self.synthesis_time_ms: float | None = None
+
+
 class TaskStore:
     def __init__(
         self,
@@ -134,6 +149,7 @@ class TaskStore:
         self._compliance = compliance
         self._persistence = persistence
         self._model_manager = model_manager
+        self._synthesis_jobs: dict[str, _SynthesisJob] = {}
         self._template_manager = template_manager
         self._task_timeout = settings.task_timeout_seconds
         self._max_tasks = settings.task_max_in_memory
@@ -147,6 +163,44 @@ class TaskStore:
     def get_active_llm_task_ids(self) -> list[str]:
         """返回当前正在占用 LLM/VRAM 的任务 ID 列表（用于合成前的冲突检测）。"""
         return [tid for tid, t in self._tasks.items() if t.status in LLM_ACTIVE_STATUSES]
+
+    def get_task_stats(self) -> dict[str, int]:
+        """返回任务队列统计：active / completed / failed / synthesis_running。"""
+        tasks = list(self._tasks.values())
+        return {
+            "active": sum(1 for t in tasks if t.status not in TERMINAL_STATUSES),
+            "completed": sum(1 for t in tasks if t.status == TaskStatus.COMPLETED),
+            "failed": sum(1 for t in tasks if t.status == TaskStatus.FAILED),
+            "synthesis_running": sum(
+                1 for j in self._synthesis_jobs.values() if j.status == "running"
+            ),
+        }
+
+    # -- synthesis job tracking --------------------------------------------------
+
+    def start_synthesis(self, task_id: str) -> bool:
+        """标记合成任务开始；若该 task 已有合成在运行则返回 False。"""
+        job = self._synthesis_jobs.get(task_id)
+        if job is not None and job.status == "running":
+            return False
+        self._synthesis_jobs[task_id] = _SynthesisJob()
+        return True
+
+    def get_synthesis_job(self, task_id: str) -> _SynthesisJob | None:
+        return self._synthesis_jobs.get(task_id)
+
+    def finish_synthesis(self, task_id: str, duration_ms: float, synthesis_time_ms: float) -> None:
+        job = self._synthesis_jobs.get(task_id)
+        if job:
+            job.status = "completed"
+            job.duration_ms = duration_ms
+            job.synthesis_time_ms = synthesis_time_ms
+
+    def fail_synthesis(self, task_id: str, error: str) -> None:
+        job = self._synthesis_jobs.get(task_id)
+        if job:
+            job.status = "failed"
+            job.error = error
 
     # -- hash dedup ----------------------------------------------------------
 

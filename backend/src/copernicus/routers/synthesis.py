@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from copernicus.config import settings
 from copernicus.dependencies import get_model_manager, get_task_store
-from copernicus.schemas.synthesis import SynthesisRequest, SynthesisResponse
+from copernicus.schemas.synthesis import SynthesisRequest, SynthesisStatusResponse
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.llm import OllamaClient
 from copernicus.services.model_manager import ModelManager
@@ -101,32 +101,81 @@ async def _rewrite_chunks(
     return list(results)
 
 
+async def _run_synthesis(
+    task_id: str,
+    chunks: list[tuple[str, str]],
+    voice_map: dict[str, str],
+    store: TaskStore,
+    model_manager: ModelManager,
+) -> None:
+    """后台协程：执行 TTS 合成并更新 job 状态。"""
+    output_path = store.persistence.task_dir(task_id) / "synthesis.mp3"
+    t0 = time.perf_counter()
+    try:
+        with tempfile.TemporaryDirectory() as tmp_work:
+            work_dir = Path(tmp_work)
+
+            async with model_manager.acquire("tts") as model:
+                parts = await asyncio.to_thread(
+                    tts_service.synthesize_chunks_batched,
+                    chunks,
+                    model,
+                    voice_map,
+                    settings.tts_pause_switch_speaker_ms,
+                    settings.tts_synthesis_batch_chars,
+                    work_dir,
+                    settings.tts_max_sentence_chars,
+                    settings.tts_oral_level,
+                    settings.tts_break_level,
+                    settings.tts_laugh_level,
+                    settings.tts_energy_level,
+                    settings.tts_temperature,
+                    settings.tts_top_p,
+                    settings.tts_top_k,
+                    settings.tts_max_new_token,
+                )
+
+            if not parts:
+                store.fail_synthesis(task_id, "Synthesis produced no audio")
+                return
+
+            synthesis_ms = round((time.perf_counter() - t0) * 1000, 1)
+            duration_ms = round(sum(sf.info(str(p)).duration * 1000 for p in parts), 1)
+            await tts_service.concat_parts_to_mp3(parts, output_path)
+
+        store.persistence.save_json(
+            task_id, "synthesis_result.json",
+            {"duration_ms": duration_ms, "synthesis_time_ms": synthesis_ms},
+        )
+        store.finish_synthesis(task_id, duration_ms, synthesis_ms)
+        logger.info("Synthesis completed for task %s (%.1fs)", task_id, synthesis_ms / 1000)
+    except Exception as exc:
+        logger.error("Synthesis failed for task %s: %s", task_id, exc, exc_info=True)
+        store.fail_synthesis(task_id, str(exc) or type(exc).__name__)
+
+
 @router.post(
     "/tasks/{task_id}/synthesize",
-    response_model=SynthesisResponse,
+    response_model=SynthesisStatusResponse,
+    status_code=202,
     tags=["音频重塑"],
-    summary="将转写结果合成为多说话人对话音频",
+    summary="提交多说话人对话音频合成任务（异步）",
 )
 async def synthesize_task_audio(
     task_id: str,
     request: SynthesisRequest,
     store: TaskStore = Depends(get_task_store),
     model_manager: ModelManager | None = Depends(get_model_manager),
-) -> SynthesisResponse:
-    """基于任务的 `transcript.json` 生成多说话人有声对话，保存为 MP3。
+) -> SynthesisStatusResponse:
+    """提交合成任务，立即返回 202；通过 GET /tasks/{task_id}/synthesis/status 轮询进度。
 
     - 不同说话人自动分配不同音色（可通过 `voice_map` 覆盖）。
-    - 连续相同说话人的段落合并后一次性送入 TTS，语调更自然。
-    - 开启 `tts_rewrite_enabled` 后，合成前先用 LLM 将转写稿改写为自然口语。
-    - 文本按批次合成，每批完成后清空 VRAM 缓存，防止长转写 OOM。
-    - 合成前会通过 ModelManager 卸载 ASR/LLM，独占显存，完成后模型驻留
-      等待下次请求，ASR 在下次转写时自动重载。
-    - 可用音色（ChatTTS）：纯数字字符串直接作为 seed，其他字符串通过 MD5 映射，任意值均有效。
+    - 合成期间 ASR/LLM 模型自动卸载，独占显存；完成后驻留。
+    - 同一任务重复提交时若合成正在进行则返回 409。
     """
     if model_manager is None:
         raise HTTPException(status_code=503, detail="ModelManager not available")
 
-    # 若有 LLM 任务正在运行（Ollama 占用 VRAM），拒绝合成以避免 OOM
     active_llm = store.get_active_llm_task_ids()
     if active_llm:
         raise HTTPException(
@@ -142,17 +191,15 @@ async def synthesize_task_audio(
     if not transcript.transcript:
         raise HTTPException(status_code=422, detail="Transcript is empty")
 
+    if not store.start_synthesis(task_id):
+        raise HTTPException(status_code=409, detail="Synthesis already in progress for this task")
+
     speakers = [e.speaker for e in transcript.transcript]
     voice_map = tts_service.build_voice_map(
-        speakers,
-        settings.tts_default_voices,
-        override=request.voice_map,
+        speakers, settings.tts_default_voices, override=request.voice_map,
     )
-
-    # 预合并 chunks（改写和 TTS 均基于此结构）
     chunks = tts_service._merge_by_speaker(transcript.transcript)
 
-    # 口语改写（在 TTS acquire 之前完成，使用独立的本地 Ollama 客户端）
     if settings.tts_rewrite_enabled and chunks:
         logger.info("Rewriting %d chunks for natural speech ...", len(chunks))
         t_rewrite = time.perf_counter()
@@ -163,47 +210,51 @@ async def synthesize_task_audio(
             await rewrite_llm.close()
         logger.info("Rewrite done in %.1fs", time.perf_counter() - t_rewrite)
 
-    output_path = store.persistence.task_dir(task_id) / "synthesis.mp3"
-    t0 = time.perf_counter()
+    asyncio.create_task(_run_synthesis(task_id, chunks, voice_map, store, model_manager))
+    return SynthesisStatusResponse(status="running")
 
-    # 每次合成使用独立临时目录，防止并发请求写入同名 WAV 文件后互相 unlink
-    with tempfile.TemporaryDirectory() as tmp_work:
-        work_dir = Path(tmp_work)
 
-        async with model_manager.acquire("tts") as model:
-            parts = await asyncio.to_thread(
-                tts_service.synthesize_chunks_batched,
-                chunks,
-                model,
-                voice_map,
-                settings.tts_pause_switch_speaker_ms,
-                settings.tts_synthesis_batch_chars,
-                work_dir,
-                settings.tts_max_sentence_chars,
-                settings.tts_oral_level,
-                settings.tts_break_level,
-                settings.tts_laugh_level,
-                settings.tts_energy_level,
-                settings.tts_temperature,
-                settings.tts_top_p,
-                settings.tts_top_k,
-                settings.tts_max_new_token,
+@router.get(
+    "/tasks/{task_id}/synthesis/status",
+    response_model=SynthesisStatusResponse,
+    tags=["音频重塑"],
+    summary="查询合成任务状态",
+)
+async def get_synthesis_status(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> SynthesisStatusResponse:
+    """轮询合成进度。status 取值：running | completed | failed。"""
+    audio_url = f"/api/v1/tasks/{task_id}/synthesis"
+
+    job = store.get_synthesis_job(task_id)
+    if job is not None:
+        if job.status == "completed":
+            return SynthesisStatusResponse(
+                status="completed",
+                audio_url=audio_url,
+                duration_ms=job.duration_ms,
+                synthesis_time_ms=job.synthesis_time_ms,
             )
+        if job.status == "failed":
+            return SynthesisStatusResponse(status="failed", error=job.error)
+        return SynthesisStatusResponse(status="running")
 
-        if not parts:
-            raise HTTPException(status_code=422, detail="Synthesis produced no audio")
+    # 服务重启后内存 job 丢失 — 从磁盘恢复
+    result = store.persistence.load_json(task_id, "synthesis_result.json")
+    if result:
+        return SynthesisStatusResponse(
+            status="completed",
+            audio_url=audio_url,
+            duration_ms=result.get("duration_ms"),
+            synthesis_time_ms=result.get("synthesis_time_ms"),
+        )
 
-        synthesis_ms = (time.perf_counter() - t0) * 1000
-        duration_ms = sum(sf.info(str(p)).duration * 1000 for p in parts)
+    mp3_path = store.persistence.task_dir(task_id) / "synthesis.mp3"
+    if mp3_path.exists():
+        return SynthesisStatusResponse(status="completed", audio_url=audio_url)
 
-        await tts_service.concat_parts_to_mp3(parts, output_path)
-        # TemporaryDirectory 退出时自动清理所有 WAV 部分文件
-
-    return SynthesisResponse(
-        audio_url=f"/api/v1/tasks/{task_id}/synthesis",
-        duration_ms=round(duration_ms, 1),
-        synthesis_time_ms=round(synthesis_ms, 1),
-    )
+    raise HTTPException(status_code=404, detail="No synthesis found for this task")
 
 
 @router.get(

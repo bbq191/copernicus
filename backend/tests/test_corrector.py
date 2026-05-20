@@ -21,11 +21,6 @@ def mock_settings() -> Settings:
 
 
 @pytest.fixture
-def mock_client() -> MagicMock:
-    return MagicMock()
-
-
-@pytest.fixture
 def corrector(mock_client: MagicMock, mock_settings: Settings) -> CorrectorService:
     return CorrectorService(mock_client, mock_settings)
 

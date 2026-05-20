@@ -1,4 +1,4 @@
-import client from "./client";
+import client, { taskSynthesisAudioUrl } from "./client";
 
 export interface SynthesisResponse {
   audio_url: string;
@@ -18,5 +18,5 @@ export async function synthesizeTask(
 }
 
 export function getSynthesisAudioUrl(taskId: string): string {
-  return `/api/v1/tasks/${taskId}/synthesis`;
+  return taskSynthesisAudioUrl(taskId);
 }

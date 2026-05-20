@@ -1,4 +1,4 @@
-import client from "./client";
+import client, { taskMediaUrl, taskFrameUrl } from "./client";
 import { computeFileSHA256 } from "../utils/fileHash";
 import { chunkedUploadFile } from "../utils/chunkedUpload";
 import type {
@@ -106,11 +106,11 @@ export async function rerunTranscript(
 
 
 export function getTaskMediaUrl(taskId: string): string {
-  return `/api/v1/tasks/${taskId}/media`;
+  return taskMediaUrl(taskId);
 }
 
 export function getFrameUrl(taskId: string, filename: string): string {
-  return `/api/v1/tasks/${taskId}/frames/${filename}`;
+  return taskFrameUrl(taskId, filename);
 }
 
 /**

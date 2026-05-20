@@ -184,12 +184,14 @@ async def lifespan(app: FastAPI):
 
         # 后台定时清理过期原始媒体文件
         lifecycle = LifecycleService(settings.upload_dir, settings.media_retention_hours)
-        asyncio.create_task(lifecycle.run_periodic())
+        lifecycle_task = asyncio.create_task(lifecycle.run_periodic())
 
         logger.info("Copernicus service ready.")
         yield
     finally:
         logger.info("Shutting down Copernicus service ...")
+        lifecycle_task.cancel()
+        await asyncio.gather(lifecycle_task, return_exceptions=True)
         await llm_client.close()
 
 

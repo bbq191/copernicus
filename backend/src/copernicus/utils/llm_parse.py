@@ -18,10 +18,14 @@ def strip_think_tags(text: str) -> str:
     return text
 
 
+def _preprocess_llm_output(text: str) -> str:
+    text = strip_think_tags(text)
+    return text.replace("```json", "").replace("```", "").strip()
+
+
 def extract_json_object(text: str) -> str:
     """从 LLM 输出中提取 JSON 对象，自动剥离 think 标签和 Markdown 代码块。"""
-    text = strip_think_tags(text)
-    text = text.replace("```json", "").replace("```", "").strip()
+    text = _preprocess_llm_output(text)
     idx = text.find("{")
     if idx > 0:
         text = text[idx:]
@@ -33,8 +37,7 @@ def extract_json_object(text: str) -> str:
 
 def extract_json_array(text: str) -> str:
     """从 LLM 输出中提取 JSON 数组，自动剥离 think 标签和 Markdown 代码块。"""
-    text = strip_think_tags(text)
-    text = text.replace("```json", "").replace("```", "").strip()
+    text = _preprocess_llm_output(text)
     start = text.find("[")
     if start >= 0:
         end = text.rfind("]")

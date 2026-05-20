@@ -51,11 +51,6 @@ def mock_settings() -> Settings:
 
 
 @pytest.fixture
-def mock_client() -> MagicMock:
-    return MagicMock()
-
-
-@pytest.fixture
 def service(mock_client: MagicMock, mock_settings: Settings) -> ComplianceService:
     return ComplianceService(mock_client, mock_settings)
 

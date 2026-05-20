@@ -26,11 +26,6 @@ def mock_settings() -> Settings:
 
 
 @pytest.fixture
-def mock_client() -> MagicMock:
-    return MagicMock()
-
-
-@pytest.fixture
 def evaluator(mock_client: MagicMock, mock_settings: Settings) -> EvaluatorService:
     return EvaluatorService(mock_client, mock_settings)
 

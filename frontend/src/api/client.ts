@@ -20,4 +20,11 @@ client.interceptors.response.use(
 
 export const POLL_INTERVAL_MS = 2000;
 
+export const taskUrl = (taskId: string) => `/tasks/${taskId}`;
+export const taskMediaUrl = (taskId: string) => `/api/v1/tasks/${taskId}/media`;
+export const taskFrameUrl = (taskId: string, filename: string) =>
+  `/api/v1/tasks/${taskId}/frames/${filename}`;
+export const taskSynthesisAudioUrl = (taskId: string) =>
+  `/api/v1/tasks/${taskId}/synthesis`;
+
 export default client;

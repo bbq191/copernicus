@@ -165,12 +165,12 @@ class TestSynthesizeDialogue:
 
     def test_same_speaker_merged_sentence_gap(self):
         model = MockChatTTS()
-        # A 说了两句合并为 "第一。第二"，句号触发切片 → 2 次推理，中间插入 0.2s 句间停顿
+        # A 说了两句合并为 "第一。第二"，句号触发切片 → 2 次推理，中间插入 80ms 句间停顿
         entries = [_entry("A", "第一"), _entry("A", "第二")]
         voice_map = {"A": "2222"}
         audio = synthesize_dialogue(entries, model, voice_map, pause_switch_ms=800)
         segment_len = int(SAMPLE_RATE * 0.1)
-        gap_len = int(SAMPLE_RATE * 0.2)
+        gap_len = int(SAMPLE_RATE * 0.08)
         assert len(audio) == segment_len + gap_len + segment_len
 
     def test_empty_transcript_returns_empty(self):

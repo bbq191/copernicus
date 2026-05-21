@@ -3,7 +3,8 @@ import { LeftPanel } from "./LeftPanel";
 import { RightPanel } from "./RightPanel";
 import { EvidenceDetailPanel } from "../compliance/EvidenceDetailPanel";
 import { useComplianceStore } from "../../stores/complianceStore";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
+import { Activity } from "lucide-react";
 
 export function AppLayout() {
   const navigate = useNavigate();
@@ -21,7 +22,14 @@ export function AppLayout() {
             Copernicus
           </button>
         </div>
-        <div className="flex-none">
+        <div className="flex-none flex items-center gap-1">
+          <Link
+            to="/health"
+            className="btn btn-ghost btn-sm btn-square"
+            title="服务状态"
+          >
+            <Activity className="h-4 w-4" />
+          </Link>
           <ThemeToggle />
         </div>
       </div>

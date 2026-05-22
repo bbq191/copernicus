@@ -18,6 +18,9 @@ from pathlib import Path
 os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count() or 8)
 os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 8)
 
+# 允许 PyTorch 使用非连续显存段，防止多次推理后碎片化 OOM（必须在 torch 导入前设置）
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 _log_dir = Path(__file__).resolve().parent.parent / "logs"
 _log_dir.mkdir(parents=True, exist_ok=True)
 _log_file = _log_dir / f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"

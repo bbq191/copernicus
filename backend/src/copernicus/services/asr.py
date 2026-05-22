@@ -289,6 +289,7 @@ class ASRService:
         sentence_timestamp: bool = False,
     ) -> ASRResult:
         """Run ASR inference on a WAV file. This is a blocking call."""
+        import gc
         logger.info("[%s] Starting transcription: %s", self._mode.upper(), audio_path.name)
         try:
             if self._mode == "sensevoice":
@@ -297,6 +298,13 @@ class ASRService:
                 return self._transcribe_paraformer(audio_path, hotwords, sentence_timestamp)
         except Exception as e:
             raise ASRError(f"ASR inference failed: {e}") from e
+        finally:
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            gc.collect()
 
     def _transcribe_paraformer(
         self,

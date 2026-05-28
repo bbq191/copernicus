@@ -1,7 +1,10 @@
 import hashlib
 import mimetypes
+import re
 from pathlib import Path
 from typing import NamedTuple
+
+_SAFE_FILENAME_RE = re.compile(r'^[A-Za-z0-9_.-]+$')
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
@@ -365,6 +368,8 @@ async def get_task_frame(
     `filename` 格式通常为 `frame_0001.jpg`，可从 `keyframe_count` 推算范围，
     或通过合规报告中的 `evidence_url` 字段直接获取完整路径。
     """
+    if not _SAFE_FILENAME_RE.fullmatch(filename):
+        raise HTTPException(status_code=422, detail="Invalid filename")
     frames_path = store.persistence.task_dir(task_id) / "frames" / filename
     if not frames_path.exists():
         raise HTTPException(status_code=404, detail="Frame not found")

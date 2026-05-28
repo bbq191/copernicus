@@ -143,7 +143,7 @@ async def _run_synthesis(
             duration_ms = round(sum(sf.info(str(p)).duration * 1000 for p in parts), 1)
             await tts_service.concat_parts_to_mp3(parts, output_path)
 
-        store.persistence.save_json(
+        store.persistence.save_dict(
             task_id, "synthesis_result.json",
             {"duration_ms": duration_ms, "synthesis_time_ms": synthesis_ms},
         )

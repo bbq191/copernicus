@@ -107,7 +107,10 @@ async def submit_transcript_evaluation_task(
 
     如需指定模板，请改用 `POST /evaluate/text/async`。
     """
-    raw = (await request.body()).decode("utf-8")
+    body = await request.body()
+    if len(body) > 500 * 1024:
+        raise HTTPException(status_code=413, detail="Request body too large (max 500 KB)")
+    raw = body.decode("utf-8")
     transcript = _extract_transcript(raw)
     if not transcript.strip():
         raise HTTPException(status_code=422, detail="Text must not be empty")

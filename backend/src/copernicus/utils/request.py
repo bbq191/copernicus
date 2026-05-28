@@ -1,22 +1,14 @@
-"""请求参数解析工具函数
-
-Author: afu
-"""
-
 import json
+
+_HOTWORDS_MAX_COUNT = 200
+_HOTWORDS_MAX_WORD_LEN = 100
 
 
 def parse_hotwords(hotwords: str | None) -> list[str] | None:
-    """解析请求中的 hotwords JSON 字符串
-
-    Args:
-        hotwords: JSON 格式的热词字符串，如 '["词1", "词2"]'
-
-    Returns:
-        热词列表，或 None（无热词时）
+    """解析请求中的 hotwords JSON 字符串。
 
     Raises:
-        ValueError: hotwords 不是合法的 JSON 字符串数组
+        ValueError: 格式非法、数量超限或单词过长
     """
     if not hotwords:
         return None
@@ -26,4 +18,9 @@ def parse_hotwords(hotwords: str | None) -> list[str] | None:
         raise ValueError(f"hotwords 不是合法 JSON: {e}") from e
     if not isinstance(parsed, list) or not all(isinstance(w, str) for w in parsed):
         raise ValueError("hotwords 必须是字符串数组，如 [\"词1\", \"词2\"]")
+    if len(parsed) > _HOTWORDS_MAX_COUNT:
+        raise ValueError(f"hotwords 数量超限（最多 {_HOTWORDS_MAX_COUNT} 条，实际 {len(parsed)} 条）")
+    for w in parsed:
+        if len(w) > _HOTWORDS_MAX_WORD_LEN:
+            raise ValueError(f"热词长度超限（最多 {_HOTWORDS_MAX_WORD_LEN} 字符）：{w[:20]!r}…")
     return parsed if parsed else None

@@ -26,5 +26,6 @@ class AudioPreprocessStage:
             raise RuntimeError("audio_bytes is None in AudioPreprocessStage")
         logger.info("Audio preprocessing starting for: %s", ctx.filename)
         ctx.wav_path = await self._audio.preprocess(ctx.audio_bytes, ctx.filename)
+        ctx.audio_bytes = None  # WAV 已落盘，释放原始字节引用
         logger.info("Audio preprocessed to: %s", ctx.wav_path)
         return ctx

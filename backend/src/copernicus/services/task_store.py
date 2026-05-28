@@ -467,6 +467,7 @@ class TaskStore:
         to_remove = len(self._tasks) - self._max_tasks
         for tid in evict_ids[:to_remove]:
             del self._tasks[tid]
+            self._synthesis_jobs.pop(tid, None)
         if to_remove > 0:
             logger.info("Evicted %d completed tasks (total: %d)", min(to_remove, len(evict_ids)), len(self._tasks))
 

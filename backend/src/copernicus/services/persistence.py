@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,9 @@ from pathlib import Path
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+# task_id 为 uuid4().hex：32 位小写十六进制字符
+_SAFE_TASK_ID = re.compile(r'^[0-9a-f]{32}$')
 
 
 class PersistenceService:
@@ -21,6 +25,8 @@ class PersistenceService:
     # -- directory helpers ---------------------------------------------------
 
     def task_dir(self, task_id: str) -> Path:
+        if not _SAFE_TASK_ID.fullmatch(task_id):
+            raise ValueError(f"Invalid task_id format: {task_id!r}")
         d = self._upload_dir / task_id
         d.mkdir(parents=True, exist_ok=True)
         return d
@@ -30,6 +36,11 @@ class PersistenceService:
     def save_json(self, task_id: str, filename: str, model: BaseModel) -> None:
         dest = self.task_dir(task_id) / filename
         self._atomic_write(dest, model.model_dump_json(indent=2))
+        logger.info("Persisted %s for task %s", filename, task_id)
+
+    def save_dict(self, task_id: str, filename: str, data: dict) -> None:
+        dest = self.task_dir(task_id) / filename
+        self._atomic_write(dest, json.dumps(data, ensure_ascii=False, indent=2))
         logger.info("Persisted %s for task %s", filename, task_id)
 
     def load_json(self, task_id: str, filename: str) -> dict | None:
@@ -42,11 +53,17 @@ class PersistenceService:
             logger.warning("Failed to load %s for task %s: %s", filename, task_id, e)
             return None
 
+    def _task_dir_unchecked(self, task_id: str) -> Path:
+        """返回 task 目录路径，验证格式但不创建目录（供只读查询用）。"""
+        if not _SAFE_TASK_ID.fullmatch(task_id):
+            raise ValueError(f"Invalid task_id format: {task_id!r}")
+        return self._upload_dir / task_id
+
     def has_file(self, task_id: str, filename: str) -> bool:
-        return (self._upload_dir / task_id / filename).exists()
+        return (self._task_dir_unchecked(task_id) / filename).exists()
 
     def delete_file(self, task_id: str, filename: str) -> None:
-        path = self._upload_dir / task_id / filename
+        path = self._task_dir_unchecked(task_id) / filename
         if path.exists():
             path.unlink()
             logger.info("Deleted %s for task %s", filename, task_id)
@@ -87,7 +104,7 @@ class PersistenceService:
         return dest
 
     def find_audio(self, task_id: str) -> Path | None:
-        d = self._upload_dir / task_id
+        d = self._task_dir_unchecked(task_id)
         if not d.exists():
             return None
         for p in d.glob("audio.*"):
@@ -129,7 +146,7 @@ class PersistenceService:
         return path
 
     def find_video(self, task_id: str) -> Path | None:
-        d = self._upload_dir / task_id
+        d = self._task_dir_unchecked(task_id)
         if not d.exists():
             return None
         for p in d.glob("video.*"):

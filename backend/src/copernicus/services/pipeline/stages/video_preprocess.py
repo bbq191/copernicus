@@ -40,6 +40,7 @@ class VideoPreprocessStage:
         ctx: PipelineContext,
         on_progress: ProgressCallback | None = None,
     ) -> PipelineContext:
+        ctx.audio_bytes = None  # 视频路径已落盘，无需再持有原始字节
         video_path = self._persistence.find_video(ctx.task_id)
         if video_path is None:
             raise RuntimeError(

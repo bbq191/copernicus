@@ -1,25 +1,26 @@
 ---
 title: Copernicus 第三方系统接入指南
 author: afu
-version: V1.1
-date: 2026-04-29
+version: V1.2
+date: 2026-05-22
 ---
 
 # Copernicus 第三方系统接入指南
 
-> 面向需要通过 API 将 Copernicus 能力集成到外部系统的开发者，覆盖标准纪要、合规审核、纯文本评估三项核心功能的完整调用流程。
+> 面向需要通过 API 将 Copernicus 能力集成到外部系统的开发者，覆盖标准纪要、合规审核、纯文本评估、音频合成四项核心功能的完整调用流程。
 
 ---
 
 ## 一、概述
 
-Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分层处理：
+Copernicus 提供标准 REST API，基于四层架构将任务按复杂度分层处理：
 
 | 层级 | 主入口 | 适用场景 |
 |---|---|---|
 | 存储层 | `PATCH /api/v1/uploads/{hash}` | 大文件分片上传（> 50 MB 推荐） |
 | 基础 AI | `POST /api/v1/tasks/standard_minutes` | 转写 + 纠错 + 纪要（90% 场景） |
 | 高阶 AI | `POST /api/v1/tasks/compliance_audit` | 多模态合规推理（10% 场景） |
+| 音频重塑 | `POST /api/v1/tasks/{task_id}/synthesize` | 多说话人对话音频合成（可选） |
 
 **调用模型**：全部接口采用异步任务模式——提交请求后立即返回 `task_id`，调用方通过轮询接口获取进度和结果。
 
@@ -33,6 +34,14 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 - **新增纪要模板系统**：`standard_minutes` 支持 `template_id` 参数，可按夕会、周例会、公文等不同格式生成纪要；
 - **`evaluation` 结果结构变更**：废弃原有评分字段（`scores`、`analysis`、`meta`），改为 `formatted_content`（按模板排版的 Markdown 正文）和 `title`（会议标题）；
 - 新增 `GET /api/v1/templates`（查询可用模板）和 `POST /api/v1/templates/reload`（热重载模板）。
+
+**V1.2 主要变化**：
+- **新增音频重塑 API**：通过 `POST /api/v1/tasks/{task_id}/synthesize` 将转写结果合成为多说话人对话音频，配套状态查询和下载端点（见 4.16–4.18）；
+- **`/health` 响应结构升级**：`asr_loaded`/`llm_reachable` 布尔字段改为 `asr`/`llm`/`tts` 组件对象，新增整体 `status` 字段和 `tasks` 任务统计（见 4.12）；
+- **新增 `DELETE /api/v1/tasks/{task_id}`**：作废任务内存缓存并重置哈希索引，用于强制重新处理同一文件（见 4.10）；
+- **分片上传不支持 `template_id`**：分片上传流程（4.3–4.4）始终使用默认模板，如需指定模板请改用普通上传（4.1）；
+- **删除 `rerun-evaluation` 端点**：重新生成纪要请改用 `POST /api/v1/evaluate/text/async`（见 4.13）；
+- `results` 响应新增 `has_synthesis` 字段，标识该任务是否已有合成音频。
 
 ---
 
@@ -85,7 +94,7 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 
 ### 2.4 大文件分片上传
 
-文件大于 50 MB 时推荐使用分片上传，支持断点续传：
+文件大于 50 MB 时推荐使用分片上传，支持断点续传。注意：分片上传流程不支持指定 `template_id`，将使用默认通用模板；如需指定模板，请使用普通上传（2.2）。
 
 ```
 1. GET /api/v1/uploads/{sha256}?filename=xxx&total_size=yyy
@@ -116,6 +125,23 @@ Copernicus 提供标准 REST API，基于三阶段架构将任务按复杂度分
 2. POST /api/v1/evaluate/text/async → task_id（传入文本和 template_id）
 3. 轮询 GET /api/v1/tasks/{task_id}，等待 completed
    （result 字段中直接包含纪要结果）
+```
+
+### 2.6 音频重塑（合成多说话人对话音频）
+
+适合需要将转写结果重新合成为可播放对话音频的场景。前置条件：任务必须已有 `transcript.json`（即已完成转写）。
+
+```
+1. POST /api/v1/tasks/{task_id}/synthesize → 202（可选：传入 voice_map 覆盖音色）
+        合成期间 ASR/LLM 模型自动卸载，独占 VRAM；如有正在运行的 LLM 任务则返回 503
+        |
+        v
+2. 轮询 GET /api/v1/tasks/{task_id}/synthesis/status
+        等待 status 变为 completed
+        |
+        v
+3. GET /api/v1/tasks/{task_id}/synthesis
+        下载合成的 MP3 文件（24 小时内有效）
 ```
 
 ---

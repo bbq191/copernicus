@@ -23,7 +23,11 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 _log_dir = Path(__file__).resolve().parent.parent / "logs"
 _log_dir.mkdir(parents=True, exist_ok=True)
-_log_file = _log_dir / f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
+
+# 每8小时共用一个日志文件（槽：00 / 08 / 16），追加写入
+_now = datetime.now()
+_slot = _now.hour // 8 * 8
+_log_file = _log_dir / f"{_now.strftime('%Y-%m-%d')}_{_slot:02d}.log"
 
 # 通知 reload worker 复用同一文件，而非各自新建
 os.environ["COPERNICUS_LOG_FILE"] = str(_log_file)
@@ -41,6 +45,7 @@ logging.config.dictConfig({
         "file": {
             "class": "logging.FileHandler",
             "filename": str(_log_file),
+            "mode": "a",
             "encoding": "utf-8",
             "formatter": "default",
         }
@@ -54,15 +59,19 @@ logging.config.dictConfig({
     },
 })
 
-logging.getLogger(__name__).info("logging → %s", _log_file)
+_logger = logging.getLogger(__name__)
+_logger.info("=== SERVER START === logging → %s", _log_file)
 
 import uvicorn
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "copernicus.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload="--no-reload" not in sys.argv,
-        log_config=None,
-    )
+    try:
+        uvicorn.run(
+            "copernicus.main:app",
+            host="0.0.0.0",
+            port=8000,
+            reload="--no-reload" not in sys.argv,
+            log_config=None,
+        )
+    finally:
+        _logger.info("=== SERVER STOP ===")

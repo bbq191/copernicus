@@ -43,6 +43,14 @@ class UploadSessionService:
         meta_path = self._meta_path(file_hash)
 
         if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text("utf-8"))
+                meta["hotwords"] = hotwords or []
+                meta["visual_scan"] = visual_scan
+                meta["generate_summary"] = generate_summary
+                meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            except (json.JSONDecodeError, OSError):
+                pass
             data = self._data_path(file_hash)
             offset = data.stat().st_size if data.exists() else 0
             logger.info("Resuming session %.8s at offset %d", file_hash, offset)

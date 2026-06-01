@@ -1,3 +1,5 @@
+import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -17,12 +19,13 @@ class AudioService:
 
         suffix = Path(original_filename).suffix or ".bin"
         file_id = uuid.uuid4().hex
-        input_path = self._upload_dir / f"{file_id}{suffix}"
         output_path = self._upload_dir / f"{file_id}_processed.wav"
 
-        input_path.write_bytes(audio_bytes)
-
+        tmp_fd, tmp_input = tempfile.mkstemp(suffix=suffix)
+        input_path = Path(tmp_input)
         try:
+            os.close(tmp_fd)
+            input_path.write_bytes(audio_bytes)
             await self._run_ffmpeg(input_path, output_path, self._audio_enhance)
         finally:
             input_path.unlink(missing_ok=True)

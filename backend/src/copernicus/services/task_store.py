@@ -215,9 +215,8 @@ class TaskStore:
         # Task completed and persisted to disk
         if self._persistence.has_file(task_id, "transcript.json"):
             return task_id
-        # Stale index entry: task evicted from memory without completing
+        # Stale index entry: remove from memory; will be persisted on next write
         del self._hash_index[file_hash]
-        self._persistence.save_hash_index(self._hash_index)
         return None
 
     def _register_hash(self, file_hash: str, task_id: str) -> None:

@@ -402,6 +402,51 @@ POST /api/v1/templates/reload
 }
 ```
 
+### 4.16 触发 TTS 合成
+
+```
+POST /api/v1/tasks/{task_id}/synthesize
+Content-Type: application/json（可选）
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| voice_map | object | 否 | 说话人 → 音色种子映射，如 `{"spk_0": "42", "spk_1": "7"}`，未指定时自动分配 |
+
+前置条件：目标任务必须已完成转写（`transcript.json` 存在）。若当前有 LLM 任务正在执行则返回 503，稍后重试。
+
+响应（202）：
+
+```json
+{ "status": "running" }
+```
+
+合成在后台异步执行，通过 4.17 轮询状态。
+
+### 4.17 查询合成状态
+
+```
+GET /api/v1/tasks/{task_id}/synthesis/status
+```
+
+| 响应字段 | 说明 |
+|---|---|
+| status | `running` / `completed` / `failed` |
+| audio_url | 仅 completed 时存在，MP3 下载路径 |
+| duration_ms | 合成音频时长（毫秒），仅 completed 时存在 |
+| synthesis_time_ms | 合成耗时（毫秒），仅 completed 时存在 |
+| error | 错误描述，仅 failed 时存在 |
+
+服务重启后若内存 job 丢失，会自动从磁盘 `synthesis_result.json` 恢复状态，轮询结果不受重启影响。
+
+### 4.18 下载合成音频
+
+```
+GET /api/v1/tasks/{task_id}/synthesis
+```
+
+返回 `synthesis.mp3` 文件（`audio/mpeg`），仅在合成完成后可访问，否则返回 404。文件生命周期与原始媒体相同（任务完成 24 小时后自动清理）。
+
 ---
 
 ## 五、错误处理
@@ -415,6 +460,7 @@ POST /api/v1/templates/reload
 | 413 | 文件过大 | 音视频上限 500 MB，规则文件上限 2 MB |
 | 422 | 参数校验失败 | 检查必填字段和格式，`transcript` 必须为合法 JSON 数组 |
 | 500 | 服务内部错误 | 查看 `error` 字段，常见原因：ASR 模型未加载、LLM 不可达 |
+| 503 | 服务暂时不可用 | 仅出现在 synthesize 端点：LLM 任务正在运行，稍后重试即可 |
 
 **上传失败重试**：网络断开无响应时，先调 `GET /tasks/lookup?hash={sha256}` 检查是否已到达服务端；命中则直接轮询，未命中则重传（最多 3 次，间隔 2/4/8 秒）。
 

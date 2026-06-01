@@ -249,7 +249,7 @@ Pipeline 采用插件化架构，每个 Stage 实现统一的 Protocol 接口，
 | 功能 | 说明 |
 |---|---|
 | 原子写入 | tempfile + rename 确保写入不会产生损坏文件 |
-| SHA-256 哈希索引 | 维护文件哈希到 task_id 的映射，支持去重查询 |
+| SHA-256 哈希索引 | 维护文件哈希到 task_id 的映射，支持去重查询；服务启动时自动清理指向不存在任务的 stale 条目 |
 | JSON 持久化 | transcript / evaluation / compliance / ocr_results / visual_events |
 | 多媒体持久化 | audio / video / frames / synthesis 分别存储 |
 | 启动恢复 | scan_completed_tasks 扫描磁盘，恢复内存任务列表 |
@@ -265,6 +265,7 @@ uploads/{task_id}/
   ├── ocr_results.json       # OCR 扫描结果
   ├── visual_events.json     # 视觉事件
   ├── synthesis.mp3          # TTS 合成音频（按需生成）
+  ├── synthesis_result.json  # 合成耗时元数据（按需生成）
   ├── audio.{ext}            # 提取的音频
   ├── video.{ext}            # 原始视频（视频任务）
   └── frames/                # 关键帧图片
@@ -303,7 +304,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | 模型独占互斥 | 通过 ModelManager 卸载 ASR，ChatTTS 独占显存，合成后驻留等待 |
 | 格式输出 | 多段 WAV 合并为单一 MP3 文件（synthesis.mp3）|
 
-**对应端点**: `POST /api/v1/tasks/{task_id}/synthesize`、`GET /api/v1/tasks/{task_id}/synthesis`
+**对应端点**: `POST /api/v1/tasks/{task_id}/synthesize`、`GET /api/v1/tasks/{task_id}/synthesis/status`、`GET /api/v1/tasks/{task_id}/synthesis`
 
 ---
 
@@ -473,6 +474,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | DELETE | /api/v1/tasks/{task_id} | 作废任务缓存（不删除磁盘文件）|
 | POST | /api/v1/tasks/{task_id}/rerun-transcript | 重新转写 |
 | POST | /api/v1/tasks/{task_id}/synthesize | 触发 TTS 多说话人音频合成 |
+| GET | /api/v1/tasks/{task_id}/synthesis/status | 查询合成任务状态 |
 | GET | /api/v1/tasks/{task_id}/synthesis | 下载已合成的 MP3 音频 |
 | GET | /api/v1/templates | 获取所有可用纪要模板列表 |
 | POST | /api/v1/templates/reload | 热重载纪要模板目录 |
@@ -499,6 +501,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | 前端竞态保护 | 轮询完成时先加载服务端 evaluation 写入 store，再设置 rawEntries，防止 SummaryPanel 用默认模板重复触发 |
 | 防抖批量持久化 | 违规状态变更 500ms 聚合后批量提交 |
 | 分片上传重试 | 每块最多重试 3 次，重试前向服务端查询当前 offset，避免重复上传 |
+| TTS OOM 保护 | 同时捕获 CUDA OutOfMemoryError 与 Python MemoryError，GPU 和 CPU 两种推理模式均有防护 |
 
 ---
 

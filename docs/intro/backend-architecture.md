@@ -183,6 +183,7 @@ audit 端点接收 rules_file（CSV/XLSX）+ transcript（JSON 字符串）+ par
 | 端点 | 方法 | 功能 |
 |------|------|------|
 | /api/v1/tasks/{task_id}/synthesize | POST | 将转写结果合成为多说话人对话音频 |
+| /api/v1/tasks/{task_id}/synthesis/status | GET | 查询合成任务状态（running / completed / failed）|
 | /api/v1/tasks/{task_id}/synthesis | GET | 下载已合成的 MP3 文件 |
 
 synthesize 端点接收可选 `voice_map`（JSON，说话人→音色种子映射），任务完成后将 `synthesis.mp3` 写入任务目录。
@@ -513,6 +514,7 @@ uploads/
     evaluation.json             -- 评估结果（title + formatted_content）
     compliance.json             -- 合规审核结果
     synthesis.mp3               -- TTS 合成对话音频（可选）
+    synthesis_result.json       -- 合成耗时与音频时长元数据（可选）
     keyframes.json              -- 关键帧元数据
     ocr_results.json            -- OCR 扫描结果
     visual_events.json          -- 视觉事件
@@ -783,7 +785,7 @@ FastAPI 事件循环（单进程 asyncio）
 | 任务执行 | 超时保护 | asyncio.wait_for(task_timeout_seconds) |
 | 任务执行 | 生命周期包装 | _task_lifecycle 统一异常捕获 + 状态标记 |
 | 文件持久化 | 原子写入 | tempfile + rename 防数据损坏 |
-| 哈希索引 | stale 清理 | lookup 时发现无 transcript.json 自动移除 |
+| 哈希索引 | stale 清理 | restore_from_disk() 启动时确定性清理并持久化；lookup 时发现 stale 条目惰性移除内存状态 |
 | 分片上传 | 断点续传 | GET 返回已接收字节，客户端续传剩余分块 |
 
 ---

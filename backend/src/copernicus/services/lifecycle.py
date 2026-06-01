@@ -37,7 +37,7 @@ class LifecycleService:
         deleted = 0
 
         for task_dir in self._upload_dir.iterdir():
-            if not task_dir.is_dir():
+            if not task_dir.is_dir() or task_dir.name.startswith("."):
                 continue
             meta_path = task_dir / "meta.json"
             if not meta_path.exists():

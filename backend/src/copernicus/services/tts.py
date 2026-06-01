@@ -286,7 +286,7 @@ def _synthesize_chunks(
                     params_refine_text=params_refine,
                     use_decoder=True,
                 )
-            except torch.cuda.OutOfMemoryError:
+            except (torch.cuda.OutOfMemoryError, MemoryError):
                 logger.warning("OOM on sentence (skipped): %s", sentence)
                 torch.cuda.empty_cache()
                 continue

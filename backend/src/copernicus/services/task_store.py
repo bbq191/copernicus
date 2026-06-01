@@ -160,9 +160,9 @@ class TaskStore:
     def persistence(self) -> PersistenceService:
         return self._persistence
 
-    def get_active_llm_task_ids(self) -> list[str]:
-        """返回当前正在占用 LLM/VRAM 的任务 ID 列表（用于合成前的冲突检测）。"""
-        return [tid for tid, t in self._tasks.items() if t.status in LLM_ACTIVE_STATUSES]
+    def has_active_llm_tasks(self) -> bool:
+        """是否有任务正在占用 LLM/VRAM（用于合成前的冲突检测）。"""
+        return any(t.status in LLM_ACTIVE_STATUSES for t in self._tasks.values())
 
     def get_task_stats(self) -> dict[str, int]:
         """返回任务队列统计：active / completed / failed / synthesis_running。"""
@@ -215,7 +215,7 @@ class TaskStore:
         # Task completed and persisted to disk
         if self._persistence.has_file(task_id, "transcript.json"):
             return task_id
-        # Stale index entry: remove from memory; will be persisted on next write
+        # Stale index entry: remove from memory; persisted on next write or restart
         del self._hash_index[file_hash]
         return None
 
@@ -272,6 +272,18 @@ class TaskStore:
 
             self._tasks[task_id] = info
             logger.info("Restored task %s from disk", task_id)
+
+        # 清理 hash_index 中指向不存在任务的 stale 条目
+        stale = [
+            h for h, tid in self._hash_index.items()
+            if tid not in self._tasks
+            and not self._persistence.has_file(tid, "transcript.json")
+        ]
+        for h in stale:
+            del self._hash_index[h]
+        if stale:
+            index_dirty = True
+            logger.info("Removed %d stale hash index entries", len(stale))
 
         if index_dirty:
             self._persistence.save_hash_index(self._hash_index)

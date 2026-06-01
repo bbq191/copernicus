@@ -176,11 +176,10 @@ async def synthesize_task_audio(
     if model_manager is None:
         raise HTTPException(status_code=503, detail="ModelManager not available")
 
-    active_llm = store.get_active_llm_task_ids()
-    if active_llm:
+    if store.has_active_llm_tasks():
         raise HTTPException(
             status_code=503,
-            detail=f"LLM tasks in progress ({active_llm}), retry after they complete.",
+            detail="LLM task in progress, retry later.",
         )
 
     transcript_data = store.persistence.load_json(task_id, "transcript.json")

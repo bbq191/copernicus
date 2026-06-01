@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,10 +47,11 @@ class LifecycleService:
                 continue
 
             try:
-                mtime = datetime.fromtimestamp(meta_path.stat().st_mtime, tz=timezone.utc)
-            except OSError:
+                meta_data = json.loads(meta_path.read_text("utf-8"))
+                created_at = datetime.fromisoformat(meta_data["created_at"])
+            except (OSError, json.JSONDecodeError, KeyError, ValueError):
                 continue
-            if mtime > cutoff:
+            if created_at > cutoff:
                 continue
 
             for f in task_dir.iterdir():

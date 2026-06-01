@@ -88,7 +88,7 @@ class KeyframeExtractStage:
             "ffmpeg", "-y",
             "-i", str(video_path),
             "-vf", f"select='gt(scene,{self._scene_threshold})'",
-            "-vsync", "vfn",
+            "-vsync", "vfr",
             "-q:v", str(self._quality),
             str(frames_dir / f"%04d.{self._fmt}"),
         ]

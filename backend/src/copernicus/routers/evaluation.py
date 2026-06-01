@@ -82,6 +82,8 @@ async def submit_text_evaluation_task(
     """
     if not text.strip():
         raise HTTPException(status_code=422, detail="Text must not be empty")
+    if len(text.encode()) > 500 * 1024:
+        raise HTTPException(status_code=413, detail="Text too large (max 500 KB)")
     task_id = store.submit_text_evaluation(
         text, template_id=template_id, parent_task_id=parent_task_id
     )

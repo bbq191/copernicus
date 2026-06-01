@@ -295,7 +295,7 @@ async def get_task_results(
     has_video = persistence.find_video(task_id) is not None
     has_synthesis = (persistence.task_dir(task_id) / "synthesis.mp3").exists()
     frames_path = persistence.task_dir(task_id) / "frames"
-    keyframe_count = len(list(frames_path.glob("*"))) if frames_path.is_dir() else 0
+    keyframe_count = sum(1 for p in frames_path.glob("*") if p.is_file()) if frames_path.is_dir() else 0
 
     ocr_data = persistence.load_json(task_id, "ocr_results.json")
     ocr_text_count = len(ocr_data) if isinstance(ocr_data, list) else 0

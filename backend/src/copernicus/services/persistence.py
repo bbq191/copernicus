@@ -202,10 +202,12 @@ class PersistenceService:
                 continue
 
             task_id = d.name
+            if not _SAFE_TASK_ID.fullmatch(task_id):
+                continue
             audio_path = self.find_audio(task_id)
             video_path = self.find_video(task_id)
             frames_path = d / "frames"
-            keyframe_count = len(list(frames_path.glob("*"))) if frames_path.is_dir() else 0
+            keyframe_count = sum(1 for p in frames_path.glob("*") if p.is_file()) if frames_path.is_dir() else 0
             results.append(
                 {
                     "task_id": task_id,

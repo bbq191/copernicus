@@ -42,6 +42,9 @@ async def submit_compliance_audit(
     if len(rules_bytes) > 2 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Rules file too large (max 2MB)")
 
+    if len(transcript.encode()) > 500 * 1024:
+        raise HTTPException(status_code=413, detail="Transcript too large (max 500 KB)")
+
     try:
         entries = json.loads(transcript)
         if not isinstance(entries, list):

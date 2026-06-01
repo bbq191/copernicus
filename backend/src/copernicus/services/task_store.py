@@ -417,7 +417,8 @@ class TaskStore:
         task.result = None
         task.error = None
 
-        # invalidate downstream results
+        # invalidate all prior results
+        self._persistence.delete_file(task_id, "transcript.json")
         self._persistence.delete_file(task_id, "evaluation.json")
         self._persistence.delete_file(task_id, "compliance.json")
 

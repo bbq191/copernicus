@@ -2,12 +2,14 @@
 
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = ".sessions"
+_SAFE_FILE_HASH = re.compile(r'^[0-9a-f]{64}$')
 
 
 class UploadSessionService:
@@ -18,6 +20,8 @@ class UploadSessionService:
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
 
     def _session_dir(self, file_hash: str) -> Path:
+        if not _SAFE_FILE_HASH.fullmatch(file_hash):
+            raise ValueError(f"Invalid file_hash format: {file_hash!r}")
         return self._sessions_dir / file_hash
 
     def _meta_path(self, file_hash: str) -> Path:

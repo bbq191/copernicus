@@ -414,12 +414,12 @@ class TaskStore:
         if task is None:
             raise TaskNotFoundError(f"Task {task_id} not found")
 
-        audio_path = self._persistence.find_audio(task_id)
-        if audio_path is None:
+        media_path = self._persistence.find_video(task_id) or self._persistence.find_audio(task_id)
+        if media_path is None:
             raise AudioNotFoundError(f"Audio not found for task {task_id}")
 
-        audio_bytes = audio_path.read_bytes()
-        suffix = audio_path.suffix
+        audio_bytes = media_path.read_bytes()
+        suffix = media_path.suffix
 
         # reset task state
         task.status = TaskStatus.PENDING

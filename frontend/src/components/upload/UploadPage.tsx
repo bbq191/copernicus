@@ -59,9 +59,9 @@ export function UploadPage() {
         }
         navigate(`/workspace/${res.task_id}`);
       } catch (err) {
-        useTaskStore.getState().setError(
-          err instanceof Error ? err.message : "上传失败",
-        );
+        const message = err instanceof Error ? err.message : "上传失败";
+        useTaskStore.getState().setError(message);
+        useToastStore.getState().addToast("error", message);
       } finally {
         setUploading(false);
         setUploadProgress(null);

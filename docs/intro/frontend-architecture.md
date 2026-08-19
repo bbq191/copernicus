@@ -11,13 +11,14 @@
 | 层级 | 技术选型 | 版本 |
 |------|---------|------|
 | 框架 | React | 19 |
-| 语言 | TypeScript | 严格模式 |
-| 构建 | Vite | 7.2 |
-| 路由 | React Router | v6 |
-| 状态管理 | Zustand | 无 Provider，函数式 selector |
+| 语言 | TypeScript | 5.9，严格模式 |
+| 构建 | Vite | 7.2（Tailwind 经 @tailwindcss/vite 插件接入）|
+| 路由 | React Router（react-router-dom） | v7 |
+| 状态管理 | Zustand | v5，无 Provider，函数式 selector |
 | 虚拟滚动 | React Virtuoso | 长列表渲染优化 |
-| 音频可视化 | WaveSurfer.js | 波形渲染 |
-| UI 基础 | DaisyUI + TailwindCSS | 主题切换（dark / corporate）|
+| 音频可视化 | WaveSurfer.js | v7，波形渲染 |
+| UI 基础 | DaisyUI 5 + TailwindCSS 4 | 主题切换（dark / corporate），主题配置写在 index.css |
+| 文件哈希 | hash-wasm | 分块流式 SHA-256（8 MB/块，避免大文件整体读入内存）|
 | 文档导出 | docx + jsPDF + html2canvas-pro | SRT / Word / PDF |
 | HTTP | Axios | 10 分钟超时，统一拦截器 |
 
@@ -32,8 +33,9 @@ frontend/src/
     task.ts         #   任务上传/查询/媒体（含 SHA-256 预检）
     evaluation.ts   #   文本评估（内部轮询）
     compliance.ts   #   合规审核（内部轮询）
-    synthesis.ts    #   TTS 合成触发 + 音频 URL
+    synthesis.ts    #   TTS 合成触发 + 状态查询 + 音频 URL
     templates.ts    #   模板列表查询
+    health.ts       #   服务健康检查（/health）
   components/       # UI 组件（按功能域分目录）
     layout/         #   三栏布局骨架（含 SynthesisPanel 入口）
     upload/         #   上传与进度（含模板选择）
@@ -48,8 +50,8 @@ frontend/src/
   types/            # TypeScript 类型定义
   utils/            # 纯函数工具（时间格式化、聚合、搜索、导出生成）
     chunkedUpload.ts#   分片上传协议实现（断点续传）
-    fileHash.ts     #   Web Crypto API 计算 SHA-256
-  pages/            # 页面级组件（2 个路由页面）
+    fileHash.ts     #   hash-wasm 分块计算 SHA-256（8 MB/块）
+  pages/            # 页面级组件（3 个路由页面）
   App.tsx           # 路由配置入口
   main.tsx          # 应用挂载点
 ```
@@ -58,11 +60,12 @@ frontend/src/
 
 ## 三、路由与页面
 
-应用仅有两个路由页面，通过 React Router v6 管理：
+应用有三个路由页面，通过 React Router v7 管理：
 
 ```
 /                       --> HomePage（渲染 UploadPage）
 /workspace/:taskId      --> WorkspacePage（核心工作区）
+/health                 --> HealthPage（服务健康状态）
 ```
 
 全局挂载 ToastContainer 通知组件，覆盖所有页面。
@@ -92,6 +95,14 @@ taskId 存在？
         ├── 未初始化 → WorkspaceSkeleton 骨架屏
         └── completed → AppLayout 主工作区
 ```
+
+### 3.3 HealthPage
+
+服务健康状态页面，入口位于首页和工作区 Navbar。调用 `GET /api/v1/health`，以 10 秒间隔自动刷新，展示：
+
+- ASR / LLM / TTS 三个组件的状态（ok / degraded / down）与详情
+- 任务队列统计（进行中 / 已完成 / 失败 / 合成中）
+- VRAM 水位（已加载模型列表、估算占用、预算上限）
 
 ---
 
@@ -248,7 +259,7 @@ SynthesisPanel
 
 **播放器**: 使用隐藏 `<audio>` 元素 + 自定义控件，`audioRef.current?.load()` 强制浏览器重新加载同名 URL 的新内容（重新合成场景）。
 
-**合成触发**: 调用 `POST /tasks/{taskId}/synthesize`，服务端在 ModelManager 互斥锁保护下卸载 ASR → 加载 TTS → 合成 → 写入 synthesis.mp3。
+**合成触发（异步）**: 调用 `POST /tasks/{taskId}/synthesize` 后服务端立即返回 202，合成在后台执行（ModelManager 互斥锁保护下卸载 ASR → 加载 TTS → 合成 → 写入 synthesis.mp3）。面板以 2 秒间隔轮询 `GET /tasks/{taskId}/synthesis/status`，直到 completed / failed。页面刷新后挂载时先查一次状态，恢复已有合成结果。
 
 ### 5.6 合规审核模块
 
@@ -332,6 +343,7 @@ toastStore         通知消息（toasts 队列）
 | progress | TaskProgress | 进度（current_chunk / total_chunks / percent）|
 | error | string / null | 错误消息 |
 | pollEnabled | boolean | 轮询开关 |
+| isVideoTask | boolean | 是否视频任务（由 extracting_frames / scanning_visual 阶段推断）|
 
 **关键决策**: pollEnabled 必须在 taskStore 中，不能用 WorkspacePage 的 local state，因为 useTaskPolling 需要稳定引用。
 
@@ -364,6 +376,7 @@ toastStore         通知消息（toasts 队列）
 | mergedBlocks | MergedBlock[] | 前端聚合视图（同说话人 30s 内合并）|
 | speakerMap | Record | 说话人重命名映射 |
 | textMode | "original" / "corrected" | 显示模式 |
+| editedTexts | Record | 用户在线编辑的文本（blockId:idx → 文本）|
 | searchQuery | string | 搜索关键词 |
 | visibleSpeakers | Set | 可见说话人集合 |
 
@@ -497,10 +510,12 @@ Axios 实例，baseURL 为 `/api/v1`，超时 10 分钟（适应长时间 ASR �
 | evaluation.ts | evaluateText | 提交评估（含 templateId）+ 内部轮询至完成 |
 | compliance.ts | auditCompliance | 提交合规审核 + 内部轮询至完成 |
 | | persistViolationStatuses | 批量持久化违规状态 |
-| synthesis.ts | synthesizeTask | 触发 TTS 合成，返回 duration_ms / synthesis_time_ms |
+| synthesis.ts | startSynthesis | 触发 TTS 合成（202 异步）|
+| | getSynthesisStatus | 轮询合成状态（running / completed / failed）|
 | | getSynthesisAudioUrl | 生成合成音频 URL（/tasks/{id}/synthesis）|
 | templates.ts | listTemplates | 获取可用纪要模板列表（id / name / description）|
-| utils/fileHash.ts | computeFileSHA256 | Web Crypto API 计算文件 SHA-256（异步，不阻塞主线程）|
+| health.ts | getHealth | 服务健康检查（组件状态 + 任务统计 + VRAM 水位）|
+| utils/fileHash.ts | computeFileSHA256 | hash-wasm 分块计算文件 SHA-256（8 MB/块，大文件不整体读入内存）|
 | utils/chunkedUpload.ts | chunkedUploadFile | 分片上传实现（5MB/片，断点续传，带进度回调）|
 
 ### 8.3 轮询模式
@@ -612,9 +627,9 @@ SummaryPanel
 ```
 SynthesisPanel
   ↓ 用户点击"合成对话音频"
-  ↓ synthesizeTask(taskId)       POST /tasks/{id}/synthesize
-  ↓ 等待服务端 ChatTTS 合成完成（ModelManager 保证互斥）
-  ↓ 返回 { duration_ms, synthesis_time_ms }
+  ↓ startSynthesis(taskId)       POST /tasks/{id}/synthesize → 202 { status: running }
+  ↓ 2s 间隔轮询 GET /tasks/{id}/synthesis/status（服务端 ChatTTS 后台合成，ModelManager 保证互斥）
+  ↓ status=completed → 返回 { duration_ms, synthesis_time_ms }
   ↓ synthesisStore.setResult(...)
   ↓ audioRef.current?.load()     强制浏览器重新加载 synthesis.mp3
   ↓ LeftPanel useEffect 检测 hasSynthesis=true → 自动展开合成面板
@@ -718,7 +733,7 @@ resolveEvidenceUrl 函数兼容三种路径格式：http/api 开头直接使用�
 | generateSrt / downloadSrt | utils/srtGenerator.ts | 生成 SRT 内容并触发浏览器下载 |
 | exportToWord | utils/wordGenerator.ts | 导出 Word 文档（docx 库 + file-saver）|
 | exportToPdf | utils/pdfGenerator.ts | 导出 PDF（html2canvas-pro + jsPDF，支持分页）|
-| computeFileSHA256 | utils/fileHash.ts | Web Crypto API 计算文件 SHA-256 |
+| computeFileSHA256 | utils/fileHash.ts | hash-wasm 分块计算文件 SHA-256（8 MB/块）|
 | chunkedUploadFile | utils/chunkedUpload.ts | 分片上传协议（断点续传，5MB/片）|
 
 ---

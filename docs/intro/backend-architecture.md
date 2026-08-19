@@ -13,14 +13,15 @@
 | Web 框架 | FastAPI | 异步路由 + Lifespan 生命周期 |
 | 配置 | pydantic-settings | .env 文件驱动，类型安全 |
 | ASR 引擎 | FunASR (Paraformer / SenseVoice) | 双模式语音识别 + 说话人分离 |
-| LLM | Ollama 本地部署 | 原生 /api/chat 端点，流式 httpx |
-| TTS | ChatTTS | 多说话人对话音频合成，LLM 口语化改写 |
+| LLM | Ollama 本地 / DeepSeek 云端 | httpx 直连 /api/chat 端点，流式响应，无官方 SDK |
+| TTS | ChatTTS | 多说话人对话音频合成，LLM 口语化改写（默认关闭）|
 | OCR | RapidOCR (ONNX) | CPU 推理，不占 GPU 显存 |
 | 人脸检测 | ultralytics YOLO | yolov8n-face 轻量模型 |
 | 文本纠错 | pycorrector (MacBERT) | 同音字/形近字检测 |
 | 热词替换 | FlashText | 多模式高速匹配 |
+| 纪要模板 | python-frontmatter | Markdown + YAML frontmatter 模板，热重载 |
 | 音视频处理 | ffmpeg | 格式转换、音频增强、关键帧提取、MP3 合并 |
-| 运行环境 | Python >= 3.12 (pyenv-win) | Windows + CUDA |
+| 运行环境 | Python >= 3.12（pyenv 管理，固定 3.12.10） | CUDA GPU；开发机 Windows/Linux，生产 Rocky Linux |
 
 ---
 
@@ -28,16 +29,17 @@
 
 ```
 backend/src/copernicus/
-  main.py                 # 应用入口 + Lifespan 生命周期
-  config.py               # pydantic-settings 配置
-  exceptions.py           # 自定义异常
+  main.py                 # 应用入口 + Lifespan 生命周期 + 日志配置（版本 1.1.0，/docs 走 npmmirror CDN 的 Swagger UI）
+  config.py               # pydantic-settings 配置（含 models_dir 派生路径等计算属性）
+  dependencies.py         # FastAPI Depends 提供器（从 app.state 取服务实例）
+  exceptions.py           # 自定义异常（CopernicusError 基类 + 子类）
   routers/                # FastAPI 路由层
     task.py               #   任务管理（上传/轮询/结果/重跑/媒体）
     synthesis.py          #   TTS 音频合成与下载
     upload.py             #   分片上传（断点续传）
     evaluation.py         #   文本评估 + 模板管理
     compliance.py         #   合规审核
-    transcription.py      #   同步转录 + 健康检查（调试用）
+    transcription.py      #   /health 健康检查
   services/               # 业务服务层
     pipeline/             #   Pipeline 插件化编排
       base.py             #     PipelineContext + Stage Protocol
@@ -45,17 +47,20 @@ backend/src/copernicus/
       __init__.py         #     PipelineService Facade
       stages/             #     9 个独立 Stage 实现
         video_preprocess.py
-        audio_preprocess.py
-        asr_transcribe.py
         keyframe_extract.py
         ocr_scan.py
         face_detect.py
+        audio_preprocess.py
+        asr_transcribe.py
         speaker_smooth.py
         text_correction.py
         transcript_build.py
     asr.py                #   双模式 ASR 服务
     tts.py                #   ChatTTS 多说话人合成
-    corrector.py          #   四阶段文本纠正
+    corrector/            #   四阶段文本纠正（包）
+      service.py          #     CorrectorService 编排
+      preprocess.py       #     规则预处理（噪声词、重复词合并）
+      prompts.py          #     LLM 润色 System Prompt
     text_corrector.py     #   pycorrector/MacBERT 封装
     hotword_replacer.py   #   FlashText 热词替换
     evaluator.py          #   Map-Reduce 内容评估（模板驱动）
@@ -65,25 +70,31 @@ backend/src/copernicus/
     llm.py                #   OllamaClient（流式 + 重试 + 并发）
     persistence.py        #   JSON 文件持久化 + 去重
     task_store.py         #   任务生命周期管理
-    template_manager.py   #   纪要模板加载与热重载
+    template_manager.py   #   纪要模板加载与热重载（Markdown + frontmatter）
     model_manager.py      #   GPU 模型生命周期管理（ASR↔TTS 互斥）
     audio.py              #   音频格式转换
     ocr.py                #   RapidOCR 封装
     face_detector.py      #   YOLO 人脸检测
     upload_session.py     #   分片上传会话管理
-    lifecycle.py          #   媒体文件生命周期清理
+    lifecycle.py          #   媒体文件生命周期清理（定时任务）
+    preflight.py          #   启动预检（模型文件、LLM 可达性、funasr 补丁）
   schemas/                # Pydantic 数据模型
     task.py               #   TaskStatus / TaskProgress / TaskResultsResponse
-    transcription.py      #   TranscriptEntrySchema / TranscriptResponse
+    transcription.py      #   TranscriptEntrySchema / TranscriptResponse + HealthResponse 系列
     evaluation.py         #   EvaluationResult（title + formatted_content）
     compliance.py         #   Violation / ComplianceReport / ComplianceRule
     visual.py             #   KeyFrame / OCRRecord / VisualEvent
+    synthesis.py          #   SynthesisRequest / Response / StatusResponse
+    upload.py             #   UploadQueryResponse / UploadChunkResponse
   utils/                  # 纯函数工具
     llm_parse.py          #   strip_think_tags / extract_json_object / extract_json_array
     text.py               #   chunk_text / merge_chunks / pre_merge_segments / smooth_speakers
+    ffmpeg.py             #   ffmpeg 子进程封装
     request.py            #   parse_hotwords
-    types.py              #   ProgressCallback 类型别名
+    types.py              #   ProgressCallback / StageChangeCallback 类型别名
 ```
+
+**开发启动**: `run_dev.py` 预设 CUDA/线程环境变量后以 uvicorn reload 模式启动（端口 8000）；开发日志按每 8 小时一个文件写入 `logs/YYYY-MM-DD_HH.log`（时段槽 00/08/16，追加写，启停时插入分隔标记），并通过 `COPERNICUS_LOG_FILE` 让 reload worker 复用同一文件。生产环境（systemd）日志走 stdout 由 journald 接管。
 
 ---
 
@@ -92,8 +103,12 @@ backend/src/copernicus/
 FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依赖顺序初始化所有服务：
 
 ```
+0. 启动预检（preflight）
+   └── run_preflight：检查模型文件是否就绪、LLM 服务可达性、funasr 补丁是否已应用
+
 1. 环境变量修补
    └── LOKY_MAX_CPU_COUNT / OMP_NUM_THREADS（修复 joblib 物理核心检测）
+   └── MODELSCOPE_CACHE 指向 models/funasr/ + PYTORCH_CUDA_ALLOC_CONF=expandable_segments
 
 2. OllamaClient
    └── 全局 Semaphore(llm_max_concurrent) + httpx.AsyncClient
@@ -118,7 +133,7 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
    └── 注册 9 个 Stage，注入所有依赖
 
 8. 上层服务
-   ├── TemplateManager（扫描 templates/ 目录，加载所有 .yaml 模板）
+   ├── TemplateManager（扫描 templates/ 目录，加载所有 .md 模板）
    ├── EvaluatorService（OllamaClient + Settings + TemplateManager）
    └── ComplianceService（OllamaClient + Settings）
 
@@ -127,10 +142,13 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
 
 10. TaskStore
     └── 注入 Pipeline + Persistence + Evaluator + Compliance + TemplateManager
-    └── restore_from_disk() 恢复历史任务
+    └── restore_from_disk() 恢复历史任务（同时修剪失效 hash 索引）
+
+11. LifecycleService
+    └── asyncio 定时任务：每小时清理超过 media_retention_hours(24h) 的原始媒体文件（保留 JSON 结果）
 ```
 
-**关闭时**: 调用 `llm_client.close()` 释放 httpx 连接池。
+**关闭时**: 取消 LifecycleService 定时任务，调用 `llm_client.close()` 释放 httpx 连接池。
 
 **CORS**: 默认允许 `http://localhost:3000`。
 
@@ -197,12 +215,13 @@ synthesize 端点接收可选 `voice_map`（JSON，说话人→音色种子映�
 
 **断点续传**: GET 接口返回已接收字节数，PATCH 携带 `Content-Range: bytes start-end/total`，服务端顺序写入临时文件。所有分块接收完毕后自动触发 `submit_standard_minutes` 流水线。
 
-### 4.6 转录路由 (routers/transcription.py)
+### 4.6 系统路由 (routers/transcription.py)
 
 | 端点 | 方法 | 功能 |
 |------|------|------|
-| /api/v1/transcribe/transcript | POST | 同步转录（仅调试用）|
-| /api/v1/health | GET | ASR 加载状态 + LLM 可达性检查 |
+| /api/v1/health | GET | 服务健康检查（unhealthy 时返回 503）|
+
+**health 响应结构**: 顶层 `status`（healthy / degraded / unhealthy）+ 三个组件对象 `asr` / `llm` / `tts`（各含 status: ok / degraded / down 与 detail）+ `tasks` 任务统计（active / completed / failed / synthesis_running）+ `vram` 水位（loaded_models / estimated_used_gb / budget_gb）。早期的同步转录调试端点已删除。
 
 ---
 
@@ -272,17 +291,19 @@ PipelineService 是对外暴露的唯一接口，构造时注册 9 个 Stage：
 
 ```
 1. VideoPreprocessStage     -- 视频提取音频（条件注册：settings + persistence）
-2. AudioPreprocessStage     -- 音频格式转换
-3. ASRTranscribeStage       -- 语音识别
-4. KeyframeExtractStage     -- 关键帧提取（条件注册：settings + persistence）
-5. OCRScanStage             -- OCR 扫描（条件注册：ocr_service + persistence）
-6. FaceDetectStage          -- 人脸检测（条件注册：face_detector + persistence + settings）
+2. KeyframeExtractStage     -- 关键帧提取（条件注册：settings + persistence）
+3. OCRScanStage             -- OCR 扫描（条件注册：ocr_service + persistence）
+4. FaceDetectStage          -- 人脸检测（条件注册：face_detector + persistence + settings）
+5. AudioPreprocessStage     -- 音频格式转换
+6. ASRTranscribeStage       -- 语音识别
 7. SpeakerSmoothStage       -- 说话人标签平滑
 8. TextCorrectionStage      -- 四阶段文本纠正
 9. TranscriptBuildStage     -- 转写结果构建
 ```
 
-**条件注册**: 视觉相关 Stage（1/4/5/6）仅在相关服务和 persistence 都存在时才注册到 Orchestrator，缺少依赖时整个 Stage 不注册。
+**执行顺序**: 视觉阶段（关键帧/OCR/人脸检测）排在音频预处理与 ASR 之前，仅在 `visual_scan=true` 且为视频任务时执行。
+
+**条件注册**: 视觉相关 Stage（1/2/3/4）仅在相关服务和 persistence 都存在时才注册到 Orchestrator，缺少依赖时整个 Stage 不注册。
 
 **热词合并**: process_transcript 调用时，将全局热词（HotwordReplacerService 提取的 ASR 热词）与请求级热词合并。
 
@@ -343,7 +364,7 @@ PipelineService 是对外暴露的唯一接口，构造时注册 9 个 Stage：
 
 ### 6.3 模板驱动 Map-Reduce 评估 (evaluator.py + template_manager.py)
 
-**TemplateManager**: 扫描 `templates/` 目录下所有 `.yaml` 文件，每个文件定义一个纪要模板（id / name / description / prompt）。支持 `reload()` 热重载，无需重启服务。
+**TemplateManager**: 扫描 `templates/` 目录下所有 `.md` 文件（YAML frontmatter 定义 id / name / description，正文即 prompt）。当前内置 5 个模板：universal（通用，默认）、daily_evening（夕会）、weekly（周例会）、official（公文）、brief_summary（约 100 字简报）。支持 `reload()` 热重载，无需重启服务。
 
 **评估模式**:
 
@@ -464,7 +485,7 @@ LLM 口语化改写（_rewrite_chunks，按说话人并发）
     ↓
 _sanitize_for_chattts（清洗特殊字符）
     ↓
-_split_by_uv_break / _slice_sentences（防幻读拆分，max=50字/句）
+_split_by_uv_break / _slice_sentences（防幻读拆分，max=40字/句）
     ↓
 synthesize_dialogue_batched（批次合成，每批 1000 字清空 VRAM 缓存）
     ↓
@@ -567,7 +588,7 @@ uploads/
 
 **内存管理**: LRU 淘汰机制，任务数超过 task_max_in_memory 时移除最早的已完成/失败任务。
 
-**重跑机制**: rerun_transcript 重置任务状态并删除下游 evaluation/compliance 持久化文件。
+**重跑机制**: rerun_transcript 重置任务状态并删除下游 evaluation/compliance 持久化文件。重跑读取磁盘上的已存媒体，视频优先、回退音频（视频任务也可重跑）。
 
 ### 6.11 OCR 服务 (ocr.py)
 
@@ -715,9 +736,12 @@ ProgressCallback: `Callable[[int, int], None]` 类型别名，(current, total) �
 | keyframe_max_count | 500 | 最大帧数 |
 | ocr_enabled | true | OCR 总开关 |
 | ocr_confidence_threshold | 0.6 | OCR 置信度门槛 |
+| ocr_min_text_length | 2 | OCR 最小文本长度 |
 | face_detect_enabled | true | 人脸检测总开关 |
-| face_detect_model | "models/yolov8n-face.pt" | YOLO 模型路径 |
+| face_detect_confidence | 0.5 | 人脸检测置信度门槛 |
 | face_missing_threshold_ms | 10000 | 短暂缺失过滤阈值 |
+
+YOLO 模型路径为计算属性，固定为 `models_dir/yolo/yolov8n-face.pt`，无需单独配置。
 
 ### 8.7 任务配置
 
@@ -727,14 +751,22 @@ ProgressCallback: `Callable[[int, int], None]` 类型别名，(current, total) �
 | task_max_in_memory | 500 | 内存任务数上限 |
 | upload_dir | "./uploads" | 持久化根目录 |
 | max_upload_size_mb | 500 | 上传文件大小上限 |
+| vram_budget_gb | 12.0 | ModelManager 热插拔的 VRAM 预算 |
+| media_retention_hours | 24 | 原始媒体文件保留时长（超时由 LifecycleService 清理）|
+| models_dir | "./models" | 统一模型根目录（funasr / chattts / yolo）|
+| templates_dir | "./templates" | 纪要模板目录 |
 
 ### 8.8 TTS 配置
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| tts_model_dir | "models/chattts" | ChatTTS 模型路径 |
-| tts_max_sentence_chars | 50 | 单句最大字符数（防幻读）|
+| tts_max_sentence_chars | 40 | 单句最大字符数（防幻读）|
 | tts_synthesis_batch_chars | 1000 | 每批合成字符数（VRAM 缓存管理）|
+| tts_vram_estimate_gb | 4.0 | TTS 显存估算（供 ModelManager）|
+| tts_rewrite_enabled | false | 合成前 LLM 口语化改写开关 |
+| tts_rewrite_base_url | "http://localhost:11434" | 改写专用 LLM（固定本地 Ollama，独立于主 LLM）|
+
+ChatTTS 模型路径为计算属性，固定为 `models_dir/chattts/`，无需单独配置。
 
 ---
 

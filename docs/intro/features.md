@@ -28,21 +28,23 @@ Copernicus 是一套**音视频合规审核工作台**，核心能力包括：
 ```
 文件上传（普通 / 分片断点续传）→ SHA-256 去重判定
     ↓
-视频预处理（提取音频 + 保存视频）
+视频预处理（提取音频 + 保存视频，仅视频任务）
+    ↓
+视觉扫描（仅视频且 visual_scan=true）
+  关键帧提取 → OCR 扫描 → 人脸检测
     ↓
 音频预处理（格式转换 + 归一化）
     ↓
 ASR 语音识别（Paraformer / SenseVoice）
-    ↓                          ↓
-关键帧提取 ──→ OCR 扫描     说话人平滑 + 预合并
-    ↓              ↓              ↓
-人脸检测      OCR 结果       四阶段文本纠正
-    ↓              ↓              ↓
-视觉事件      OCR 证据       转写结果构建
-    └──────────┴──────────────────┘
-                    ↓
-              文件持久化（JSON + 媒体文件）
-                    ↓
+    ↓
+说话人平滑 + 预合并
+    ↓
+四阶段文本纠正
+    ↓
+转写结果构建
+    ↓
+文件持久化（JSON + 媒体文件）
+    ↓
     ┌───────────────┼──────────────────┐
 动态模板摘要评估   多源合规审核      TTS 音频重塑
 （Map-Reduce）   （语音+OCR+视觉）   （多说话人对话合成）
@@ -59,7 +61,7 @@ ASR 语音识别（Paraformer / SenseVoice）
 | 功能 | 说明 |
 |---|---|
 | 拖拽/点击上传 | UploadPage 支持拖拽区域和点击选择，接受 audio/* 和 video/* |
-| SHA-256 去重 | 上传前计算文件哈希，命中已有任务直接复用结果，避免重复处理 |
+| SHA-256 去重 | 上传前用 hash-wasm 分块计算文件哈希（8 MB/块，大文件不整体读入内存），命中已有任务直接复用结果 |
 | 小文件直传 | 小于 20 MB 的文件通过 `POST /tasks/standard_minutes` 一次性上传 |
 | 大文件分片断点续传 | 大于 20 MB 的文件通过 `GET /uploads/{hash}` 预检 + `PATCH /uploads/{hash}` 分块上传（5 MB/块），支持中断后从断点继续 |
 | 视频自动识别 | 根据文件扩展名自动进入视频处理流程，弹窗询问是否启用视觉扫描 |
@@ -84,27 +86,7 @@ Pipeline 采用插件化架构，每个 Stage 实现统一的 Protocol 接口，
 
 **跳过条件**: 非视频文件时自动跳过
 
-#### Stage 2: 音频预处理 (AudioPreprocessStage)
-
-| 功能 | 说明 |
-|---|---|
-| 格式转换 | 任意音频格式转换为 16kHz 单声道 WAV（ASR 标准输入格式）|
-| 响度归一化 | 应用 loudnorm 滤镜统一音频响度 |
-
-**跳过条件**: 已有 wav_path 时跳过（视频预处理已生成）
-
-#### Stage 3: ASR 语音识别 (ASRTranscribeStage)
-
-| 功能 | 说明 |
-|---|---|
-| Paraformer 模式 | VAD + ASR + 标点恢复 + 说话人分离 四合一，适合多人对话场景 |
-| SenseVoice 模式 | 抗噪增强 ASR + Campplus 滑动窗口声纹聚类说话人分离，适合嘈杂环境 |
-| GPU 独占保护 | asyncio.Lock 确保同一时刻仅一个 ASR 任务占用 GPU |
-| 长段自动拆分 | SenseVoice 模式下超长段落基于标点和时长智能拆分 |
-| 噪声过滤 | 过滤纯语气词、英文幻觉短语等无效识别结果 |
-| 句子时间戳 | 输出 sentence_timestamp，支持后续句子级细粒度对齐 |
-
-#### Stage 4: 关键帧提取 (KeyframeExtractStage)
+#### Stage 2: 关键帧提取 (KeyframeExtractStage)
 
 | 功能 | 说明 |
 |---|---|
@@ -115,7 +97,7 @@ Pipeline 采用插件化架构，每个 Stage 实现统一的 Protocol 接口，
 
 **跳过条件**: 非视频文件时跳过
 
-#### Stage 5: OCR 扫描 (OCRScanStage)
+#### Stage 3: OCR 扫描 (OCRScanStage)
 
 | 功能 | 说明 |
 |---|---|
@@ -125,7 +107,7 @@ Pipeline 采用插件化架构，每个 Stage 实现统一的 Protocol 接口，
 
 **跳过条件**: 无关键帧时跳过
 
-#### Stage 6: 人脸检测 (FaceDetectStage)
+#### Stage 4: 人脸检测 (FaceDetectStage)
 
 | 功能 | 说明 |
 |---|---|
@@ -134,6 +116,26 @@ Pipeline 采用插件化架构，每个 Stage 实现统一的 Protocol 接口，
 | 短暂缺失过滤 | 低于 face_missing_threshold_ms 的短暂人脸缺失不报告 |
 
 **跳过条件**: 无关键帧时跳过
+
+#### Stage 5: 音频预处理 (AudioPreprocessStage)
+
+| 功能 | 说明 |
+|---|---|
+| 格式转换 | 任意音频格式转换为 16kHz 单声道 WAV（ASR 标准输入格式）|
+| 响度归一化 | 应用 loudnorm 滤镜统一音频响度 |
+
+**跳过条件**: 已有 wav_path 时跳过（视频预处理已生成）
+
+#### Stage 6: ASR 语音识别 (ASRTranscribeStage)
+
+| 功能 | 说明 |
+|---|---|
+| Paraformer 模式 | VAD + ASR + 标点恢复 + 说话人分离 四合一，适合多人对话场景 |
+| SenseVoice 模式 | 抗噪增强 ASR + Campplus 滑动窗口声纹聚类说话人分离，适合嘈杂环境 |
+| GPU 独占保护 | asyncio.Lock 确保同一时刻仅一个 ASR 任务占用 GPU |
+| 长段自动拆分 | SenseVoice 模式下超长段落基于标点和时长智能拆分 |
+| 噪声过滤 | 过滤纯语气词、英文幻觉短语等无效识别结果 |
+| 句子时间戳 | 输出 sentence_timestamp，支持后续句子级细粒度对齐 |
 
 #### Stage 7: 说话人平滑 (SpeakerSmoothStage)
 
@@ -187,8 +189,9 @@ Pipeline 采用插件化架构，每个 Stage 实现统一的 Protocol 接口，
 
 | 功能 | 说明 |
 |---|---|
-| 动态模板加载 | TemplateManager 扫描 templates/ 目录，支持运行时热重载 |
+| 动态模板加载 | TemplateManager 扫描 templates/ 目录下的 .md 文件（YAML frontmatter + prompt 正文），支持运行时热重载 |
 | 模板元数据 | 每个模板包含 id、name、description，可通过 API 查询列表 |
+| 内置模板 | 5 个：通用（universal，默认）、夕会、周例会、公文、简报摘要 |
 | 上传时选择 | UploadPage 在上传前从 API 加载模板列表，供用户选择 |
 | 评估时切换 | SummaryPanel 支持在结果展示后切换模板重新评估 |
 | 热重载 | `POST /templates/reload` 无需重启服务即可加载新模板 |
@@ -303,6 +306,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | 批次 VRAM 刷新 | 按批次合成，每批完成后清空 VRAM 缓存，防止长转写 OOM |
 | 模型独占互斥 | 通过 ModelManager 卸载 ASR，ChatTTS 独占显存，合成后驻留等待 |
 | 格式输出 | 多段 WAV 合并为单一 MP3 文件（synthesis.mp3）|
+| 异步执行 | synthesize 返回 202 后在后台合成，通过 status 端点轮询进度；重复触发返回 409，LLM 任务运行中返回 503 |
 
 **对应端点**: `POST /api/v1/tasks/{task_id}/synthesize`、`GET /api/v1/tasks/{task_id}/synthesis/status`、`GET /api/v1/tasks/{task_id}/synthesis`
 
@@ -383,7 +387,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 
 | 功能 | 说明 |
 |---|---|
-| 合成触发 | 点击"合成对话音频"按钮，调用 synthesize 接口 |
+| 合成触发 | 点击"合成对话音频"按钮，调用 synthesize 接口（202 异步），2 秒间隔轮询合成状态 |
 | 持久化检测 | 页面挂载时通过 getTaskResults 检测 has_synthesis，已合成则自动展开面板 |
 | 内嵌播放器 | 自定义播放控件（播放/暂停按钮 + 进度条 + 时间显示），无需跳转 |
 | 下载 | 一键下载合成 MP3 |
@@ -450,9 +454,11 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 
 | 功能 | 说明 |
 |---|---|
-| ASR 状态检查 | 检测 ASR 模型是否成功加载 |
-| LLM 可达性检查 | 测试 Ollama 服务是否可连接 |
-| VRAM 水位 | 返回 ModelManager 管理的模型列表及估算显存占用 |
+| 整体状态 | 顶层 status：healthy / degraded / unhealthy（unhealthy 时接口返回 503）|
+| 组件状态 | asr / llm / tts 三个组件对象，各含 status（ok / degraded / down）与 detail |
+| 任务统计 | tasks：active / completed / failed / synthesis_running |
+| VRAM 水位 | 返回 ModelManager 管理的模型列表、估算显存占用及预算上限 |
+| 前端状态页 | 前端 `/health` 页面可视化展示以上信息，10 秒自动刷新，入口位于首页与工作区 Navbar |
 
 **对应端点**: `GET /api/v1/health`
 
@@ -482,7 +488,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | POST | /api/v1/evaluate/transcript/async | 接收第三方转写结果并评估 |
 | POST | /api/v1/tasks/compliance_audit | 提交合规审核任务 |
 | PATCH | /api/v1/tasks/{task_id}/compliance/violations | 批量更新违规审核状态 |
-| GET | /api/v1/health | 服务健康检查（含 VRAM 水位）|
+| GET | /api/v1/health | 服务健康检查（组件状态 + 任务统计 + VRAM 水位，unhealthy 时 503）|
 
 ---
 

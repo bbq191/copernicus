@@ -2,7 +2,7 @@
 title: Copernicus 第三方系统接入指南
 author: afu
 version: V1.2
-date: 2026-05-22
+date: 2026-08-19
 ---
 
 # Copernicus 第三方系统接入指南
@@ -281,6 +281,7 @@ GET /api/v1/tasks/{task_id}/results
 | compliance | 合规审核结果（需主动提交 `compliance_audit` 后才有值） |
 | has_audio | 是否有音频文件 |
 | has_video | 是否为视频任务 |
+| has_synthesis | 是否已有合成音频（服务端实时检测 synthesis.mp3 是否存在） |
 | keyframe_count | 提取的关键帧数量 |
 | ocr_text_count | OCR 识别的文本区块数量 |
 | visual_event_count | 视觉事件数量（人脸检测结果） |
@@ -306,18 +307,18 @@ POST /api/v1/tasks/{task_id}/rerun-transcript
 Content-Type: multipart/form-data
 ```
 
-对已保存的音频重新执行 ASR + 纠错。原始媒体文件须仍存在（未被 24 小时生命周期清理）。
+对已保存的媒体文件重新执行 ASR + 纠错（视频优先，回退音频，视频任务同样支持重跑）。原始媒体文件须仍存在（未被 24 小时生命周期清理）。
 执行后会清除旧的 `evaluation.json` 和 `compliance.json`，需重新提交相应任务。
 
-### 4.10 重新生成纪要
+### 4.10 作废任务缓存
 
 ```
-POST /api/v1/tasks/{task_id}/rerun-evaluation
+DELETE /api/v1/tasks/{task_id}
 ```
 
-无需请求体。基于已有 `transcript.json` 重新生成纪要，使用默认模板（`universal`）。
-若需要指定模板，建议改用 `POST /api/v1/evaluate/text/async`（见 4.13），将转写文本和目标 `template_id` 一并传入。
-返回子任务 `task_id`，纪要生成完成后结果写入父任务的 `results`。
+无需请求体，成功返回 204。作废该任务的内存缓存并重置哈希索引，**不删除磁盘上的持久化文件**。用于强制重新处理同一文件（作废后再次上传同一文件不会命中去重）。
+
+> 原 `rerun-evaluation` 端点已在 V1.2 删除。重新生成纪要请改用 `POST /api/v1/evaluate/text/async`（见 4.13），将转写文本和目标 `template_id` 一并传入。
 
 ### 4.11 媒体文件访问
 
@@ -336,13 +337,16 @@ GET /api/v1/health
 
 | 响应字段 | 说明 |
 |---|---|
-| asr_loaded | ASR 模型权重是否在 VRAM 中（合规审核执行期间会短暂为 false） |
-| llm_reachable | LLM 服务是否可连接 |
+| status | 整体状态：`healthy` / `degraded` / `unhealthy`（unhealthy 时 HTTP 状态码为 503） |
+| asr | 组件对象 `{status, detail}`，status 取值 `ok` / `degraded` / `down`（合规审核执行期间权重被卸载会短暂降级） |
+| llm | 组件对象，LLM 服务可达性 |
+| tts | 组件对象（可能为 null，TTS 未配置时） |
+| tasks | 任务统计：`active` / `completed` / `failed` / `synthesis_running` |
 | vram.loaded_models | 当前 ModelManager 管理的已加载模型列表 |
 | vram.estimated_used_gb | 已加载模型的估算 VRAM 占用（GB） |
 | vram.budget_gb | 配置的 VRAM 预算上限（默认 12.0 GB） |
 
-建议接入前调用确认服务就绪（`asr_loaded=true` 且 `llm_reachable=true`）。
+建议接入前调用确认服务就绪（`status=healthy`，即 `asr.status=ok` 且 `llm.status=ok`）。
 
 ### 4.13 纯文本评估（含模板选择）
 
@@ -376,7 +380,8 @@ GET /api/v1/templates
   { "id": "universal",     "name": "通用模版", "description": "适用于一般会议..." },
   { "id": "official",      "name": "公文模版", "description": "适用于正式公文类会议..." },
   { "id": "weekly",        "name": "周例会",   "description": "适用于周例会..." },
-  { "id": "daily_evening", "name": "夕会",     "description": "适用于每日复盘夕会..." }
+  { "id": "daily_evening", "name": "夕会",     "description": "适用于每日复盘夕会..." },
+  { "id": "brief_summary", "name": "简报摘要", "description": "提炼核心议题与关键结论，输出约100字简明摘要..." }
 ]
 ```
 
@@ -413,7 +418,7 @@ Content-Type: application/json（可选）
 |---|---|---|---|
 | voice_map | object | 否 | 说话人 → 音色种子映射，如 `{"spk_0": "42", "spk_1": "7"}`，未指定时自动分配 |
 
-前置条件：目标任务必须已完成转写（`transcript.json` 存在）。若当前有 LLM 任务正在执行则返回 503，稍后重试。
+前置条件：目标任务必须已完成转写（`transcript.json` 存在）。若当前有 LLM 任务正在执行则返回 503，稍后重试；若该任务已有合成正在进行中则返回 409，直接轮询状态即可。
 
 响应（202）：
 
@@ -456,7 +461,7 @@ GET /api/v1/tasks/{task_id}/synthesis
 | 202 | 任务提交成功 | 正常，开始轮询 |
 | 400 | 请求格式错误 | 检查 Content-Range 头或请求体是否为空 |
 | 404 | 任务 ID 不存在 | 检查 task_id 是否正确，服务重启后磁盘有持久化可恢复 |
-| 409 | 分片偏移量冲突 | 重新调用 GET /uploads/{hash} 获取最新 offset 后续传 |
+| 409 | 冲突 | 分片上传：偏移量冲突，重新调用 GET /uploads/{hash} 获取最新 offset 后续传；synthesize：该任务已有合成在进行中，轮询状态即可 |
 | 413 | 文件过大 | 音视频上限 500 MB，规则文件上限 2 MB |
 | 422 | 参数校验失败 | 检查必填字段和格式，`transcript` 必须为合法 JSON 数组 |
 | 500 | 服务内部错误 | 查看 `error` 字段，常见原因：ASR 模型未加载、LLM 不可达 |
@@ -711,8 +716,8 @@ parent_task_id: a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d
 
 | 事项 | 说明 |
 |---|---|
-| 服务就绪等待 | ASR 模型首次启动加载需数十秒，建议接入前调 `/health` 确认 `asr_loaded=true` |
-| asr_loaded 短暂为 false | 合规审核执行期间系统主动卸载 ASR 权重以释放 VRAM，下一次转写任务自动重载，无需干预 |
+| 服务就绪等待 | ASR 模型首次启动加载需数十秒，建议接入前调 `/health` 确认 `status=healthy` |
+| asr 组件短暂降级 | 合规审核执行期间系统主动卸载 ASR 权重以释放 VRAM，下一次转写任务自动重载，无需干预 |
 | GPU 串行机制 | ASR 推理串行执行，多任务并发提交时后续任务排队等待前一任务 ASR 阶段完成 |
 | 纪要自动生成 | `standard_minutes` 默认 `generate_summary=true`，纪要与转写在同一任务内完成，无需额外调用 |
 | template_id 容错 | 传入不存在的 `template_id` 时，系统自动 fallback 到通用模版（`universal`）并写入警告日志，不返回错误 |

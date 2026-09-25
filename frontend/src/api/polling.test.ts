@@ -4,7 +4,8 @@ import type { TaskStatusResponse } from "../types/task";
 vi.mock("./task", () => ({ getTaskStatus: vi.fn() }));
 
 import { getTaskStatus } from "./task";
-import { createFailureGuard, isTransientError, pollUntilDone } from "./polling";
+import { isTransientError } from "./errors";
+import { createFailureGuard, pollUntilDone } from "./polling";
 
 const apiError = (statusCode?: number) =>
   Object.assign(new Error("boom"), { statusCode });
@@ -109,5 +110,42 @@ describe("pollUntilDone", () => {
     await promise;
 
     expect(o.onProgress).toHaveBeenCalledWith(25, "排队中");
+  });
+
+  it("stops with AbortError when the signal is aborted while waiting", async () => {
+    vi.mocked(getTaskStatus).mockResolvedValue(status({}));
+    const controller = new AbortController();
+    const promise = pollUntilDone("t", { ...opts(), signal: controller.signal });
+    const assertion = expect(promise).rejects.toMatchObject({ name: "AbortError" });
+
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await assertion;
+
+    const calls = vi.mocked(getTaskStatus).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getTaskStatus).toHaveBeenCalledTimes(calls); // 中止后不再请求
+  });
+
+  it("slows down while the tab is hidden", async () => {
+    vi.mocked(getTaskStatus).mockResolvedValue(status({}));
+    vi.stubGlobal("document", { hidden: true }); // 测试环境是 node，没有 DOM
+    try {
+      const controller = new AbortController();
+      const promise = pollUntilDone("t", { ...opts(), signal: controller.signal });
+      const assertion = expect(promise).rejects.toMatchObject({ name: "AbortError" });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getTaskStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5_000); // 前台会在 2s 后再次请求；后台不会
+      expect(getTaskStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(getTaskStatus).toHaveBeenCalledTimes(2);
+
+      controller.abort();
+      await assertion;
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

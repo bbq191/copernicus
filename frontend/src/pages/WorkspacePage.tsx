@@ -2,10 +2,7 @@ import { useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useTaskStore } from "../stores/taskStore";
 import { usePlayerStore } from "../stores/playerStore";
-import { useTranscriptStore } from "../stores/transcriptStore";
-import { useEvaluationStore } from "../stores/evaluationStore";
-import { useComplianceStore } from "../stores/complianceStore";
-import { useSynthesisStore } from "../stores/synthesisStore";
+import { hydrateWorkspace } from "../stores/hydrateWorkspace";
 import { resetWorkspaceStores } from "../stores/resetWorkspace";
 import { useTaskPolling } from "../hooks/useTaskPolling";
 import { getTaskResults, getTaskMediaUrl } from "../api/task";
@@ -33,9 +30,8 @@ export function WorkspacePage() {
     }
   }, [taskId, currentTaskId, setTask]);
 
-  // Try to restore persisted results on mount.
-  // Polling is held back until this completes so that evaluation/compliance
-  // stores are populated before SummaryPanel mounts.
+  // 进入页面先尝试恢复已持久化的结果；恢复完成前不启动轮询，
+  // 保证摘要/合规 store 在 SummaryPanel 挂载前就已就绪。
   useEffect(() => {
     if (!taskId) return;
 
@@ -43,35 +39,14 @@ export function WorkspacePage() {
     getTaskResults(taskId)
       .then((res) => {
         if (cancelled) return;
-        if (res.transcript) {
-          // Restore evaluation and compliance BEFORE setting status to
-          // "completed", so that SummaryPanel sees them on mount.
-          if (res.evaluation) {
-            useEvaluationStore.getState().setEvaluation(res.evaluation);
-          }
-          if (res.compliance) {
-            useComplianceStore.getState().setReport(res.compliance.report, res.compliance.rules);
-          }
-          // Set media type based on video detection
-          if (res.has_video) {
-            usePlayerStore.getState().setMediaSrc(
-              getTaskMediaUrl(taskId), "video"
-            );
-          }
-          if (res.has_synthesis) {
-            useSynthesisStore.getState().setHasSynthesis(true);
-          }
-          useTranscriptStore.getState().setRawEntries(res.transcript.transcript);
+        if (hydrateWorkspace(taskId, res)) {
           updateStatus("completed", { current_chunk: 0, total_chunks: 0, percent: 100 });
-          // No need to enable polling -- already restored
-          return;
+        } else {
+          setPollEnabled(true); // 转写还没落盘：任务仍在处理，开始轮询
         }
-        // transcript not persisted -- enable polling to track in-progress task
-        setPollEnabled(true);
       })
       .catch(() => {
-        // No persisted results -- enable polling as fallback
-        if (!cancelled) setPollEnabled(true);
+        if (!cancelled) setPollEnabled(true); // 没有持久化结果：以轮询兜底
       });
 
     return () => { cancelled = true; };
@@ -83,6 +58,10 @@ export function WorkspacePage() {
   }, [taskId, mediaSrc, setMediaSrc]);
 
   useTaskPolling(pollEnabled);
+
+  // 路由已切到新任务、但 store 还是上一个任务的数据（重置发生在渲染之后的 effect 里）：
+  // 先显示骨架屏，避免用旧数据渲染一帧并触发旧媒体的加载
+  if (taskId && taskId !== currentTaskId) return <WorkspaceSkeleton />;
 
   if (error) {
     return (

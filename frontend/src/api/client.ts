@@ -1,4 +1,5 @@
 import axios from "axios";
+import { ApiError } from "./errors";
 
 const client = axios.create({
   baseURL: "/api/v1",
@@ -23,9 +24,7 @@ client.interceptors.response.use(
   (res) => res,
   (error) => {
     const message = describeDetail(error.response?.data?.detail) ?? error.message ?? "请求失败";
-    const apiError = new Error(message) as Error & { statusCode?: number };
-    apiError.statusCode = error.response?.status;
-    return Promise.reject(apiError);
+    return Promise.reject(new ApiError(message, error.response?.status));
   },
 );
 

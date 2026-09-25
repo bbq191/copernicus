@@ -1,9 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { RefreshCw, Activity } from "lucide-react";
 import { getHealth } from "../api/health";
 import type { HealthResponse, ComponentStatus } from "../api/health";
 import { ThemeToggle } from "../components/shared/ThemeToggle";
+import { errorMessage } from "../api/errors";
+import { usePolling } from "../hooks/usePolling";
 
 const REFRESH_INTERVAL_MS = 10_000;
 
@@ -58,25 +60,23 @@ export function HealthPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const fetchHealth = useCallback(async () => {
+  const fetchHealth = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
       const result = await getHealth();
+      if (signal?.aborted) return;
       setData(result);
       setError(null);
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "请求失败");
+      if (!signal?.aborted) setError(errorMessage(err, "请求失败"));
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    fetchHealth();
-    const timer = setInterval(fetchHealth, REFRESH_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [fetchHealth]);
+  // 上一次请求结束后才计划下一次；标签页在后台时自动降频
+  usePolling(fetchHealth, { enabled: true, intervalMs: REFRESH_INTERVAL_MS });
 
   const overallColor =
     data?.status === "healthy"
@@ -113,7 +113,7 @@ export function HealthPage() {
             )}
             <button
               className="btn btn-ghost btn-sm btn-square"
-              onClick={fetchHealth}
+              onClick={() => void fetchHealth()}
               disabled={loading}
               title="立即刷新"
             >

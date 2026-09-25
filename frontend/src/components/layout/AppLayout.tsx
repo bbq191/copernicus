@@ -8,7 +8,7 @@ import { Activity } from "lucide-react";
 
 export function AppLayout() {
   const navigate = useNavigate();
-  const evidencePanelOpen = useComplianceStore((s) => s.evidencePanelOpen);
+  const evidencePanelOpen = useComplianceStore((s) => s.evidenceDetailId !== null);
 
   return (
     <div className="flex flex-col h-screen">

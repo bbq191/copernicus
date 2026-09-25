@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { errorMessage } from "../api/errors";
 import { editTranscript, renameSpeakers } from "../api/task";
 import { useTaskStore } from "../stores/taskStore";
 import { useToastStore } from "../stores/toastStore";
@@ -24,7 +25,7 @@ export function useTranscriptEditing() {
         setSentenceText(index, previous);
         useToastStore
           .getState()
-          .addToast("error", err instanceof Error ? `保存失败：${err.message}` : "保存失败");
+          .addToast("error", `保存失败：${errorMessage(err, "未知错误")}`);
       }
     },
     [taskId],
@@ -46,7 +47,7 @@ export function useTranscriptEditing() {
       } catch (err) {
         useToastStore
           .getState()
-          .addToast("error", err instanceof Error ? `保存失败：${err.message}` : "保存失败");
+          .addToast("error", `保存失败：${errorMessage(err, "未知错误")}`);
         return false;
       }
     },

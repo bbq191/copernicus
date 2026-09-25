@@ -1,100 +1,40 @@
-import {
-  Clock,
-  AlertTriangle,
-  AlertCircle,
-  Info,
-  Check,
-  X,
-  RotateCcw,
-  Mic,
-  FileText,
-  Eye,
-  ExternalLink,
-} from "lucide-react";
+import { memo } from "react";
+import { Clock, Check, X, RotateCcw, ExternalLink } from "lucide-react";
 import type { Violation } from "../../types/compliance";
 import { resolveEvidenceUrl } from "../../api/task";
-import {
-  useComplianceStore,
-  violationKey,
-} from "../../stores/complianceStore";
+import { useComplianceStore } from "../../stores/complianceStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
 import { playViolation } from "../../utils/violationPlayback";
 import { EvidenceBlock } from "./EvidenceBlock";
+import { STATUS_META, severityMeta, sourceMeta } from "./violationMeta";
 
 interface Props {
   violation: Violation;
   isSelected: boolean;
-  onClick: () => void;
 }
 
-const SEVERITY_CONFIG = {
-  high: {
-    badge: "badge-error",
-    border: "border-error/30",
-    bg: "bg-error/5",
-    icon: AlertTriangle,
-    label: "高",
-  },
-  medium: {
-    badge: "badge-warning",
-    border: "border-warning/30",
-    bg: "bg-warning/5",
-    icon: AlertCircle,
-    label: "中",
-  },
-  low: {
-    badge: "badge-info",
-    border: "border-info/30",
-    bg: "bg-info/5",
-    icon: Info,
-    label: "低",
-  },
-} as const;
-
-const STATUS_CONFIG = {
-  confirmed: {
-    badge: "badge-success",
-    label: "已确认",
-    border: "border-success/30",
-  },
-  rejected: {
-    badge: "badge-ghost",
-    label: "已忽略",
-    border: "border-base-300",
-  },
-} as const;
-
-const SOURCE_CONFIG = {
-  transcript: { badge: "badge-primary", label: "语音", icon: Mic },
-  ocr: { badge: "badge-secondary", label: "OCR", icon: FileText },
-  vision: { badge: "badge-accent", label: "视觉", icon: Eye },
-} as const;
-
-export function ViolationCard({ violation, isSelected, onClick }: Props) {
+export const ViolationCard = memo(function ViolationCard({ violation, isSelected }: Props) {
   const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
   const setActiveTab = useComplianceStore((s) => s.setActiveTab);
   const batchMode = useComplianceStore((s) => s.batchMode);
-  const selectedIds = useComplianceStore((s) => s.selectedIds);
+  // 只订阅"本卡片是否被勾选"这个布尔值：勾选别的卡片不会触发本卡片重渲染
+  const isChecked = useComplianceStore((s) => s.selectedIds.has(violation.id));
+  const selectViolation = useComplianceStore((s) => s.selectViolation);
   const toggleSelect = useComplianceStore((s) => s.toggleSelect);
   const openEvidenceDetail = useComplianceStore((s) => s.openEvidenceDetail);
   const taskId = useTaskStore((s) => s.taskId);
 
-  const config = SEVERITY_CONFIG[violation.severity] || SEVERITY_CONFIG.low;
+  const config = severityMeta(violation.severity);
   const SeverityIcon = config.icon;
   const isPending = violation.status === "pending";
-  const statusConfig =
-    !isPending && violation.status in STATUS_CONFIG
-      ? STATUS_CONFIG[violation.status as "confirmed" | "rejected"]
-      : null;
+  const statusConfig = isPending ? null : STATUS_META[violation.status];
 
-  const sourceConfig =
-    SOURCE_CONFIG[violation.source] || SOURCE_CONFIG.transcript;
+  const sourceConfig = sourceMeta(violation.source);
   const SourceIcon = sourceConfig.icon;
 
-  const vKey = violationKey(violation);
-  const isChecked = selectedIds.has(vKey);
+  const handleCardClick = () => selectViolation(isSelected ? null : violation);
 
   const jumpToViolation = () => {
     playViolation(violation);
@@ -125,7 +65,7 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
 
   const handleCheckbox = (e: React.MouseEvent) => {
     e.stopPropagation();
-    toggleSelect(vKey);
+    toggleSelect(violation.id);
   };
 
   const handleOpenDetail = (e: React.MouseEvent) => {
@@ -140,7 +80,7 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
       className={`card card-compact border cursor-pointer transition-all ${borderClass} ${
         isSelected ? `${config.bg} ring-2 ring-primary` : "hover:bg-base-200"
       } ${!isPending ? "opacity-75" : ""}`}
-      onClick={onClick}
+      onClick={handleCardClick}
     >
       <div className="card-body gap-2">
         {/* Row 1: badges */}
@@ -281,4 +221,4 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
       </div>
     </div>
   );
-}
+});

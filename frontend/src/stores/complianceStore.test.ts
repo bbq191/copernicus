@@ -5,7 +5,12 @@ vi.mock("../api/compliance", () => ({
 }));
 
 import { persistViolationStatuses } from "../api/compliance";
-import { getFilteredViolations, useComplianceStore, violationKey } from "./complianceStore";
+import {
+  getFilteredViolations,
+  selectEvidenceDetail,
+  selectSelectedViolation,
+  useComplianceStore,
+} from "./complianceStore";
 import { useTaskStore } from "./taskStore";
 import type { ComplianceReport, Violation } from "../types/compliance";
 
@@ -39,16 +44,8 @@ const report = (violations: Violation[]): ComplianceReport => ({
 
 const flushPersist = async () => {
   await vi.advanceTimersByTimeAsync(600); // 500ms 防抖
-  await vi.advanceTimersByTimeAsync(0); // 让懒加载的 import 与 await 完成
+  await vi.advanceTimersByTimeAsync(0); // 让 await 链完成
 };
-
-describe("violationKey", () => {
-  it("is unique even for two violations at the same time under the same rule", () => {
-    const a = violation("v0001");
-    const b = violation("v0002"); // timestamp_ms 与 rule_id 都相同
-    expect(violationKey(a)).not.toBe(violationKey(b));
-  });
-});
 
 describe("setViolationStatus", () => {
   beforeEach(() => {
@@ -86,18 +83,18 @@ describe("setViolationStatus", () => {
     expect(reset.review_note).toBeNull();
   });
 
-  it("keeps the selected and detail copies in sync", () => {
+  it("keeps selection and evidence detail pointing at the same violation after review", () => {
     const a = violation("v0001");
     const store = useComplianceStore.getState();
     store.setReport(report([a]), []);
-    store.selectViolation(useComplianceStore.getState().report!.violations[0]);
-    store.openEvidenceDetail(useComplianceStore.getState().report!.violations[0]);
+    store.selectViolation(a);
+    store.openEvidenceDetail(a);
 
     useComplianceStore.getState().setViolationStatus(a, "confirmed");
 
     const s = useComplianceStore.getState();
-    expect(s.selectedViolation?.status).toBe("confirmed");
-    expect(s.evidenceDetail?.status).toBe("confirmed");
+    expect(selectSelectedViolation(s)?.status).toBe("confirmed");
+    expect(selectEvidenceDetail(s)?.status).toBe("confirmed");
   });
 
   it("debounces persistence into one call keyed by violation id and applies the server score", async () => {
@@ -111,10 +108,14 @@ describe("setViolationStatus", () => {
     await flushPersist();
 
     expect(persistViolationStatuses).toHaveBeenCalledTimes(1);
-    expect(persistViolationStatuses).toHaveBeenCalledWith("task-1", [
-      { violation_id: "v0001", status: "confirmed", note: "属实" },
-      { violation_id: "v0002", status: "rejected", note: undefined },
-    ]);
+    expect(persistViolationStatuses).toHaveBeenCalledWith(
+      "task-1",
+      [
+        { violation_id: "v0001", status: "confirmed", note: "属实" },
+        { violation_id: "v0002", status: "rejected", note: undefined },
+      ],
+      { keepalive: false },
+    );
     expect(useComplianceStore.getState().report!.compliance_score).toBe(93);
   });
 
@@ -154,5 +155,63 @@ describe("getFilteredViolations", () => {
     useComplianceStore.getState().setSearchQuery("");
     useComplianceStore.getState().setStatusFilter("confirmed");
     expect(getFilteredViolations(useComplianceStore.getState()).map((v) => v.id)).toEqual(["v3"]);
+  });
+});
+
+describe("navigateViolation", () => {
+  beforeEach(() => {
+    useTaskStore.setState({ taskId: null });
+    useComplianceStore.getState().reset();
+    useComplianceStore.getState().setReport(report([violation("a"), violation("b"), violation("c")]), []);
+  });
+
+  it("cycles through the filtered list in both directions", () => {
+    const nav = (d: "next" | "prev") => {
+      useComplianceStore.getState().navigateViolation(d);
+      return useComplianceStore.getState().selectedId;
+    };
+    expect(nav("next")).toBe("a"); // 未选中时从头开始
+    expect(nav("next")).toBe("b");
+    expect(nav("prev")).toBe("a");
+    expect(nav("prev")).toBe("c"); // 回绕
+    expect(nav("next")).toBe("a");
+  });
+
+  it("restarts from the top when the selected item was filtered out by its own review", () => {
+    const store = useComplianceStore.getState();
+    store.setStatusFilter("pending");
+    store.selectViolation(violation("b"));
+
+    useComplianceStore.getState().setViolationStatus(violation("b"), "confirmed"); // 离开"待审"列表
+    useComplianceStore.getState().navigateViolation("next");
+
+    expect(useComplianceStore.getState().selectedId).toBe("a");
+  });
+});
+
+describe("batchSetStatus", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(persistViolationStatuses).mockReset().mockResolvedValue(90);
+    useTaskStore.setState({ taskId: "task-1" });
+    useComplianceStore.getState().reset();
+    useComplianceStore.getState().setReport(report([violation("a"), violation("b"), violation("c")]), []);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("updates every checked violation, persists them in one call and leaves batch mode", async () => {
+    const store = useComplianceStore.getState();
+    store.toggleBatchMode();
+    store.toggleSelect("a");
+    store.toggleSelect("c");
+
+    useComplianceStore.getState().batchSetStatus("rejected");
+    await flushPersist();
+
+    const s = useComplianceStore.getState();
+    expect(s.report!.violations.map((v) => v.status)).toEqual(["rejected", "pending", "rejected"]);
+    expect(s.batchMode).toBe(false);
+    expect(persistViolationStatuses).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistViolationStatuses).mock.calls[0][1].map((u) => u.violation_id)).toEqual(["a", "c"]);
   });
 });

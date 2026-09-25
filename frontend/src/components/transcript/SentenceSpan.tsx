@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import classNames from "classnames";
 import type { TranscriptEntry } from "../../types/transcript";
 import { usePlayerStore } from "../../stores/playerStore";
@@ -11,8 +11,10 @@ interface Props {
   entry: TranscriptEntry;
 }
 
-export function SentenceSpan({ entry }: Props) {
-  const currentTime = usePlayerStore((s) => s.currentTime);
+export const SentenceSpan = memo(function SentenceSpan({ entry }: Props) {
+  const endMs = entry.end_ms || entry.timestamp_ms + 5000;
+  // 布尔 selector：只在本句进入/离开播放位置时重渲染
+  const isActive = usePlayerStore((s) => s.currentTime >= entry.timestamp_ms && s.currentTime < endMs);
   const seekTo = usePlayerStore((s) => s.seekTo);
   const textMode = useTranscriptStore((s) => s.textMode);
   const searchQuery = useTranscriptStore((s) => s.searchQuery);
@@ -22,9 +24,6 @@ export function SentenceSpan({ entry }: Props) {
   const rawText = textMode === "corrected" ? entry.text_corrected : entry.text;
   // 校对只作用于修正文，原文模式下保持只读
   const editable = textMode === "corrected";
-
-  const endMs = entry.end_ms || entry.timestamp_ms + 5000;
-  const isActive = currentTime >= entry.timestamp_ms && currentTime < endMs;
 
   const highlighted =
     searchQuery && rawText.includes(searchQuery) ? true : false;
@@ -67,4 +66,4 @@ export function SentenceSpan({ entry }: Props) {
       )}
     </span>
   );
-}
+});

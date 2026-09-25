@@ -1,78 +1,80 @@
-import { useEffect, useRef } from "react";
-import { getTaskStatus, getTaskResults, getTaskMediaUrl } from "../api/task";
-import { POLL_INTERVAL_MS } from "../api/client";
-import { createFailureGuard } from "../api/polling";
+import { useEffect } from "react";
+import { getTaskStatus, getTaskResults } from "../api/task";
+import { errorMessage } from "../api/errors";
+import { createFailureGuard, isAbortError, pollDelayMs, sleep } from "../api/polling";
+import { hydrateWorkspace } from "../stores/hydrateWorkspace";
 import { useTaskStore } from "../stores/taskStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
-import { useEvaluationStore } from "../stores/evaluationStore";
-import { usePlayerStore } from "../stores/playerStore";
-import { useSynthesisStore } from "../stores/synthesisStore";
+import type { TaskStatusResponse } from "../types/task";
 import type { TranscriptResponse } from "../types/transcript";
 
-export function useTaskPolling(enabled = true) {
-  const taskId = useTaskStore((s) => s.taskId);
-  const status = useTaskStore((s) => s.status);
-  const updateStatus = useTaskStore((s) => s.updateStatus);
-  const setError = useTaskStore((s) => s.setError);
-  const setRawEntries = useTranscriptStore((s) => s.setRawEntries);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-  const guardRef = useRef(createFailureGuard());
-
-  useEffect(() => {
-    if (!enabled || !taskId || status === "completed" || status === "failed") {
-      return;
+/** 任务完成：先加载持久化结果，再把状态置为 completed，保证面板挂载时数据已就绪。 */
+async function applyCompleted(taskId: string, res: TaskStatusResponse, signal: AbortSignal) {
+  let restored = false;
+  try {
+    const results = await getTaskResults(taskId);
+    if (signal.aborted) return;
+    restored = hydrateWorkspace(taskId, results);
+  } catch {
+    // 结果读取失败不影响转写展示，退回到状态响应里携带的转写
+  }
+  if (!restored) {
+    const transcript = res.result as TranscriptResponse | undefined;
+    if (transcript && "transcript" in transcript) {
+      useTranscriptStore.getState().setRawEntries(transcript.transcript);
     }
+  }
+  useTaskStore.getState().updateStatus("completed", res.progress);
+}
 
-    guardRef.current = createFailureGuard();
+async function pollTask(taskId: string, signal: AbortSignal) {
+  const { updateStatus, setError } = useTaskStore.getState();
+  const guard = createFailureGuard();
 
-    const poll = async () => {
+  try {
+    while (!signal.aborted) {
       try {
         const res = await getTaskStatus(taskId);
-        guardRef.current.recordSuccess();
-        updateStatus(res.status, res.progress);
+        if (signal.aborted) return;
+        guard.recordSuccess();
 
         if (res.status === "completed" && res.result) {
-          // 先加载持久化结果，确保 evaluation 写入 store 后
-          // SummaryPanel 的 useEffect 才会看到 existing，不会用默认模板重复提交
-          try {
-            const results = await getTaskResults(taskId);
-            if (results.has_video) {
-              usePlayerStore.getState().setMediaSrc(getTaskMediaUrl(taskId), "video");
-            }
-            if (results.has_synthesis) {
-              useSynthesisStore.getState().setHasSynthesis(true);
-            }
-            if (results.evaluation) {
-              const { evaluation: existing } = useEvaluationStore.getState();
-              if (!existing) {
-                useEvaluationStore.getState().setEvaluation(results.evaluation);
-              }
-            }
-          } catch {
-            // 结果读取失败不影响转写展示
-          }
-
-          const transcript = res.result as TranscriptResponse;
-          if ("transcript" in transcript) {
-            setRawEntries(transcript.transcript);
-          }
-
-          clearInterval(timerRef.current);
-        } else if (res.status === "failed") {
-          setError(res.error ?? "任务失败");
-          clearInterval(timerRef.current);
+          await applyCompleted(taskId, res, signal);
+          return;
         }
+        if (res.status === "failed") {
+          setError(res.error ?? "任务失败");
+          return;
+        }
+        updateStatus(res.status, res.progress);
       } catch (err) {
-        // 网络抖动等可恢复错误：保留定时器，下个周期重试；连续失败或不可恢复才报错
-        if (guardRef.current.shouldRetry(err)) return;
-        setError(err instanceof Error ? err.message : "轮询失败");
-        clearInterval(timerRef.current);
+        if (signal.aborted) return;
+        // 网络抖动等可恢复错误：下个周期重试；连续失败或不可恢复才报错
+        if (!guard.shouldRetry(err)) {
+          setError(errorMessage(err, "轮询失败"));
+          return;
+        }
       }
-    };
+      await sleep(pollDelayMs(), signal);
+    }
+  } catch (err) {
+    if (!isAbortError(err)) throw err;
+  }
+}
 
-    poll();
-    timerRef.current = setInterval(poll, POLL_INTERVAL_MS);
+/**
+ * 轮询当前任务直到完成或失败。
+ * effect 只依赖 taskId 与"是否已结束"，中间的状态迁移不会重启轮询；
+ * 卸载或切换任务时通过 AbortSignal 终止，在途请求的结果会被丢弃。
+ */
+export function useTaskPolling(enabled = true) {
+  const taskId = useTaskStore((s) => s.taskId);
+  const finished = useTaskStore((s) => s.status === "completed" || s.status === "failed");
 
-    return () => clearInterval(timerRef.current);
-  }, [enabled, taskId, status, updateStatus, setError, setRawEntries]);
+  useEffect(() => {
+    if (!enabled || !taskId || finished) return;
+    const abort = new AbortController();
+    void pollTask(taskId, abort.signal);
+    return () => abort.abort();
+  }, [enabled, taskId, finished]);
 }

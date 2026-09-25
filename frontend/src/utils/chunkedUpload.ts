@@ -1,4 +1,5 @@
 import client from "../api/client";
+import { isTransientError } from "../api/errors";
 import type { TaskSubmitResponse } from "../types/task";
 
 const CHUNK_SIZE = 5 * 1024 * 1024;   // 5 MB
@@ -20,12 +21,6 @@ interface ChunkResponse {
     received: number;
     complete: boolean;
     task_id: string | null;
-}
-
-function isRetryable(err: unknown): boolean {
-    if (!(err instanceof Error)) return false;
-    const statusCode = (err as Error & { statusCode?: number }).statusCode;
-    return statusCode === undefined || statusCode >= 500;
 }
 
 function buildQueryParams(file: File, options?: ChunkUploadOptions): URLSearchParams {
@@ -123,7 +118,7 @@ export async function chunkedUploadFile(
                 break;
             } catch (err) {
                 lastError = err instanceof Error ? err : new Error(String(err));
-                if (!isRetryable(err)) throw err;
+                if (!isTransientError(err)) throw err;
             }
         }
 

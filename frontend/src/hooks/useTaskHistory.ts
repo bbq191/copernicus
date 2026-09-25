@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { listTasks, purgeTask, renameTask } from "../api/task";
+import { errorMessage } from "../api/errors";
 import { useToastStore } from "../stores/toastStore";
 import type { TaskSummary } from "../types/task";
-
-function errorMessage(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback;
-}
 
 /** 历史任务列表及其重命名、删除操作。 */
 export function useTaskHistory() {

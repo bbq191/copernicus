@@ -1,11 +1,18 @@
 import { useEffect } from "react";
 import { usePlayerStore } from "../stores/playerStore";
-import { useComplianceStore } from "../stores/complianceStore";
+import { selectSelectedViolation, useComplianceStore } from "../stores/complianceStore";
 import { playViolation } from "../utils/violationPlayback";
 
 function jumpToSelected() {
-  const v = useComplianceStore.getState().selectedViolation;
+  const v = selectSelectedViolation(useComplianceStore.getState());
   if (v) playViolation(v);
+}
+
+/** 只处理待审项：已复核的违规不响应快捷键，避免误按覆盖结论 */
+function reviewSelected(status: "confirmed" | "rejected") {
+  const store = useComplianceStore.getState();
+  const v = selectSelectedViolation(store);
+  if (v && v.status === "pending") store.setViolationStatus(v, status);
 }
 
 /** 输入类控件自己处理键盘，全局快捷键不能抢 */
@@ -49,17 +56,13 @@ export function useAuditKeyboard(enabled: boolean) {
         }
         case "Enter": {
           e.preventDefault();
-          if (store.selectedViolation && store.selectedViolation.status === "pending") {
-            store.setViolationStatus(store.selectedViolation, "confirmed");
-          }
+          reviewSelected("confirmed");
           break;
         }
         case "Delete":
         case "Backspace": {
           e.preventDefault();
-          if (store.selectedViolation && store.selectedViolation.status === "pending") {
-            store.setViolationStatus(store.selectedViolation, "rejected");
-          }
+          reviewSelected("rejected");
           break;
         }
         case "ArrowDown": {
@@ -82,7 +85,7 @@ export function useAuditKeyboard(enabled: boolean) {
         }
         case "Escape": {
           e.preventDefault();
-          if (store.evidencePanelOpen) {
+          if (store.evidenceDetailId) {
             store.closeEvidenceDetail();
           } else if (store.batchMode) {
             store.toggleBatchMode();

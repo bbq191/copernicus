@@ -5,11 +5,34 @@ import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { evaluateText } from "../../api/evaluation";
+import { errorMessage } from "../../api/errors";
+import { isAbortError } from "../../api/polling";
+import { currentTaskSignal } from "../../stores/taskScope";
+import { useTemplates } from "../../hooks/useTemplates";
 import { IncompleteNotice } from "../shared/IncompleteNotice";
 import { evaluationIncompleteness } from "../../utils/completeness";
-import { listTemplates } from "../../api/templates";
-import type { TemplateInfo } from "../../api/templates";
 import { ErrorAlert } from "../shared/ErrorAlert";
+import { ProgressBlock } from "../shared/ProgressBlock";
+import { TemplateSelect } from "../shared/TemplateSelect";
+import type { TranscriptEntry } from "../../types/transcript";
+
+/** 发起一次摘要评估。请求绑定当前任务范围：切换任务后，旧任务的结果与进度会被丢弃。 */
+function startEvaluation(rawEntries: TranscriptEntry[], taskId: string | null, templateId: string, failedText: string) {
+  const fullText = rawEntries.map((e) => e.text_corrected).join("\n");
+  const signal = currentTaskSignal();
+  const store = useEvaluationStore.getState();
+  store.setLoading(true);
+
+  evaluateText(fullText, taskId ?? undefined, templateId, {
+    signal,
+    onProgress: (percent, text) => useEvaluationStore.getState().setProgress(percent, text),
+  })
+    .then((result) => useEvaluationStore.getState().setEvaluation(result))
+    .catch((err) => {
+      if (signal.aborted || isAbortError(err)) return;
+      useEvaluationStore.getState().setError(errorMessage(err, failedText));
+    });
+}
 
 export function SummaryPanel() {
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
@@ -20,52 +43,22 @@ export function SummaryPanel() {
   const progressText = useEvaluationStore((s) => s.progressText);
   const taskId = useTaskStore((s) => s.taskId);
 
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const templates = useTemplates();
   const [templateId, setTemplateId] = useState("universal");
 
-  useEffect(() => {
-    listTemplates()
-      .then(setTemplates)
-      .catch(() => {});
-  }, []);
-
+  // 转写就绪后自动生成一次摘要；已有摘要（含从服务端恢复的）或正在生成时不重复提交
   useEffect(() => {
     if (rawEntries.length === 0) return;
-
-    const { evaluation: existing, isLoading: pending } =
-      useEvaluationStore.getState();
+    const { evaluation: existing, isLoading: pending } = useEvaluationStore.getState();
     if (existing || pending) return;
-
-    const fullText = rawEntries.map((e) => e.text_corrected).join("\n");
-    if (!fullText.trim()) return;
-
-    useEvaluationStore.getState().setLoading(true);
-
-    evaluateText(fullText, taskId ?? undefined, templateId)
-      .then((result) => {
-        useEvaluationStore.getState().setEvaluation(result);
-      })
-      .catch((err) => {
-        useEvaluationStore
-          .getState()
-          .setError(err instanceof Error ? err.message : "摘要生成失败");
-      });
+    if (!rawEntries.some((e) => e.text_corrected.trim())) return;
+    startEvaluation(rawEntries, taskId, templateId, "摘要生成失败");
   }, [rawEntries, taskId, templateId]);
 
-  const handleRerun = useCallback(async () => {
+  const handleRerun = useCallback(() => {
     if (!taskId || rawEntries.length === 0) return;
-    useEvaluationStore.getState().setLoading(true);
     useToastStore.getState().addToast("info", "重新评估已启动");
-
-    const fullText = rawEntries.map((e) => e.text_corrected).join("\n");
-    try {
-      const result = await evaluateText(fullText, taskId, templateId);
-      useEvaluationStore.getState().setEvaluation(result);
-    } catch (err) {
-      useEvaluationStore
-        .getState()
-        .setError(err instanceof Error ? err.message : "重新评估失败");
-    }
+    startEvaluation(rawEntries, taskId, templateId, "重新评估失败");
   }, [taskId, rawEntries, templateId]);
 
   if (rawEntries.length === 0) {
@@ -79,24 +72,7 @@ export function SummaryPanel() {
   }
 
   if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-3 p-8">
-        <span className="loading loading-spinner loading-lg text-primary" />
-        <span className="text-base-content/60 text-sm">
-          {progressText || "生成摘要中..."}
-        </span>
-        <div className="w-full max-w-xs">
-          <progress
-            className="progress progress-primary w-full"
-            value={progress}
-            max={100}
-          />
-          <span className="text-xs text-base-content/40 mt-1 block text-center">
-            {Math.round(progress)}%
-          </span>
-        </div>
-      </div>
-    );
+    return <ProgressBlock text={progressText || "生成摘要中..."} percent={progress} className="p-8" />;
   }
 
   if (error) {
@@ -107,19 +83,14 @@ export function SummaryPanel() {
     );
   }
 
-  const templateSelector = templates.length > 1 && (
-    <select
-      className="select select-bordered select-xs w-full"
+  const templateSelector = (
+    <TemplateSelect
+      templates={templates}
       value={templateId}
-      onChange={(e) => setTemplateId(e.target.value)}
+      onChange={setTemplateId}
       disabled={isLoading}
-    >
-      {templates.map((t) => (
-        <option key={t.id} value={t.id} title={t.description}>
-          {t.name}
-        </option>
-      ))}
-    </select>
+      className="select-xs w-full"
+    />
   );
 
   if (!evaluation) {

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import classNames from "classnames";
 import type { MergedBlock } from "../../types/view";
 import { usePlayerStore } from "../../stores/playerStore";
@@ -10,12 +11,12 @@ interface Props {
   block: MergedBlock;
 }
 
-export function TranscriptBlock({ block }: Props) {
-  const currentTime = usePlayerStore((s) => s.currentTime);
+export const TranscriptBlock = memo(function TranscriptBlock({ block }: Props) {
+  // 布尔 selector：只有"是否高亮"发生变化时才重渲染，而不是随播放进度每 100ms 一次
+  const isBlockActive = usePlayerStore(
+    (s) => s.currentTime >= block.startMs && s.currentTime <= block.endMs + 5000,
+  );
   const speakers = useTranscriptStore((s) => s.speakers);
-
-  const isBlockActive =
-    currentTime >= block.startMs && currentTime <= block.endMs + 5000;
 
   // 按说话人首次出现顺序交替左右排布，与说话人名称无关（重命名后不受影响）
   const isEven = speakers.indexOf(block.speaker) % 2 === 0;
@@ -55,4 +56,4 @@ export function TranscriptBlock({ block }: Props) {
       </div>
     </div>
   );
-}
+});

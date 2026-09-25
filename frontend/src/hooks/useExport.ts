@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useToastStore } from "../stores/toastStore";
 import { generateSrt, downloadSrt } from "../utils/srtGenerator";
+import { errorMessage } from "../api/errors";
 
 type ExportFormat = "srt" | "word" | "pdf";
 
@@ -38,7 +39,7 @@ export function useExport() {
       } catch (err) {
         useToastStore
           .getState()
-          .addToast("error", err instanceof Error ? err.message : "导出失败");
+          .addToast("error", errorMessage(err, "导出失败"));
       } finally {
         setIsExporting(false);
       }

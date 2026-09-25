@@ -1,43 +1,19 @@
-import {
-  X,
-  Check,
-  RotateCcw,
-  AlertTriangle,
-  AlertCircle,
-  Info,
-  Mic,
-  FileText,
-  Eye,
-  Clock,
-  BookOpen,
-  ZoomIn,
-} from "lucide-react";
+import { X, Check, RotateCcw, Clock, BookOpen, ZoomIn } from "lucide-react";
 import { useState } from "react";
 import { resolveEvidenceUrl } from "../../api/task";
-import { useComplianceStore } from "../../stores/complianceStore";
+import { selectEvidenceDetail, useComplianceStore } from "../../stores/complianceStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { usePlayerStore } from "../../stores/playerStore";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
-import type { Violation, ViolationSource } from "../../types/compliance";
-
-const SEVERITY_CONFIG = {
-  high: { icon: AlertTriangle, label: "高风险", color: "text-error" },
-  medium: { icon: AlertCircle, label: "中风险", color: "text-warning" },
-  low: { icon: Info, label: "低风险", color: "text-info" },
-} as const;
-
-const SOURCE_LABELS: Record<ViolationSource, { label: string; icon: typeof Mic }> = {
-  transcript: { label: "语音转录", icon: Mic },
-  ocr: { label: "OCR 文字识别", icon: FileText },
-  vision: { label: "视觉检测", icon: Eye },
-};
+import type { Violation } from "../../types/compliance";
+import { STATUS_META, severityMeta, sourceMeta } from "./violationMeta";
 
 const CONTEXT_RANGE = 3;
 
 export function EvidenceDetailPanel() {
-  const violation = useComplianceStore((s) => s.evidenceDetail);
+  const violation = useComplianceStore(selectEvidenceDetail);
   // 以违规 id 作为 key：切换条目时重置备注等本地状态
   return violation ? <EvidenceDetail key={violation.id} violation={violation} /> : null;
 }
@@ -53,9 +29,9 @@ function EvidenceDetail({ violation }: { violation: Violation }) {
 
   const imageUrl = resolveEvidenceUrl(violation.evidence_url, taskId);
 
-  const sevConfig = SEVERITY_CONFIG[violation.severity] || SEVERITY_CONFIG.low;
+  const sevConfig = severityMeta(violation.severity);
   const SevIcon = sevConfig.icon;
-  const sourceInfo = SOURCE_LABELS[violation.source] || SOURCE_LABELS.transcript;
+  const sourceInfo = sourceMeta(violation.source);
   const SourceIcon = sourceInfo.icon;
   const isPending = violation.status === "pending";
 
@@ -92,16 +68,12 @@ function EvidenceDetail({ violation }: { violation: Violation }) {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center gap-2 p-3 border-b border-base-300 bg-base-200">
-        <span className={`${sevConfig.color}`}>
+        <span className={sevConfig.text}>
           <SevIcon className="h-4 w-4" />
         </span>
-        <span className="text-sm font-bold flex-1">{sevConfig.label}</span>
+        <span className="text-sm font-bold flex-1">{sevConfig.longLabel}</span>
         <span className="badge badge-sm badge-ghost">
-          {violation.status === "pending"
-            ? "待审"
-            : violation.status === "confirmed"
-              ? "已确认"
-              : "已忽略"}
+          {STATUS_META[violation.status].label}
         </span>
         <button
           className="btn btn-ghost btn-xs btn-square"
@@ -116,7 +88,7 @@ function EvidenceDetail({ violation }: { violation: Violation }) {
         {/* Source + timestamp */}
         <div className="flex items-center gap-2 text-sm text-base-content/60">
           <SourceIcon className="h-4 w-4" />
-          <span>{sourceInfo.label}</span>
+          <span>{sourceInfo.longLabel}</span>
           <button
             className="badge badge-ghost badge-sm gap-1 hover:badge-primary"
             onClick={() => seekAndPlay(violation.timestamp_ms)}

@@ -1,4 +1,5 @@
 import client, { taskMediaUrl, taskFrameUrl } from "./client";
+import { isTransientError } from "./errors";
 import { computeFileSHA256 } from "../utils/fileHash";
 import { chunkedUploadFile } from "../utils/chunkedUpload";
 import type {
@@ -18,12 +19,6 @@ export interface SubmitOptions {
   templateId?: string;
 }
 
-function isRetryable(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const statusCode = (err as Error & { statusCode?: number }).statusCode;
-  return statusCode === undefined || statusCode >= 500;
-}
-
 async function uploadWithRetry(form: FormData): Promise<TaskSubmitResponse> {
   let lastError: Error = new Error("上传失败");
   for (let attempt = 0; attempt < UPLOAD_MAX_RETRIES; attempt++) {
@@ -38,7 +33,7 @@ async function uploadWithRetry(form: FormData): Promise<TaskSubmitResponse> {
       return data;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      if (!isRetryable(err)) throw err;
+      if (!isTransientError(err)) throw err;
     }
   }
   throw lastError;

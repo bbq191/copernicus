@@ -7,6 +7,11 @@ import { useComplianceStore } from "../../stores/complianceStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { ErrorAlert } from "../shared/ErrorAlert";
 import { auditCompliance } from "../../api/compliance";
+import { errorMessage } from "../../api/errors";
+import { isAbortError } from "../../api/polling";
+import { currentTaskSignal } from "../../stores/taskScope";
+import { ProgressBlock } from "../shared/ProgressBlock";
+import { scoreLevel, summarizeViolations } from "../../utils/violationFilters";
 
 export function CompliancePanel() {
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
@@ -21,21 +26,21 @@ export function CompliancePanel() {
     (file: File) => {
       if (rawEntries.length === 0) return;
 
-      const store = useComplianceStore.getState();
-      if (store.isLoading) return;
-      store.setLoading(true);
+      if (useComplianceStore.getState().isLoading) return;
+      useComplianceStore.getState().setLoading(true);
 
-      // Read taskId from store directly to avoid stale closure
-      const currentTaskId = useTaskStore.getState().taskId;
+      // 请求绑定当前任务范围：切换任务后，旧任务的结果与进度会被丢弃
+      const signal = currentTaskSignal();
+      const taskId = useTaskStore.getState().taskId ?? undefined;
 
-      auditCompliance(rawEntries, file, currentTaskId ?? undefined)
-        .then((res) => {
-          useComplianceStore.getState().setReport(res.report, res.rules);
-        })
+      auditCompliance(rawEntries, file, taskId, {
+        signal,
+        onProgress: (percent, text) => useComplianceStore.getState().setProgress(percent, text),
+      })
+        .then((res) => useComplianceStore.getState().setReport(res.report, res.rules))
         .catch((err) => {
-          useComplianceStore
-            .getState()
-            .setError(err instanceof Error ? err.message : "合规审核失败");
+          if (signal.aborted || isAbortError(err)) return;
+          useComplianceStore.getState().setError(errorMessage(err, "合规审核失败"));
         });
     },
     [rawEntries],
@@ -68,24 +73,7 @@ export function CompliancePanel() {
   }
 
   if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-3 p-6">
-        <span className="loading loading-spinner loading-lg text-primary" />
-        <span className="text-base-content/60 text-sm">
-          {progressText || "合规审核中..."}
-        </span>
-        <div className="w-full max-w-xs">
-          <progress
-            className="progress progress-primary w-full"
-            value={progress}
-            max={100}
-          />
-          <span className="text-xs text-base-content/40 mt-1 block text-center">
-            {Math.round(progress)}%
-          </span>
-        </div>
-      </div>
-    );
+    return <ProgressBlock text={progressText || "合规审核中..."} percent={progress} />;
   }
 
   if (error) {
@@ -101,24 +89,15 @@ export function CompliancePanel() {
   }
 
   if (report) {
-    const high = report.violations.filter((v) => v.severity === "high").length;
-    const medium = report.violations.filter(
-      (v) => v.severity === "medium",
-    ).length;
-    const low = report.violations.filter((v) => v.severity === "low").length;
+    const { high, medium, low } = summarizeViolations(report).severity;
+    const level = scoreLevel(report.compliance_score);
 
     return (
       <div className="flex flex-col gap-3 p-4">
         <IncompleteNotice notes={reportIncompleteness(report)} />
         <div className="flex items-center justify-center">
           <div
-            className={`radial-progress text-2xl font-bold ${
-              report.compliance_score >= 80
-                ? "text-success"
-                : report.compliance_score >= 60
-                  ? "text-warning"
-                  : "text-error"
-            }`}
+            className={`radial-progress text-2xl font-bold ${level.text}`}
             style={
               {
                 "--value": report.compliance_score,
@@ -132,21 +111,7 @@ export function CompliancePanel() {
         </div>
 
         <div className="text-center text-xs font-medium">
-          <span
-            className={
-              report.compliance_score >= 80
-                ? "text-success"
-                : report.compliance_score >= 60
-                  ? "text-warning"
-                  : "text-error"
-            }
-          >
-            {report.compliance_score >= 80
-              ? "良好"
-              : report.compliance_score >= 60
-                ? "需关注"
-                : "高风险"}
-          </span>
+          <span className={level.text}>{level.label}</span>
         </div>
 
         <div className="flex justify-center gap-2 text-xs">

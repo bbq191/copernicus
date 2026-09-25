@@ -8,9 +8,11 @@ import {
   getSynthesisStatus,
   getSynthesisAudioUrl,
 } from "../../api/synthesis";
-import { POLL_INTERVAL_MS } from "../../api/client";
+import { createFailureGuard } from "../../api/polling";
+import { usePolling } from "../../hooks/usePolling";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
+import { errorMessage } from "../../api/errors";
 
 export function SynthesisPanel() {
   const taskId = useTaskStore((s) => s.taskId);
@@ -26,52 +28,64 @@ export function SynthesisPanel() {
   const [duration, setDuration] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [polling, setPolling] = useState(false);
+  // 每次合成完成后递增，附在音频地址上，避免浏览器缓存到上一次的音频
+  const [audioVersion, setAudioVersion] = useState(0);
+  const guardRef = useRef(createFailureGuard());
 
-  const stopPolling = () => {
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  };
-
-  // 检查已有合成结果（页面刷新 / 服务重启后恢复）
+  // 进入面板时检查已有结果或进行中的合成（页面刷新 / 服务重启后恢复）
   useEffect(() => {
     if (!taskId || hasSynthesis) return;
+    let alive = true;
     getSynthesisStatus(taskId)
       .then((s) => {
+        if (!alive) return;
         if (s.status === "completed") {
           setResult(s.duration_ms ?? 0, s.synthesis_time_ms ?? 0);
+        } else if (s.status === "running") {
+          guardRef.current = createFailureGuard();
+          setLoading(true);
+          setPolling(true);
         }
       })
       .catch(() => {});
+    return () => {
+      alive = false;
+    };
   }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => () => stopPolling(), []);
-
-  const startPolling = (tid: string) => {
-    stopPolling();
-    pollRef.current = setInterval(async () => {
+  usePolling(
+    async (signal) => {
+      if (!taskId) return true;
+      let s;
       try {
-        const s = await getSynthesisStatus(tid);
-        if (s.status === "completed") {
-          stopPolling();
-          setResult(s.duration_ms ?? 0, s.synthesis_time_ms ?? 0);
-          audioRef.current?.load();
-          useToastStore.getState().addToast("success", "音频合成完成");
-          setLoading(false);
-        } else if (s.status === "failed") {
-          stopPolling();
-          useToastStore
-            .getState()
-            .addToast("error", s.error ?? "合成失败，请重试");
-          setLoading(false);
-        }
-      } catch {
-        // 轮询期间网络抖动 — 继续等待下次
+        s = await getSynthesisStatus(taskId);
+        guardRef.current.recordSuccess();
+      } catch (err) {
+        if (signal.aborted) return true;
+        if (guardRef.current.shouldRetry(err)) return false; // 网络抖动：下个周期重试
+        useToastStore.getState().addToast("error", errorMessage(err, "查询合成状态失败"));
+        setPolling(false);
+        setLoading(false);
+        return true;
       }
-    }, POLL_INTERVAL_MS);
-  };
+      if (signal.aborted) return true;
+
+      if (s.status === "completed") {
+        setResult(s.duration_ms ?? 0, s.synthesis_time_ms ?? 0);
+        setAudioVersion((v) => v + 1);
+        useToastStore.getState().addToast("success", "音频合成完成");
+      } else if (s.status === "failed") {
+        useToastStore.getState().addToast("error", s.error ?? "合成失败，请重试");
+      } else {
+        return false;
+      }
+      setPolling(false);
+      setLoading(false);
+      return true;
+    },
+    { enabled: polling },
+  );
 
   const handleSynthesize = async () => {
     if (!taskId || loading) return;
@@ -80,11 +94,12 @@ export function SynthesisPanel() {
     setCurrentTime(0);
     try {
       await startSynthesis(taskId);
-      startPolling(taskId);
+      guardRef.current = createFailureGuard();
+      setPolling(true);
     } catch (err) {
       useToastStore
         .getState()
-        .addToast("error", err instanceof Error ? err.message : "合成请求失败");
+        .addToast("error", errorMessage(err, "合成请求失败"));
       setLoading(false);
     }
   };
@@ -122,7 +137,7 @@ export function SynthesisPanel() {
         <>
           <audio
             ref={audioRef}
-            src={getSynthesisAudioUrl(taskId)}
+            src={`${getSynthesisAudioUrl(taskId)}?v=${audioVersion}`}
             preload="metadata"
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}

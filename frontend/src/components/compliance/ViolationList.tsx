@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Search,
   ShieldAlert,
@@ -10,45 +10,55 @@ import {
   ListChecks,
   Download,
 } from "lucide-react";
-import {
-  useComplianceStore,
-  getFilteredViolations,
-  violationKey,
-} from "../../stores/complianceStore";
+import { useComplianceStore } from "../../stores/complianceStore";
 import { ViolationCard } from "./ViolationCard";
+import { FilterChips, type ChipOption } from "./FilterChips";
+import { SEVERITY_META, SOURCE_META, STATUS_META } from "./violationMeta";
+import {
+  filterViolations,
+  scoreLevel,
+  summarizeViolations,
+  type SeverityFilter,
+  type SourceFilter,
+  type StatusFilter,
+} from "../../utils/violationFilters";
 import { complianceExportUrl } from "../../api/compliance";
 import { useTaskStore } from "../../stores/taskStore";
 import { IncompleteNotice } from "../shared/IncompleteNotice";
 import { reportIncompleteness } from "../../utils/completeness";
 import { readStorage, writeStorage } from "../../utils/safeStorage";
 
-const SEVERITY_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "high", label: "高", className: "badge-error" },
-  { value: "medium", label: "中", className: "badge-warning" },
-  { value: "low", label: "低", className: "badge-info" },
-] as const;
+const ALL = { value: "all", label: "全部" } as const;
 
-const STATUS_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "pending", label: "待审" },
-  { value: "confirmed", label: "已确认", className: "badge-success" },
-  { value: "rejected", label: "已忽略", className: "badge-ghost" },
-] as const;
+const SEVERITY_OPTIONS: readonly ChipOption<SeverityFilter>[] = [
+  ALL,
+  ...(["high", "medium", "low"] as const).map((v) => ({
+    value: v,
+    label: SEVERITY_META[v].label,
+    activeClass: SEVERITY_META[v].badge,
+  })),
+];
 
-const SOURCE_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "transcript", label: "语音", className: "badge-primary" },
-  { value: "ocr", label: "OCR", className: "badge-secondary" },
-  { value: "vision", label: "视觉", className: "badge-accent" },
-] as const;
+const SOURCE_OPTIONS: readonly ChipOption<SourceFilter>[] = [
+  ALL,
+  ...(["transcript", "ocr", "vision"] as const).map((v) => ({
+    value: v,
+    label: SOURCE_META[v].label,
+    activeClass: SOURCE_META[v].badge,
+  })),
+];
+
+const STATUS_OPTIONS: readonly ChipOption<StatusFilter>[] = [
+  ALL,
+  { value: "pending", label: STATUS_META.pending.label },
+  { value: "confirmed", label: STATUS_META.confirmed.label, activeClass: STATUS_META.confirmed.badge },
+  { value: "rejected", label: STATUS_META.rejected.label, activeClass: STATUS_META.rejected.badge },
+];
 
 const KBD_DISMISSED_KEY = "copernicus:kbd-hints-dismissed";
 
 export function ViolationList() {
-  const [kbdDismissed, setKbdDismissed] = useState(
-    () => readStorage(KBD_DISMISSED_KEY) === "1",
-  );
+  const [kbdDismissed, setKbdDismissed] = useState(() => readStorage(KBD_DISMISSED_KEY) === "1");
   const report = useComplianceStore((s) => s.report);
   const severityFilter = useComplianceStore((s) => s.severityFilter);
   const setSeverityFilter = useComplianceStore((s) => s.setSeverityFilter);
@@ -58,8 +68,7 @@ export function ViolationList() {
   const setSourceFilter = useComplianceStore((s) => s.setSourceFilter);
   const searchQuery = useComplianceStore((s) => s.searchQuery);
   const setSearchQuery = useComplianceStore((s) => s.setSearchQuery);
-  const selectedViolation = useComplianceStore((s) => s.selectedViolation);
-  const selectViolation = useComplianceStore((s) => s.selectViolation);
+  const selectedId = useComplianceStore((s) => s.selectedId);
   const batchMode = useComplianceStore((s) => s.batchMode);
   const toggleBatchMode = useComplianceStore((s) => s.toggleBatchMode);
   const selectedIds = useComplianceStore((s) => s.selectedIds);
@@ -68,45 +77,24 @@ export function ViolationList() {
   const batchSetStatus = useComplianceStore((s) => s.batchSetStatus);
   const taskId = useTaskStore((s) => s.taskId);
 
-  const violations = getFilteredViolations(useComplianceStore.getState());
+  // 筛选与统计只在报告或筛选条件变化时重算，不随每次渲染重跑
+  const violations = useMemo(
+    () =>
+      filterViolations(report?.violations ?? [], {
+        severity: severityFilter,
+        status: statusFilter,
+        source: sourceFilter,
+        query: searchQuery,
+      }),
+    [report, severityFilter, statusFilter, sourceFilter, searchQuery],
+  );
+  const summary = useMemo(() => summarizeViolations(report), [report]);
 
   if (!report) return null;
 
-  const highCount = report.violations.filter(
-    (v) => v.severity === "high",
-  ).length;
-  const mediumCount = report.violations.filter(
-    (v) => v.severity === "medium",
-  ).length;
-  const pendingCount = report.violations.filter(
-    (v) => v.status === "pending",
-  ).length;
-
-  const severityCounts = {
-    all: report.violations.length,
-    high: highCount,
-    medium: mediumCount,
-    low: report.violations.filter((v) => v.severity === "low").length,
-  };
-
-  const sourceCounts = {
-    all: report.violations.length,
-    transcript: report.violations.filter((v) => v.source === "transcript").length,
-    ocr: report.violations.filter((v) => v.source === "ocr").length,
-    vision: report.violations.filter((v) => v.source === "vision").length,
-  };
-
-  const scoreColor =
-    report.compliance_score >= 80
-      ? "text-success"
-      : report.compliance_score >= 60
-        ? "text-warning"
-        : "text-error";
-
-  // Count how many of the filtered violations are checked
-  const checkedCount = violations.filter((v) =>
-    selectedIds.has(violationKey(v)),
-  ).length;
+  const severityCounts = { all: summary.total, ...summary.severity };
+  const sourceCounts = { all: summary.total, ...summary.source };
+  const checkedCount = violations.filter((v) => selectedIds.has(v.id)).length;
 
   return (
     <div className="flex flex-col h-full">
@@ -115,19 +103,19 @@ export function ViolationList() {
       <div className="stats stats-horizontal shadow-sm w-full bg-base-200 border-b border-base-300">
         <div className="stat place-items-center py-2 px-3">
           <div className="stat-title text-xs">高风险</div>
-          <div className="stat-value text-error text-lg">{highCount}</div>
+          <div className="stat-value text-error text-lg">{summary.severity.high}</div>
         </div>
         <div className="stat place-items-center py-2 px-3">
           <div className="stat-title text-xs">疑似</div>
-          <div className="stat-value text-warning text-lg">{mediumCount}</div>
+          <div className="stat-value text-warning text-lg">{summary.severity.medium}</div>
         </div>
         <div className="stat place-items-center py-2 px-3">
           <div className="stat-title text-xs">待审</div>
-          <div className="stat-value text-info text-lg">{pendingCount}</div>
+          <div className="stat-value text-info text-lg">{summary.status.pending}</div>
         </div>
         <div className="stat place-items-center py-2 px-3">
           <div className="stat-title text-xs">合规度</div>
-          <div className={`stat-value text-lg ${scoreColor}`}>
+          <div className={`stat-value text-lg ${scoreLevel(report.compliance_score).text}`}>
             {Math.round(report.compliance_score)}
           </div>
         </div>
@@ -165,92 +153,29 @@ export function ViolationList() {
 
       {/* Toolbar */}
       <div className="flex flex-col gap-2 p-3">
-        {/* Severity filter */}
         <div className="flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 opacity-50" />
-          <div className="flex gap-1">
-            {SEVERITY_OPTIONS.map((opt) => {
-              const count =
-                severityCounts[opt.value as keyof typeof severityCounts];
-              return (
-                <button
-                  key={opt.value}
-                  className={`badge badge-sm cursor-pointer ${
-                    severityFilter === opt.value
-                      ? "className" in opt
-                        ? opt.className
-                        : "badge-primary"
-                      : "badge-ghost"
-                  }`}
-                  onClick={() =>
-                    setSeverityFilter(
-                      opt.value as "all" | "high" | "medium" | "low",
-                    )
-                  }
-                >
-                  {opt.label}
-                  {count > 0 && ` (${count})`}
-                </button>
-              );
-            })}
-          </div>
+          <FilterChips
+            icon={ShieldAlert}
+            options={SEVERITY_OPTIONS}
+            value={severityFilter}
+            onChange={setSeverityFilter}
+            counts={severityCounts}
+          />
         </div>
 
-        {/* Source filter */}
         <div className="flex items-center gap-2">
-          <Layers className="h-4 w-4 opacity-50" />
-          <div className="flex gap-1">
-            {SOURCE_OPTIONS.map((opt) => {
-              const count =
-                sourceCounts[opt.value as keyof typeof sourceCounts];
-              return (
-                <button
-                  key={opt.value}
-                  className={`badge badge-sm cursor-pointer ${
-                    sourceFilter === opt.value
-                      ? "className" in opt
-                        ? opt.className
-                        : "badge-primary"
-                      : "badge-ghost"
-                  }`}
-                  onClick={() =>
-                    setSourceFilter(
-                      opt.value as "all" | "transcript" | "ocr" | "vision",
-                    )
-                  }
-                >
-                  {opt.label}
-                  {count > 0 && ` (${count})`}
-                </button>
-              );
-            })}
-          </div>
+          <FilterChips
+            icon={Layers}
+            options={SOURCE_OPTIONS}
+            value={sourceFilter}
+            onChange={setSourceFilter}
+            counts={sourceCounts}
+          />
         </div>
 
         {/* Status filter + search + batch toggle */}
         <div className="flex items-center gap-2">
-          <Filter className="h-4 w-4 opacity-50" />
-          <div className="flex gap-1">
-            {STATUS_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                className={`badge badge-sm cursor-pointer ${
-                  statusFilter === opt.value
-                    ? "className" in opt
-                      ? opt.className
-                      : "badge-primary"
-                    : "badge-ghost"
-                }`}
-                onClick={() =>
-                  setStatusFilter(
-                    opt.value as "all" | "pending" | "confirmed" | "rejected",
-                  )
-                }
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          <FilterChips icon={Filter} options={STATUS_OPTIONS} value={statusFilter} onChange={setStatusFilter} />
 
           <button
             className={`btn btn-xs gap-1 ml-2 ${batchMode ? "btn-primary" : "btn-ghost"}`}
@@ -297,15 +222,8 @@ export function ViolationList() {
             </p>
           </div>
         ) : (
-          violations.map((v, i) => (
-            <ViolationCard
-              key={`${v.timestamp_ms}-${v.rule_id}-${i}`}
-              violation={v}
-              isSelected={selectedViolation === v}
-              onClick={() =>
-                selectViolation(selectedViolation === v ? null : v)
-              }
-            />
+          violations.map((v) => (
+            <ViolationCard key={v.id} violation={v} isSelected={selectedId === v.id} />
           ))
         )}
       </div>

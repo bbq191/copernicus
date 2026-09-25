@@ -1,8 +1,8 @@
 import client from "./client";
 import { pollUntilDone } from "./polling";
+import type { PollOptions } from "./polling";
 import type { EvaluationResult, EvaluationResponse } from "../types/evaluation";
 import type { TaskSubmitResponse } from "../types/task";
-import { useEvaluationStore } from "../stores/evaluationStore";
 
 const STATUS_TEXT: Record<string, string> = {
   pending: "排队中...",
@@ -11,30 +11,26 @@ const STATUS_TEXT: Record<string, string> = {
   evaluating: "生成摘要中...",
 };
 
+export type EvaluationProgress = Pick<PollOptions, "onProgress" | "signal">;
+
 export async function evaluateText(
   text: string,
-  parentTaskId?: string,
-  templateId = "universal",
+  parentTaskId: string | undefined,
+  templateId: string,
+  { onProgress, signal }: EvaluationProgress,
 ): Promise<EvaluationResult> {
   const form = new FormData();
   form.append("text", text);
   form.append("template_id", templateId);
   if (parentTaskId) form.append("parent_task_id", parentTaskId);
 
-  const { data: task } = await client.post<TaskSubmitResponse>(
-    "/evaluate/text/async",
-    form,
-  );
+  const { data: task } = await client.post<TaskSubmitResponse>("/evaluate/text/async", form, { signal });
 
-  return pollForEvaluation(task.task_id);
-}
-
-async function pollForEvaluation(taskId: string): Promise<EvaluationResult> {
-  const result = await pollUntilDone(taskId, {
+  const result = await pollUntilDone(task.task_id, {
     statusText: STATUS_TEXT,
     failedText: "评估失败",
-    onProgress: (percent, text) =>
-      useEvaluationStore.getState().setProgress(percent, text),
+    onProgress,
+    signal,
   });
   return (result as EvaluationResponse).evaluation;
 }

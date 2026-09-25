@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Upload, FileAudio, ScanText, Activity } from "lucide-react";
 import { submitStandardMinutesTask } from "../../api/task";
-import { listTemplates } from "../../api/templates";
-import type { TemplateInfo } from "../../api/templates";
+import { useTemplates } from "../../hooks/useTemplates";
+import { TemplateSelect } from "../shared/TemplateSelect";
 import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { resetWorkspaceStores } from "../../stores/resetWorkspace";
+import { errorMessage } from "../../api/errors";
 import { TaskHistory } from "./TaskHistory";
-import { UploadProgress } from "./UploadProgress";
 
 const VIDEO_EXTS = new Set([".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"]);
 
@@ -25,15 +25,14 @@ export function UploadPage() {
   const [visualScan, setVisualScan] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ received: number; total: number } | null>(null);
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const templates = useTemplates();
   const [templateId, setTemplateId] = useState("universal");
   const setTask = useTaskStore((s) => s.setTask);
-  const taskId = useTaskStore((s) => s.taskId);
 
+  // 回到首页即离开工作区：清空上一个任务的状态并停止它的后台请求，
+  // 否则首页会残留旧任务的进度，旧任务的轮询也会继续消耗网络与电量
   useEffect(() => {
-    listTemplates()
-      .then(setTemplates)
-      .catch(() => {});
+    resetWorkspaceStores();
   }, []);
 
   const submitFile = useCallback(
@@ -47,7 +46,6 @@ export function UploadPage() {
           templateId,
           onProgress: (received, total) => setUploadProgress({ received, total }),
         });
-        if (useTaskStore.getState().taskId !== res.task_id) resetWorkspaceStores();
         if (!res.existing) {
           setTask(res.task_id, res.status);
         } else if (res.status === "completed") {
@@ -62,9 +60,8 @@ export function UploadPage() {
         }
         navigate(`/workspace/${res.task_id}`);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "上传失败";
-        useTaskStore.getState().setError(message);
-        useToastStore.getState().addToast("error", message);
+        // 上传失败只提示，不写全局任务状态：那会污染之前打开过的任务
+        useToastStore.getState().addToast("error", errorMessage(err, "上传失败"));
       } finally {
         setUploading(false);
         setUploadProgress(null);
@@ -216,23 +213,16 @@ export function UploadPage() {
           {templates.length > 1 && (
             <div className="flex items-center gap-3 w-full">
               <label className="text-sm text-base-content/60 shrink-0">纪要模板</label>
-              <select
-                className="select select-bordered select-sm flex-1"
+              <TemplateSelect
+                templates={templates}
                 value={templateId}
-                onChange={(e) => setTemplateId(e.target.value)}
-              >
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id} title={t.description}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setTemplateId}
+                className="select-sm flex-1"
+              />
             </div>
           )}
         </div>
       )}
-
-      {taskId && <UploadProgress />}
 
       <TaskHistory />
 

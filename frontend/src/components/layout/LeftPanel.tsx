@@ -6,6 +6,7 @@ import { CompliancePanel } from "../compliance/CompliancePanel";
 import { SynthesisPanel } from "../synthesis/SynthesisPanel";
 import { useEvaluationStore } from "../../stores/evaluationStore";
 import { useComplianceStore } from "../../stores/complianceStore";
+import { scoreLevel } from "../../utils/violationFilters";
 import { useSynthesisStore } from "../../stores/synthesisStore";
 
 export function LeftPanel() {
@@ -60,13 +61,7 @@ export function LeftPanel() {
           {complianceBadge ? (
             <span className="flex items-center gap-1 ml-auto">
               <span
-                className={`badge badge-sm ${
-                  report!.compliance_score >= 80
-                    ? "badge-success"
-                    : report!.compliance_score >= 60
-                      ? "badge-warning"
-                      : "badge-error"
-                }`}
+                className={`badge badge-sm ${scoreLevel(report!.compliance_score).badge}`}
               >
                 {complianceBadge}
               </span>

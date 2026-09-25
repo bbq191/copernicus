@@ -6,34 +6,31 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from copernicus.schemas.compliance import ComplianceResponse
-from copernicus.schemas.evaluation import EvaluationResponse, EvaluationResult
 from copernicus.schemas.task import TaskStatus, TaskSummary
-from copernicus.schemas.transcription import (
-    TranscriptEntrySchema,
-    TranscriptResponse,
-)
+from copernicus import metrics
+from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.config import Settings
 from copernicus.exceptions import (
     AudioNotFoundError,
     InvalidIdentifierError,
     QueueFullError,
-    ServiceNotConfiguredError,
     TaskBusyError,
     TaskNotFoundError,
 )
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
+from copernicus.services.minutes_structure import MinutesStructurer
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.task_executor import TaskExecutor
 from copernicus.services.task_state import (
     LLM_ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     SynthesisJob,
     TaskInfo,
 )
-from copernicus.services.template_manager import FALLBACK_PROMPT, TemplateManager
+from copernicus.services.template_manager import TemplateManager
 from copernicus.services.transcript_edit import apply_speaker_renames, apply_text_edits
 
 logger = logging.getLogger(__name__)
@@ -42,24 +39,20 @@ logger = logging.getLogger(__name__)
 _INTERRUPTED_MESSAGE = "服务重启导致任务中断，请重新转写或重新上传"
 _CANCELLED_MESSAGE = "任务已取消"
 
-# 仅这些阶段可安全取消：其余阶段（ASR、视觉扫描）运行在线程中，无法中断，
+# 仅这些阶段可安全取消：其余阶段（ASR 推理、视觉扫描）运行在线程中，无法中断，
 # 取消协程会让线程继续占用 GPU，同时放行下一个任务，造成显存冲突
 _CANCELLABLE_STATUSES: frozenset[TaskStatus] = frozenset({
     TaskStatus.PENDING,
+    TaskStatus.QUEUED_ASR,  # 尚未拿到 GPU，放弃排队不会留下失控线程
     TaskStatus.CORRECTING,
     TaskStatus.EVALUATING,
     TaskStatus.AUDITING,
 })
 
-_PIPELINE_STAGE_STATUS: dict[str, "TaskStatus"] = {
-    "video_preprocess": "extracting_frames",
-    "keyframe_extract": "extracting_frames",
-    "ocr_scan": "scanning_visual",
-    "face_detect": "scanning_visual",
-    "audio_preprocess": "processing_asr",
-    "asr_transcribe": "processing_asr",
-    "text_correction": "correcting",
-}
+
+def _record_outcome(task: TaskInfo, outcome: str) -> None:
+    metrics.tasks_finished.inc(outcome=outcome)
+    metrics.task_duration.observe(time.monotonic() - task.created_at, outcome=outcome)
 
 
 class TaskStore:
@@ -72,15 +65,18 @@ class TaskStore:
         compliance: ComplianceService | None = None,
         model_manager: ModelManager | None = None,
         template_manager: TemplateManager | None = None,
+        structurer: MinutesStructurer | None = None,
     ) -> None:
-        self._pipeline = pipeline
-        self._evaluator = evaluator
-        self._compliance = compliance
         self._persistence = persistence
-        self._model_manager = model_manager
-        self._llm_is_local = settings.llm_provider == "ollama"
+        self._executor = TaskExecutor(
+            pipeline, persistence, settings,
+            evaluator=evaluator,
+            compliance=compliance,
+            model_manager=model_manager,
+            template_manager=template_manager,
+            structurer=structurer,
+        )
         self._synthesis_jobs: dict[str, SynthesisJob] = {}
-        self._template_manager = template_manager
         self._task_timeout = settings.task_timeout_seconds
         self._max_tasks = settings.task_max_in_memory
         self._max_active = settings.task_max_active
@@ -109,6 +105,13 @@ class TaskStore:
                 1 for j in self._synthesis_jobs.values() if j.status == "running"
             ),
         }
+
+    def count_by_status(self) -> dict[str, int]:
+        """内存中各状态的任务数（含 0 的状态，便于监控图表连续）。"""
+        counts = {status.value: 0 for status in TaskStatus}
+        for t in self._tasks.values():
+            counts[t.status.value] += 1
+        return counts
 
     # -- synthesis job tracking --------------------------------------------------
 
@@ -440,8 +443,7 @@ class TaskStore:
         parent_task_id: str | None = None,
     ) -> str:
         """提交纯文本评估任务（不需要 ASR）。"""
-        if self._evaluator is None:
-            raise ServiceNotConfiguredError("EvaluatorService not configured")
+        self._executor.require_evaluator()
         self._require_parent(parent_task_id)
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
@@ -464,8 +466,7 @@ class TaskStore:
         parent_task_id: str | None = None,
     ) -> str:
         """提交合规审核任务（纯文本，不需要 ASR）。"""
-        if self._compliance is None:
-            raise ServiceNotConfiguredError("ComplianceService not configured")
+        self._executor.require_compliance()
         self._require_parent(parent_task_id)
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
@@ -555,6 +556,7 @@ class TaskStore:
         """置任务为失败并落盘失败原因，使服务重启后仍能恢复该状态。"""
         task.status = TaskStatus.FAILED
         task.error = error
+        _record_outcome(task, "failed")
         try:
             self._persistence.save_failure(task.task_id, error)
         except Exception:
@@ -632,6 +634,7 @@ class TaskStore:
         try:
             yield task
             task.status = TaskStatus.COMPLETED
+            _record_outcome(task, "completed")
             logger.info("Task %s completed (%s)", task_id, label)
         except Exception as e:
             self._mark_failed(task, str(e) or type(e).__name__)
@@ -639,78 +642,11 @@ class TaskStore:
                 "Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True
             )
 
-    def _template_prompt(self, template_id: str) -> str:
-        if self._template_manager is None:
-            return FALLBACK_PROMPT
-        return self._template_manager.get_prompt(template_id)
-
-    async def _evaluate_text(self, task: TaskInfo, text: str, template_id: str) -> EvaluationResult:
-        """摘要评估：纯文本评估任务与标准纪要的摘要阶段共用。"""
-        if self._evaluator is None:
-            raise RuntimeError("EvaluatorService not configured")
-        task.enter(TaskStatus.EVALUATING)
-        return await self._evaluator.evaluate(
-            text, self._template_prompt(template_id), on_progress=task.set_progress
-        )
-
     async def _run_text_evaluation(
         self, task_id: str, text: str, template_id: str
     ) -> None:
         async with self._task_lifecycle(task_id, "text evaluation") as task:
-            evaluation = await self._evaluate_text(task, text, template_id)
-            task.result = EvaluationResponse(
-                raw_text="",
-                corrected_text=text,
-                evaluation=evaluation,
-                processing_time_ms=0,
-            )
-            if task.parent_task_id:
-                self._persistence.save_json(task.parent_task_id, "evaluation.json", evaluation)
-
-    async def _execute_pipeline(
-        self,
-        task: TaskInfo,
-        media_path: Path,
-        filename: str,
-        hotwords: list[str] | None,
-        visual_scan: bool,
-        task_id: str,
-    ) -> TranscriptResponse:
-        """执行 Pipeline 并返回 TranscriptResponse，同时保存 transcript.json。"""
-        task.status = TaskStatus.PROCESSING_ASR
-
-        def on_stage_change(stage_name: str) -> None:
-            new_status = _PIPELINE_STAGE_STATUS.get(stage_name)
-            if new_status:
-                task.enter(TaskStatus(new_status))
-
-        result = await self._pipeline.process_transcript(
-            media_path, filename, hotwords,
-            on_progress=task.set_progress,
-            on_stage_change=on_stage_change,
-            task_id=task_id,
-            visual_scan=visual_scan,
-        )
-
-        transcript_response = TranscriptResponse(
-            transcript=[
-                TranscriptEntrySchema(
-                    timestamp=entry.timestamp,
-                    timestamp_ms=entry.timestamp_ms,
-                    end_ms=entry.end_ms,
-                    speaker=entry.speaker,
-                    text=entry.text,
-                    text_corrected=entry.text_corrected,
-                )
-                for entry in result.transcript
-            ],
-            processing_time_ms=result.processing_time_ms,
-            correction_total_batches=result.correction_total_batches,
-            correction_failed_batches=result.correction_failed_batches,
-        )
-        task.result = transcript_response
-        self._persistence.save_json(task_id, "transcript.json", transcript_response)
-        return transcript_response
+            await self._executor.text_evaluation(task, text, template_id)
 
     async def _run_transcript(
         self,
@@ -722,7 +658,9 @@ class TaskStore:
         visual_scan: bool = False,
     ) -> None:
         async with self._task_lifecycle(task_id, "transcript") as task:
-            await self._execute_pipeline(task, media_path, filename, hotwords, visual_scan, task_id)
+            await self._executor.transcript(
+                task, media_path, filename, hotwords, visual_scan=visual_scan
+            )
 
     async def _run_standard_minutes(
         self,
@@ -736,30 +674,12 @@ class TaskStore:
         template_id: str = "universal",
     ) -> None:
         async with self._task_lifecycle(task_id, "standard_minutes") as task:
-            transcript_response = await self._execute_pipeline(
-                task, media_path, filename, hotwords, visual_scan, task_id
+            await self._executor.standard_minutes(
+                task, media_path, filename, hotwords,
+                visual_scan=visual_scan,
+                generate_summary=generate_summary,
+                template_id=template_id,
             )
-            if generate_summary and self._evaluator:
-                await self._generate_summary(task, transcript_response, template_id)
-
-    async def _generate_summary(
-        self, task: TaskInfo, transcript: TranscriptResponse, template_id: str
-    ) -> None:
-        """标准纪要的摘要阶段。转写已落盘，摘要失败不应让整个任务变成失败：
-
-        否则内存里是 FAILED（同一文件重传要重跑 ASR），重启后又因 transcript.json 存在而恢复为 COMPLETED，
-        前后状态不一致。这里只记录警告；前端发现没有摘要时会自动重新生成。
-        """
-        full_text = "\n".join(e.text_corrected for e in transcript.transcript)
-        if not full_text.strip():
-            return
-        try:
-            evaluation = await self._evaluate_text(task, full_text, template_id)
-        except Exception as e:
-            logger.warning("Task %s: summary failed, transcript kept: %s", task.task_id, e)
-            return
-        self._persistence.save_json(task.task_id, "evaluation.json", evaluation)
-        logger.info("Task %s: summary generated (template=%s)", task.task_id, template_id)
 
     async def _run_compliance_audit(
         self,
@@ -769,49 +689,6 @@ class TaskStore:
         rules_filename: str,
     ) -> None:
         async with self._task_lifecycle(task_id, "compliance audit") as task:
-            task.enter(TaskStatus.AUDITING)
-            if self._compliance is None:
-                raise RuntimeError("ComplianceService not configured")
-
-            start = time.perf_counter()
-            rules, few_shot_examples = self._compliance.parse_rules(
-                rules_bytes, rules_filename
+            await self._executor.compliance_audit(
+                task, transcript_entries, rules_bytes, rules_filename
             )
-
-            # 本地 LLM（Ollama）与 ASR 争用显存：先卸载 ASR。远端 LLM 不占本机显存，
-            # 此时卸载只会让下一个转写任务白白重载数十秒
-            if self._model_manager and self._llm_is_local:
-                await self._model_manager.unload("asr")
-
-            # 从持久化层加载 OCR 数据（如果存在）
-            ocr_results: list[dict] | None = None
-            source_task_id = task.parent_task_id or task_id
-            ocr_data = self._persistence.load_json(source_task_id, "ocr_results.json")
-            if ocr_data and isinstance(ocr_data, list):
-                ocr_results = ocr_data
-                logger.info(
-                    "Loaded %d OCR records for compliance audit (task=%s)",
-                    len(ocr_results),
-                    source_task_id,
-                )
-
-            report = await self._compliance.audit(
-                rules,
-                transcript_entries,
-                few_shot_examples=few_shot_examples,
-                on_progress=task.set_progress,
-                ocr_results=ocr_results,
-            )
-            elapsed_ms = (time.perf_counter() - start) * 1000
-
-            compliance_response = ComplianceResponse(
-                rules=rules,
-                report=report,
-                processing_time_ms=elapsed_ms,
-            )
-            task.result = compliance_response
-
-            if task.parent_task_id:
-                self._persistence.save_json(
-                    task.parent_task_id, "compliance.json", compliance_response
-                )

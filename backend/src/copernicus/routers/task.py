@@ -287,9 +287,9 @@ async def get_task_status(
 ) -> TaskStatusResponse:
     """轮询任务的实时状态与进度百分比。
 
-    `status` 状态机：`pending` → `processing_asr` / `extracting_frames` /
-    `scanning_visual` → `correcting` → `evaluating` / `auditing` →
-    `completed` / `failed`。
+    `status` 状态机：`pending` → `extracting_frames` / `scanning_visual`（仅视频）→
+    `queued_asr`（ASR 被其他任务占用时排队）→ `processing_asr` → `correcting` →
+    `evaluating` / `auditing` → `completed` / `failed`。
 
     `progress.percent` 为 0–100 的浮点数。任务完成后 `result` 字段包含
     最终结果（转写、评估或合规报告）。

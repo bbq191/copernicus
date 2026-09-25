@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 
 from copernicus.error_handlers import register_error_handlers
+from copernicus.metrics import HttpMetricsMiddleware
 from copernicus.request_context import REQUEST_ID_HEADER, RequestIdMiddleware
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
@@ -36,6 +37,7 @@ from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.face_detector import FaceDetectorService
+from copernicus.services.minutes_structure import MinutesStructurer
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.ocr import OCRService
 from copernicus.services.persistence import PersistenceService
@@ -45,6 +47,7 @@ from copernicus.services.task_store import TaskStore
 from copernicus.services.template_manager import TemplateManager
 from copernicus.services.upload_session import UploadSessionService
 from copernicus.routers import compliance, task, transcription, evaluation, upload
+from copernicus.routers import metrics as metrics_router
 from copernicus.routers import synthesis as synthesis_router
 import copernicus.services.tts as tts_service
 from copernicus.services.preflight import run_preflight
@@ -114,6 +117,7 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
         compliance=app.state.compliance,
         model_manager=model_manager,
         template_manager=app.state.template_manager,
+        structurer=MinutesStructurer(llm_client, settings),
     )
     app.state.task_store.restore_from_disk()
     app.state.synthesis = SynthesisService(app.state.task_store, model_manager, settings)
@@ -233,6 +237,7 @@ app.add_middleware(
 )
 # 后添加的中间件位于外层：最外层分配 request id，CORS 预检等所有请求都能带上
 app.add_middleware(RequestIdMiddleware)
+app.add_middleware(HttpMetricsMiddleware)  # 最外层：统计包含中间件与错误处理在内的完整耗时
 
 app.include_router(transcription.router)
 app.include_router(task.router)
@@ -240,5 +245,6 @@ app.include_router(upload.router)
 app.include_router(evaluation.router)
 app.include_router(compliance.router)
 app.include_router(synthesis_router.router)
+app.include_router(metrics_router.router)
 
 register_error_handlers(app)

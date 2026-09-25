@@ -6,6 +6,7 @@ import type { TaskSubmitResponse } from "../types/task";
 
 const STATUS_TEXT: Record<string, string> = {
   pending: "排队中...",
+  queued_asr: "排队等待语音识别...",
   processing_asr: "语音识别中...",
   correcting: "文本纠正中...",
   evaluating: "生成摘要中...",

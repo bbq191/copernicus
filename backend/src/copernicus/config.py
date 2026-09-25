@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     evaluation_max_text_chars: int = 50000  # 总上限，超过则截断
     evaluation_chunk_size: int = 6000       # Map 分段大小（字符），短于此直接评估
     evaluation_num_ctx: int = 8192          # 评估专用 num_ctx，控制显存占用
+    minutes_structure_enabled: bool = True  # 额外提取行动项与决议（每个分块多一次 LLM 调用）
 
     # Compliance Audit (Map-Reduce)
     compliance_max_text_chars: int = 50000

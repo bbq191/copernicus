@@ -53,12 +53,15 @@ class ASRTranscribeStage:
         所以把"持锁 + 推理"放进一个独立任务，外层被取消时它继续运行到线程结束才释放锁。
         """
         started = False
+        if self._models.is_busy("asr"):
+            ctx.announce("asr_queued")
 
         async def guarded() -> ASRResult:
             nonlocal started
             try:
                 async with self._models.use("asr") as asr:
                     started = True
+                    ctx.announce("asr_transcribe")
                     return await asyncio.to_thread(asr.transcribe, ctx.wav_path, ctx.hotwords, use_ts)
             finally:
                 try:

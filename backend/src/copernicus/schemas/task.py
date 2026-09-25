@@ -13,6 +13,7 @@ from copernicus.schemas.transcription import (
 
 class TaskStatus(StrEnum):
     PENDING = "pending"
+    QUEUED_ASR = "queued_asr"  # 已到语音识别阶段，但 GPU 上的 ASR 正被别的任务占用
     PROCESSING_ASR = "processing_asr"
     EXTRACTING_FRAMES = "extracting_frames"
     SCANNING_VISUAL = "scanning_visual"

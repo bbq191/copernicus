@@ -135,7 +135,7 @@ class TestParentValidation:
         from copernicus.exceptions import TaskNotFoundError
 
         store, _ = _store(persistence, evaluator=MagicMock())
-        store._compliance = MagicMock()
+        store._executor._compliance = MagicMock()
 
         with pytest.raises(TaskNotFoundError):
             store.submit_text_evaluation("文本", parent_task_id="9" * 32)

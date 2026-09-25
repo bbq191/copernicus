@@ -7,6 +7,7 @@ from pathlib import Path
 from copernicus.config import Settings
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline.base import PipelineContext
+from copernicus.utils.ffmpeg import probe_duration_s
 from copernicus.utils.ffmpeg import run as ffmpeg_run
 from copernicus.utils.types import ProgressCallback
 
@@ -56,7 +57,7 @@ class KeyframeExtractStage:
 
         frame_files = sorted(frames_dir.glob(f"*.{self._fmt}"))
 
-        if len(frame_files) > self._max_count:
+        if len(frame_files) > self._max_count:  # 兜底：场景切换策略无法预知帧数，或时长未知/取整多出的一两帧
             step = len(frame_files) / self._max_count
             sampled = {frame_files[int(i * step)] for i in range(self._max_count)}
             for f in frame_files:
@@ -80,18 +81,26 @@ class KeyframeExtractStage:
 
         return ctx
 
+    async def _effective_interval_s(self, video_path: Path) -> float:
+        """长视频把间隔拉宽，使总帧数不超过上限——直接少抽，而不是抽完再删（省下编码与磁盘写入）。"""
+        duration = await probe_duration_s(video_path)
+        if duration is None:
+            return self._interval_s
+        return max(self._interval_s, duration / self._max_count)
+
     async def _extract_interval(self, video_path: Path, frames_dir: Path) -> dict[int, int]:
+        interval_s = await self._effective_interval_s(video_path)
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
-            "-vf", f"fps=1/{self._interval_s}",
+            "-vf", f"fps=1/{interval_s}",
             "-q:v", str(self._quality),
             str(frames_dir / f"%04d.{self._fmt}"),
         ]
         await self._run_ffmpeg(cmd)
         # 等间隔抽帧：第 n 帧位于 (n-1) * 间隔
         count = len(list(frames_dir.glob(f"*.{self._fmt}")))
-        return {n: int((n - 1) * self._interval_s * 1000) for n in range(1, count + 1)}
+        return {n: int((n - 1) * interval_s * 1000) for n in range(1, count + 1)}
 
     async def _extract_scene(self, video_path: Path, frames_dir: Path) -> dict[int, int]:
         cmd = [

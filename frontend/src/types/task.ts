@@ -4,6 +4,7 @@ import type { EvaluationResponse, EvaluationResult } from "./evaluation";
 
 export type TaskStatus =
   | "pending"
+  | "queued_asr"
   | "processing_asr"
   | "extracting_frames"
   | "scanning_visual"

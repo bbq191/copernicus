@@ -1,5 +1,7 @@
 """任务的内存态：状态集合、任务信息（含进度计算）与合成任务记录。"""
 
+import time
+
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResponse
 from copernicus.schemas.task import TaskProgress, TaskStatus
@@ -30,6 +32,7 @@ class TaskInfo:
         "eval_only",
         "audio_path",
         "parent_task_id",
+        "created_at",
     )
 
     def __init__(
@@ -53,6 +56,7 @@ class TaskInfo:
         self.eval_only = eval_only
         self.audio_path: str | None = None
         self.parent_task_id = parent_task_id
+        self.created_at = time.monotonic()  # 供任务耗时统计；不落盘，重启恢复的任务不参与统计
 
     def enter(self, status: TaskStatus) -> None:
         """切换到新阶段并清零该阶段的进度。"""
@@ -76,7 +80,7 @@ class TaskInfo:
                 percent = 5.0 + (self.current_chunk / self.total_chunks) * 15.0
             else:
                 percent = 10.0
-        elif self.status == TaskStatus.PROCESSING_ASR:
+        elif self.status in (TaskStatus.QUEUED_ASR, TaskStatus.PROCESSING_ASR):
             percent = 20.0
         elif self.status == TaskStatus.CORRECTING and self.total_chunks > 0:
             percent = 20.0 + (self.current_chunk / self.total_chunks) * 70.0

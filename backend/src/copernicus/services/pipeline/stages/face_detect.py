@@ -22,6 +22,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _typical_gap_ms(frame_results: list[dict]) -> int:
+    """关键帧的实际间隔（中位数）。抽帧间隔会随视频时长调整，不能沿用配置值。"""
+    stamps = sorted(r["timestamp_ms"] for r in frame_results)
+    gaps = sorted(b - a for a, b in zip(stamps, stamps[1:]) if b > a)
+    return gaps[len(gaps) // 2] if gaps else 0
+
+
 class FaceDetectStage:
     name = "face_detect"
 
@@ -31,7 +38,7 @@ class FaceDetectStage:
         persistence: PersistenceService,
         *,
         enabled: bool = True,
-        interval_ms: int = 2000,
+        interval_ms: int = 2000,  # 关键帧间隔未知（仅一帧）时使用
     ) -> None:
         self._detector = face_detector
         self._persistence = persistence
@@ -70,7 +77,9 @@ class FaceDetectStage:
                 on_progress(i + 1, total)
 
         # Analyze timeline
-        events = self._detector.analyze_face_timeline(frame_results, self._interval_ms)
+        events = self._detector.analyze_face_timeline(
+            frame_results, _typical_gap_ms(frame_results) or self._interval_ms
+        )
         ctx.visual_events = [e.model_dump() for e in events]
         logger.info(
             "Face detection completed: %d events from %d frames (task %s)",

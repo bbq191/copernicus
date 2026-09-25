@@ -9,6 +9,7 @@ import { errorMessage } from "../../api/errors";
 import { isAbortError } from "../../api/polling";
 import { currentTaskSignal } from "../../stores/taskScope";
 import { useTemplates } from "../../hooks/useTemplates";
+import { StructuredMinutes } from "./StructuredMinutes";
 import { IncompleteNotice } from "../shared/IncompleteNotice";
 import { evaluationIncompleteness } from "../../utils/completeness";
 import { ErrorAlert } from "../shared/ErrorAlert";
@@ -112,6 +113,7 @@ export function SummaryPanel() {
           {evaluation.formatted_content}
         </div>
       )}
+      <StructuredMinutes evaluation={evaluation} />
       <div className="divider my-0" />
       {templateSelector}
       <button

@@ -78,6 +78,13 @@ class PipelineContext:
     # Timing
     processing_times: dict[str, float] = field(default_factory=dict)
 
+    # 阶段内子状态通知（如"排队等 GPU"）；由外层注入，阶段通过 announce() 调用
+    on_phase: Callable[[str], None] | None = None
+
+    def announce(self, phase: str) -> None:
+        if self.on_phase is not None:
+            self.on_phase(phase)
+
 
 @runtime_checkable
 class Stage(Protocol):

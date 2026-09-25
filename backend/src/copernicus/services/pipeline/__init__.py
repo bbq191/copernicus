@@ -44,6 +44,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 有阶段内进度（current/total）的阶段
+_PROGRESS_STAGES = frozenset({"text_correction", "ocr_scan", "face_detect"})
+
 # Re-export data classes for backward compatibility
 __all__ = [
     "PipelineService",
@@ -165,6 +168,7 @@ class PipelineService:
             hotwords=self._merge_hotwords(hotwords),
             sentence_timestamp=True,
             visual_scan=visual_scan,
+            on_phase=on_stage_change,
         )
 
         _last_stage: list[str] = [""]
@@ -181,11 +185,8 @@ class PipelineService:
                 _last_stage[0] = stage_name
                 on_stage_change(stage_name)
 
-            if on_progress:
-                if stage_name == "text_correction":
-                    on_progress(current, total)
-                elif stage_name in ("ocr_scan", "face_detect"):
-                    on_progress(current, total)
+            if on_progress and stage_name in _PROGRESS_STAGES:
+                on_progress(current, total)
 
         ctx = await self._transcript_pipeline.run(ctx, on_stage_progress=_stage_progress)
 

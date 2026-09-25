@@ -44,6 +44,13 @@ def _ctx(tmp_path) -> PipelineContext:
     return ctx
 
 
+def _no_probe():
+    async def probe(_path):
+        return None
+
+    return patch("copernicus.services.pipeline.stages.keyframe_extract.probe_duration_s", probe)
+
+
 def _fake_ffmpeg(frames_dir: Path, count: int, stderr: str):
     async def run(cmd, timeout=600):
         for i in range(1, count + 1):
@@ -69,7 +76,42 @@ class TestTimestamps:
         ctx = _ctx(tmp_path)
         fake = _fake_ffmpeg(tmp_path / "frames", 3, "")
 
-        with patch("copernicus.services.pipeline.stages.keyframe_extract.ffmpeg_run", fake):
+        with patch("copernicus.services.pipeline.stages.keyframe_extract.ffmpeg_run", fake), _no_probe():
             result = asyncio.run(stage.execute(ctx))
 
         assert [k["timestamp_ms"] for k in result.keyframes] == [0, 10000, 20000]
+
+
+class TestIntervalCap:
+    """长视频拉宽抽帧间隔，而不是先全抽再删。"""
+
+    def _run(self, tmp_path, duration_s):
+        stage, _ = _stage(tmp_path, "interval")  # 间隔 10s，上限 100 帧
+        commands: list[list[str]] = []
+
+        async def ffmpeg(cmd, timeout=600):
+            commands.append(cmd)
+            for i in range(1, 4):
+                (tmp_path / "frames" / f"{i:04d}.jpg").write_bytes(b"jpg")
+            return 0, ""
+
+        async def probe(_path):
+            return duration_s
+
+        base = "copernicus.services.pipeline.stages.keyframe_extract"
+        with patch(f"{base}.ffmpeg_run", ffmpeg), patch(f"{base}.probe_duration_s", probe):
+            result = asyncio.run(stage.execute(_ctx(tmp_path)))
+        return commands[0], result
+
+    def test_long_video_widens_the_interval_to_stay_under_the_cap(self, tmp_path):
+        cmd, result = self._run(tmp_path, duration_s=5000)  # 5000/100 = 50s
+        assert "fps=1/50.0" in cmd
+        assert [k["timestamp_ms"] for k in result.keyframes] == [0, 50000, 100000]
+
+    def test_short_video_keeps_the_configured_interval(self, tmp_path):
+        cmd, _ = self._run(tmp_path, duration_s=300)
+        assert "fps=1/10" in cmd or "fps=1/10.0" in cmd
+
+    def test_unknown_duration_falls_back_to_the_configured_interval(self, tmp_path):
+        cmd, _ = self._run(tmp_path, duration_s=None)
+        assert "fps=1/10" in cmd or "fps=1/10.0" in cmd

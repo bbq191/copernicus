@@ -55,7 +55,9 @@ export function UploadProgress() {
       ? [...baseStages, { key: "auditing", label: "合规审核", icon: FileCheck }]
       : baseStages;
 
-  const currentStageIndex = stages.findIndex((s) => s.key === status);
+  // 排队等待语音识别与正在识别属于同一个步骤，只是提示文字不同
+  const queued = status === "queued_asr";
+  const currentStageIndex = stages.findIndex((s) => s.key === (queued ? "processing_asr" : status));
 
   return (
     <div className="flex flex-col items-center gap-4 w-full max-w-lg">
@@ -88,9 +90,11 @@ export function UploadProgress() {
           />
           <div className="flex justify-between text-xs text-base-content/60">
             <span>
-              {currentStageIndex >= 0
-                ? `${stages[currentStageIndex].label}...`
-                : "处理中..."}
+              {queued
+                ? "排队等待语音识别..."
+                : currentStageIndex >= 0
+                  ? `${stages[currentStageIndex].label}...`
+                  : "处理中..."}
             </span>
             <span>{Math.round(progress.percent)}%</span>
           </div>

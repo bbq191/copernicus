@@ -120,6 +120,17 @@ class TestCancel:
             store.cancel_task(tid)
         store._handles[tid].cancel.assert_not_called()
 
+    async def test_task_queued_for_asr_can_be_cancelled(self, tmp_path):
+        store = _store(tmp_path)
+        tid = "c" * 32
+        task = TaskInfo(tid)
+        task.status = TaskStatus.QUEUED_ASR
+        store._tasks[tid] = task
+        store._handles[tid] = MagicMock()
+
+        store.cancel_task(tid)
+        store._handles[tid].cancel.assert_called_once()
+
     def test_cancel_unknown_task(self, tmp_path):
         with pytest.raises(TaskNotFoundError):
             _store(tmp_path).cancel_task("f" * 32)
@@ -142,3 +153,33 @@ class TestCancel:
 
         assert store.get(task_id).status == TaskStatus.FAILED
         assert store._handles == {}
+
+
+class TestTaskMetrics:
+    async def test_completed_and_failed_tasks_are_counted(self, tmp_path):
+        from copernicus import metrics
+
+        store = _store(tmp_path)
+        before = {o: _finished(o) for o in ("completed", "failed")}
+
+        async with store._task_lifecycle(_register(store, "d" * 32), "ok"):
+            pass
+        with pytest.raises(AssertionError):  # 失败被生命周期吞掉，不会向外抛出
+            async with store._task_lifecycle(_register(store, "e" * 32), "boom"):
+                raise RuntimeError("boom")
+            raise AssertionError
+
+        assert _finished("completed") == before["completed"] + 1
+        assert _finished("failed") == before["failed"] + 1
+        assert any("copernicus_task_duration_seconds_count" in line for line in metrics.task_duration.samples())
+
+
+def _register(store: TaskStore, tid: str) -> str:
+    store._tasks[tid] = TaskInfo(tid)
+    return tid
+
+
+def _finished(outcome: str) -> float:
+    from copernicus import metrics
+
+    return metrics.tasks_finished._values.get((("outcome", outcome),), 0.0)

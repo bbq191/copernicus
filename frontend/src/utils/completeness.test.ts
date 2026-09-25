@@ -52,6 +52,20 @@ describe("evaluationIncompleteness", () => {
   });
 });
 
+describe("evaluationIncompleteness — structured minutes", () => {
+  const base = { title: "", formatted_content: "" };
+
+  it("is silent for ok, skipped and legacy data", () => {
+    expect(evaluationIncompleteness({ ...base, structure_status: "ok" })).toEqual([]);
+    expect(evaluationIncompleteness({ ...base, structure_status: "skipped" })).toEqual([]);
+  });
+
+  it("warns that an empty list does not mean nothing was decided", () => {
+    expect(evaluationIncompleteness({ ...base, structure_status: "failed" })[0]).toContain("提取失败");
+    expect(evaluationIncompleteness({ ...base, structure_status: "partial" })[0]).toContain("不全");
+  });
+});
+
 describe("transcriptIncompleteness", () => {
   it("is empty when every LLM batch succeeded or the data predates the statistics", () => {
     expect(transcriptIncompleteness({ total: 0, failed: 0 })).toEqual([]);

@@ -60,6 +60,10 @@ class ModelManager:
     def _use_lock(self, model_type: str) -> asyncio.Lock:
         return self._use_locks.setdefault(model_type, asyncio.Lock())
 
+    def is_busy(self, model_type: str) -> bool:
+        """该模型当前是否被占用（新的使用者需要排队）。"""
+        return self._use_lock(model_type).locked()
+
     @asynccontextmanager
     async def use(self, model_type: str, *, exclusive: bool = False, unload_after: bool = False):
         """独占使用指定模型；未加载则先加载。持有期间该模型不会被卸载。

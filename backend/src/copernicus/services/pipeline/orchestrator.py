@@ -48,6 +48,9 @@ class PipelineOrchestrator:
                     return _cb
                 stage_progress = _make_cb(stage.name, executed - 1)
 
+            if stage_progress:
+                stage_progress(0, 0)  # 阶段开始信号：让外层据此切换任务状态，不必等阶段自己上报进度
+
             start = time.perf_counter()
             try:
                 ctx = await stage.execute(ctx, on_progress=stage_progress)

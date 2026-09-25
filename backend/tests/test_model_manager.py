@@ -176,3 +176,40 @@ class TestAsrStageCancellation:
         await h
         await _tick()
         assert asr.calls == 0
+
+
+class TestAsrStageAnnouncements:
+    async def test_idle_gpu_goes_straight_to_transcribing(self, tmp_path):
+        asr = _BlockingASR()
+        asr.release.set()
+        stage, _, _ = _stage(asr)
+        phases: list[str] = []
+        ctx = _ctx(tmp_path)
+        ctx.on_phase = phases.append
+
+        await stage.execute(ctx)
+        assert phases == ["asr_transcribe"]
+
+    async def test_busy_gpu_announces_queueing_before_transcribing(self, tmp_path):
+        asr = _BlockingASR()
+        asr.release.set()
+        stage, manager, _ = _stage(asr)
+        phases: list[str] = []
+        ctx = _ctx(tmp_path)
+        ctx.on_phase = phases.append
+        holder_in, holder_out = asyncio.Event(), asyncio.Event()
+
+        async def holder():
+            async with manager.use("asr"):
+                holder_in.set()
+                await holder_out.wait()
+
+        h = asyncio.create_task(holder())
+        await holder_in.wait()
+        queued = asyncio.create_task(stage.execute(ctx))
+        await _tick()
+        assert phases == ["asr_queued"]  # 排队期间尚未开始识别
+
+        holder_out.set()
+        await asyncio.gather(h, queued)
+        assert phases == ["asr_queued", "asr_transcribe"]

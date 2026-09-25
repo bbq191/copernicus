@@ -41,5 +41,10 @@ export function evaluationIncompleteness(evaluation: EvaluationResult): string[]
       `${evaluation.degraded_chunks} 个片段的要点提炼失败，已改用原文片段代替，纪要可能不完整`,
     );
   }
+  if (evaluation.structure_status === "failed") {
+    notes.push("行动项与决议提取失败，未列出不代表会上没有");
+  } else if (evaluation.structure_status === "partial") {
+    notes.push("部分片段的行动项与决议提取失败，列表可能不全");
+  }
   return notes;
 }

@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import type { Violation } from "../../types/compliance";
 import { resolveEvidenceUrl } from "../../api/task";
-import { usePlayerStore } from "../../stores/playerStore";
 import {
   useComplianceStore,
   violationKey,
@@ -21,6 +20,7 @@ import {
 import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
+import { playViolation } from "../../utils/violationPlayback";
 import { EvidenceBlock } from "./EvidenceBlock";
 
 interface Props {
@@ -72,11 +72,7 @@ const SOURCE_CONFIG = {
   vision: { badge: "badge-accent", label: "视觉", icon: Eye },
 } as const;
 
-const LOOP_PADDING_MS = 10000;
-
 export function ViolationCard({ violation, isSelected, onClick }: Props) {
-  const seekAndPlay = usePlayerStore((s) => s.seekAndPlay);
-  const setLoopRegion = usePlayerStore((s) => s.setLoopRegion);
   const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
   const setActiveTab = useComplianceStore((s) => s.setActiveTab);
   const batchMode = useComplianceStore((s) => s.batchMode);
@@ -101,10 +97,7 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
   const isChecked = selectedIds.has(vKey);
 
   const jumpToViolation = () => {
-    const startMs = Math.max(0, violation.timestamp_ms - 5000);
-    const endMs = (violation.end_ms || violation.timestamp_ms) + LOOP_PADDING_MS;
-    setLoopRegion({ startMs, endMs });
-    seekAndPlay(startMs);
+    playViolation(violation);
     setActiveTab("transcript");
   };
 

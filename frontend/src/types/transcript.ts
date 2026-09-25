@@ -1,10 +1,3 @@
-export interface SegmentSchema {
-  text: string;
-  start_ms: number;
-  end_ms: number;
-  confidence: number;
-}
-
 export interface TranscriptEntry {
   timestamp: string;
   timestamp_ms: number;

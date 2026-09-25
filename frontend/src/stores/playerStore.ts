@@ -63,21 +63,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     if (!el) return;
     el.currentTime = ms / 1000;
     set({ currentTime: ms });
-    el.play().then(
-      () => set({ isPlaying: true }),
-      () => set({ isPlaying: false }),
-    );
+    // isPlaying 只由媒体元素的 play/pause 事件维护（useAudioSync），播放被拒绝时保持原状即可
+    el.play().catch(() => {});
   },
 
   togglePlay: () => {
-    const { mediaElement, isPlaying } = get();
-    if (!mediaElement) return;
-    if (isPlaying) {
-      mediaElement.pause();
-    } else {
-      mediaElement.play();
-    }
-    set({ isPlaying: !isPlaying });
+    const el = get().mediaElement;
+    if (!el) return;
+    if (el.paused) el.play().catch(() => {});
+    else el.pause();
   },
 
   setPlaying: (playing) => set({ isPlaying: playing }),

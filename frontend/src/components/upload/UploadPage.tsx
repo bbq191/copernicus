@@ -98,6 +98,8 @@ export function UploadPage() {
   const onFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
+      // 清空 value：取消后再选同一个文件也要能触发 change
+      e.target.value = "";
       if (file) handleFile(file);
     },
     [handleFile],

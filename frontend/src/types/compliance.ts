@@ -41,13 +41,6 @@ export interface Violation {
   original_text: string;
 }
 
-export interface EvidenceItem {
-  type: "screenshot" | "ocr_text" | "audio_clip";
-  url: string;
-  description: string;
-  timestamp_ms: number;
-}
-
 export interface ComplianceReport {
   total_rules: number;
   total_segments_checked: number;

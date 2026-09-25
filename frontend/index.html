@@ -5,6 +5,13 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Copernicus - 音视频智能听写</title>
+    <script>
+      // 首帧前应用已保存的主题，避免刷新后闪白；存储不可用时保持默认主题
+      try {
+        var t = localStorage.getItem("theme");
+        if (t === "dark" || t === "corporate") document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

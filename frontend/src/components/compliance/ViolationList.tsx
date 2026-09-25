@@ -20,6 +20,7 @@ import { complianceExportUrl } from "../../api/compliance";
 import { useTaskStore } from "../../stores/taskStore";
 import { IncompleteNotice } from "../shared/IncompleteNotice";
 import { reportIncompleteness } from "../../utils/completeness";
+import { readStorage, writeStorage } from "../../utils/safeStorage";
 
 const SEVERITY_OPTIONS = [
   { value: "all", label: "全部" },
@@ -46,7 +47,7 @@ const KBD_DISMISSED_KEY = "copernicus:kbd-hints-dismissed";
 
 export function ViolationList() {
   const [kbdDismissed, setKbdDismissed] = useState(
-    () => localStorage.getItem(KBD_DISMISSED_KEY) === "1",
+    () => readStorage(KBD_DISMISSED_KEY) === "1",
   );
   const report = useComplianceStore((s) => s.report);
   const severityFilter = useComplianceStore((s) => s.severityFilter);
@@ -154,7 +155,7 @@ export function ViolationList() {
             className="ml-auto btn btn-ghost btn-xs"
             onClick={() => {
               setKbdDismissed(true);
-              localStorage.setItem(KBD_DISMISSED_KEY, "1");
+              writeStorage(KBD_DISMISSED_KEY, "1");
             }}
           >
             <X className="h-3 w-3" />

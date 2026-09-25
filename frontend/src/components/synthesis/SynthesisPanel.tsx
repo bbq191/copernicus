@@ -162,8 +162,8 @@ export function SynthesisPanel() {
                   className="range range-primary range-xs w-full"
                 />
                 <div className="flex justify-between text-xs text-base-content/50">
-                  <span>{formatTime(currentTime)}</span>
-                  <span>{formatTime(duration)}</span>
+                  <span>{formatTime(currentTime * 1000)}</span>
+                  <span>{formatTime(duration * 1000)}</span>
                 </div>
               </div>
             </div>
@@ -171,7 +171,7 @@ export function SynthesisPanel() {
             {(durationMs !== null || synthesisMs !== null) && (
               <div className="text-xs text-base-content/40 flex justify-between px-1">
                 {durationMs !== null && (
-                  <span>时长 {formatTime(durationMs / 1000)}</span>
+                  <span>时长 {formatTime(durationMs)}</span>
                 )}
                 {synthesisMs !== null && (
                   <span>耗时 {(synthesisMs / 1000).toFixed(1)}s</span>

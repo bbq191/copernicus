@@ -39,7 +39,6 @@ export function useExport() {
         useToastStore
           .getState()
           .addToast("error", err instanceof Error ? err.message : "导出失败");
-        throw err;
       } finally {
         setIsExporting(false);
       }

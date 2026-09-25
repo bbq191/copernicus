@@ -24,20 +24,20 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
 
   const handleRerunTranscript = useCallback(async () => {
     if (!taskId) return;
-    // 后端已清除旧的纪要与合规结果，前端同步清空下游状态
-    resetWorkspaceStores();
 
     try {
       await rerunTranscript(taskId);
+      // 请求成功后才清空：失败时服务端数据没动，本地内容应保留。
+      // 后端已清除旧的纪要与合规结果，前端同步清空下游状态
+      resetWorkspaceStores();
       // switch workspace back to pending + enable polling
       const store = useTaskStore.getState();
       store.setTask(taskId, "pending");
       store.setPollEnabled(true);
       useToastStore.getState().addToast("info", "重新转写已启动");
     } catch (err) {
-      useTaskStore.getState().setError(
-        err instanceof Error ? err.message : "重新转写失败",
-      );
+      // 服务端状态未变，用 toast 提示即可，不应把整个工作区切成失败页
+      useToastStore.getState().addToast("error", err instanceof Error ? err.message : "重新转写失败");
     }
   }, [taskId]);
 

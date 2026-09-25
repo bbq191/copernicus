@@ -17,7 +17,8 @@ export function MediaPlayer() {
   const activeRef = isVideo ? videoRef : audioRef;
 
   useAudioSync(activeRef);
-  useWaveSurfer(waveformRef, isVideo ? { current: null } : audioRef);
+  // 视频没有波形；用 enabled 关闭而不是每次渲染传一个新的假 ref
+  useWaveSurfer(waveformRef, audioRef, !isVideo);
 
   if (!mediaSrc) return null;
 

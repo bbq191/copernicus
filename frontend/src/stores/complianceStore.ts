@@ -191,10 +191,13 @@ export const useComplianceStore = create<ComplianceState>((set, get) => {
     clearSelection: () => set({ selectedIds: new Set() }),
 
     batchSetStatus: (status) => {
-      const { selectedIds } = get();
-      if (selectedIds.size === 0) return;
-      const count = selectedIds.size;
-      applyReview(selectedIds, status);
+      // 只作用于"当前筛选下可见且已勾选"的条目：与界面显示的"已选 N 项"一致，
+      // 切换筛选后残留的隐藏勾选不会被误操作
+      const visible = new Set(getFilteredViolations(get()).map((v) => v.id));
+      const targets = new Set([...get().selectedIds].filter((id) => visible.has(id)));
+      if (targets.size === 0) return;
+      const count = targets.size;
+      applyReview(targets, status);
       set({ selectedIds: new Set(), batchMode: false });
       useToastStore.getState().addToast("info", `已批量更新 ${count} 条记录`);
     },

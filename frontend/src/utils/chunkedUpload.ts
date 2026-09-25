@@ -8,6 +8,7 @@ const MAX_CHUNK_RETRIES = 3;
 interface ChunkUploadOptions {
     hotwords?: string;
     visualScan?: boolean;
+    templateId?: string;
     onProgress?: (received: number, total: number) => void;
 }
 
@@ -28,6 +29,7 @@ function buildQueryParams(file: File, options?: ChunkUploadOptions): URLSearchPa
         filename: file.name,
         total_size: String(file.size),
         visual_scan: String(options?.visualScan ?? false),
+        template_id: options?.templateId ?? "universal",
     });
     if (options?.hotwords) {
         try {

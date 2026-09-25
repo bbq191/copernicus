@@ -31,6 +31,7 @@ async def query_upload(
     hotwords: Annotated[list[str] | None, Query()] = None,
     visual_scan: bool = False,
     generate_summary: bool = True,
+    template_id: str = "universal",
     store: TaskStore = Depends(get_task_store),
     upload_sessions: UploadSessionService = Depends(get_upload_session_service),
 ) -> UploadQueryResponse:
@@ -64,6 +65,7 @@ async def query_upload(
         hotwords=hotwords,
         visual_scan=visual_scan,
         generate_summary=generate_summary,
+        template_id=template_id,
     )
     return UploadQueryResponse(offset=offset, complete=False)
 
@@ -179,6 +181,7 @@ async def _finalize_upload(
         file_hash=file_hash,
         visual_scan=session["visual_scan"],
         generate_summary=session.get("generate_summary", True),
+        template_id=session.get("template_id", "universal"),
     )
     upload_sessions.delete_session(file_hash)
     return task_id

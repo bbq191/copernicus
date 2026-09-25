@@ -215,3 +215,28 @@ describe("batchSetStatus", () => {
     expect(vi.mocked(persistViolationStatuses).mock.calls[0][1].map((u) => u.violation_id)).toEqual(["a", "c"]);
   });
 });
+
+describe("batchSetStatus with a narrowed filter", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(persistViolationStatuses).mockReset().mockResolvedValue(90);
+    useTaskStore.setState({ taskId: "task-1" });
+    useComplianceStore.getState().reset();
+    useComplianceStore
+      .getState()
+      .setReport(report([violation("a", { severity: "high" }), violation("b", { severity: "low" })]), []);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("ignores checked items that the current filter hides", () => {
+    const store = useComplianceStore.getState();
+    store.toggleBatchMode();
+    store.selectAll(); // a、b 都被勾选
+    useComplianceStore.getState().setSeverityFilter("high"); // 之后筛选只剩 a
+
+    useComplianceStore.getState().batchSetStatus("rejected");
+
+    const statuses = useComplianceStore.getState().report!.violations.map((v) => v.status);
+    expect(statuses).toEqual(["rejected", "pending"]);
+  });
+});

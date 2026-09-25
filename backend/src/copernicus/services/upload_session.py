@@ -60,6 +60,7 @@ class UploadSessionService:
         hotwords: list[str] | None = None,
         visual_scan: bool = False,
         generate_summary: bool = True,
+        template_id: str = "universal",
     ) -> int:
         """查找或创建会话，返回当前已接收字节数（0 = 新会话）。"""
         meta_path = self._meta_path(file_hash)
@@ -70,6 +71,7 @@ class UploadSessionService:
                 meta["hotwords"] = hotwords or []
                 meta["visual_scan"] = visual_scan
                 meta["generate_summary"] = generate_summary
+                meta["template_id"] = template_id
                 self._write_meta(meta_path, meta)
             except (json.JSONDecodeError, OSError):
                 pass
@@ -87,6 +89,7 @@ class UploadSessionService:
             "hotwords": hotwords or [],
             "visual_scan": visual_scan,
             "generate_summary": generate_summary,
+            "template_id": template_id,
         }
         self._write_meta(meta_path, meta)
         logger.info("New session %.8s total=%d bytes", file_hash, total_size)

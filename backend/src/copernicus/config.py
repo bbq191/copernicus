@@ -100,10 +100,10 @@ class Settings(BaseSettings):
 
     # Task execution
     task_timeout_seconds: int = Field(default=3600, ge=60)   # 单任务超时（秒），防止 ASR/LLM 卡住
-    task_max_active: int = Field(default=5, ge=0)            # 排队+运行中的音视频任务上限，超出返回 429；0 = 不限制。ASR 串行，超过约 5 个后末尾任务会因排队而触发超时；每个排队任务还在内存中持有整个文件
+    task_max_active: int = Field(default=5, ge=0)            # 排队+运行中的音视频任务上限，超出返回 429；0 = 不限制。ASR 串行，超过约 5 个后末尾任务可能因排队而触发超时
     task_max_in_memory: int = Field(default=500, ge=1)       # 内存中最大任务数，超出时淘汰最早的已完成任务
 
-    # VRAM budget (ModelManager 热插拔阈值)
+    # VRAM 预算（GB）：仅用于健康检查展示已用/预算，不做强制约束；互斥靠 ModelManager 的使用锁保证
     vram_budget_gb: float = 12.0
 
     # Lifecycle (原始媒体文件生命周期)

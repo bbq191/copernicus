@@ -140,3 +140,34 @@ class TestRewritePrompt:
     @pytest.mark.parametrize("energy,marker", [(1, "平静"), (4, "口语化"), (7, "热情"), (9, "带货主播")])
     def test_style_follows_energy_level(self, energy, marker):
         assert marker in build_rewrite_prompt("原文", energy)
+
+
+class TestSynthesizeRoute:
+    def test_request_body_is_optional(self, tmp_path):
+        from unittest.mock import AsyncMock
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from copernicus.routers.synthesis import router
+
+        persistence = PersistenceService(tmp_path)
+        persistence.save_data(
+            TID, "transcript.json", _transcript().model_dump(),
+        )
+        store = MagicMock(spec=TaskStore)
+        store.persistence = persistence
+        store.has_active_llm_tasks.return_value = False
+        service = MagicMock(spec=SynthesisService)
+        service.start = AsyncMock()
+
+        app = FastAPI()
+        app.state.task_store = store
+        app.state.synthesis = service
+        app.include_router(router)
+        client = TestClient(app)
+
+        assert client.post(f"/api/v1/tasks/{TID}/synthesize").status_code == 202
+        assert client.post(f"/api/v1/tasks/{TID}/synthesize", json={"voice_map": {"A": "7777"}}).status_code == 202
+        overrides = [c.args[2] for c in service.start.await_args_list]
+        assert overrides == [None, {"A": "7777"}]

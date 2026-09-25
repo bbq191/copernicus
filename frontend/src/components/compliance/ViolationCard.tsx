@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 import { Clock, Check, X, RotateCcw, ExternalLink } from "lucide-react";
 import type { Violation } from "../../types/compliance";
 import { resolveEvidenceUrl } from "../../api/task";
@@ -35,6 +35,12 @@ export const ViolationCard = memo(function ViolationCard({ violation, isSelected
   const SourceIcon = sourceConfig.icon;
 
   const handleCardClick = () => selectViolation(isSelected ? null : violation);
+
+  // 键盘上下键切换选中项时，让它滚入可视范围
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isSelected) cardRef.current?.scrollIntoView({ block: "nearest" });
+  }, [isSelected]);
 
   const jumpToViolation = () => {
     playViolation(violation);
@@ -77,6 +83,7 @@ export const ViolationCard = memo(function ViolationCard({ violation, isSelected
 
   return (
     <div
+      ref={cardRef}
       className={`card card-compact border cursor-pointer transition-all ${borderClass} ${
         isSelected ? `${config.bg} ring-2 ring-primary` : "hover:bg-base-200"
       } ${!isPending ? "opacity-75" : ""}`}

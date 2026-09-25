@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useTaskStore } from "../stores/taskStore";
 import { usePlayerStore } from "../stores/playerStore";
 import { hydrateWorkspace } from "../stores/hydrateWorkspace";
@@ -65,8 +65,9 @@ export function WorkspacePage() {
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-8">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-8">
         <ErrorAlert message={error} />
+        <Link to="/" className="btn btn-sm btn-ghost">返回首页</Link>
       </div>
     );
   }

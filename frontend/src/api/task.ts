@@ -48,11 +48,11 @@ export async function submitStandardMinutesTask(
   const hash = await computeFileSHA256(file);
 
   // 大文件：分片上传（断点续传）
-  // 注：分片路径服务端固定使用 universal 模板，完成后可在摘要面板切换重新评估
   if (file.size >= CHUNKED_THRESHOLD) {
     return chunkedUploadFile(file, hash, {
       hotwords,
       visualScan,
+      templateId: options?.templateId,
       onProgress: options?.onProgress,
     });
   }

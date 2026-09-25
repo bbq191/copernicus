@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/v1", tags=["音频重塑"])
 )
 async def synthesize_task_audio(
     task_id: str,
-    request: SynthesisRequest,
+    request: SynthesisRequest | None = None,
     store: TaskStore = Depends(get_task_store),
     synthesis: SynthesisService | None = Depends(get_synthesis_service),
 ) -> SynthesisStatusResponse:
@@ -47,7 +47,7 @@ async def synthesize_task_audio(
     if not transcript.transcript:
         raise HTTPException(status_code=422, detail="Transcript is empty")
 
-    await synthesis.start(task_id, transcript, request.voice_map)
+    await synthesis.start(task_id, transcript, request.voice_map if request else None)
     return SynthesisStatusResponse(status="running")
 
 

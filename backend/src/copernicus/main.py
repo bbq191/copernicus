@@ -1,97 +1,29 @@
 import asyncio
 import logging
-import logging.config
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
-from pathlib import Path
 
 # 修复 Windows 下 joblib/loky 物理核心检测问题 (说话人分离聚类时触发)
 # 必须在 joblib 导入前设置，禁用物理核心检测
-os.environ["LOKY_MAX_CPU_COUNT"] = str(os.cpu_count() or 8)
-os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 8)
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 8))
+# setdefault：运维可在 systemd/环境中下调线程数，避免多核机器上 OpenMP 空转自旋耗电
+os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 8))
 # 必须在 CUDA 首次初始化前设置，允许分配器跨非连续内存页组合大块分配，消除碎片化 OOM
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 # 统一模型目录：必须在 modelscope / funasr 导入前设置，否则 ModelScope 的下载缓存路径会错误
-# 优先使用 OS 环境变量（生产部署可覆盖），默认指向 backend/models/funasr/
-_default_funasr_cache = str(Path(__file__).resolve().parents[2] / "models" / "funasr")
-os.environ.setdefault("MODELSCOPE_CACHE", _default_funasr_cache)
+# 优先使用 OS 环境变量（生产部署可覆盖），默认跟随 MODELS_DIR 配置（models/funasr/）
+from copernicus.config import Settings, settings
 
-def _flag_from_env_or_dotenv(key: str) -> bool:
-    """读取布尔环境变量，OS 环境优先，其次从 backend/.env 逐行解析。
+os.environ.setdefault("MODELSCOPE_CACHE", str(settings.funasr_cache_dir.resolve()))
 
-    pydantic-settings 尚未初始化时使用，仅用于日志配置。
-    """
-    val = os.environ.get(key)
-    if val is None:
-        env_path = Path(__file__).resolve().parents[2] / ".env"
-        try:
-            for line in env_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith(f"{key}="):
-                    val = line.split("=", 1)[1].strip().strip("'\"")
-                    break
-        except OSError:
-            pass
-    return str(val).lower() in ("1", "true", "yes") if val else False
+from copernicus.logging_setup import setup_logging_from_environment
 
-
-from copernicus.request_context import install_log_record_factory
-
-install_log_record_factory()  # 必须早于任何日志格式配置：格式串引用 request_id
-
-
-def _apply_file_logging(log_file: Path) -> None:
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "default": {
-                "format": "%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s: %(message)s",
-                "datefmt": "%Y-%m-%d %H:%M:%S",
-            }
-        },
-        "handlers": {
-            "file": {
-                "class": "logging.FileHandler",
-                "filename": str(log_file),
-                "encoding": "utf-8",
-                "formatter": "default",
-            }
-        },
-        "root": {"level": "INFO", "handlers": ["file"]},
-        "loggers": {
-            "uvicorn":        {"handlers": ["file"], "propagate": False, "level": "INFO"},
-            "uvicorn.access": {"handlers": ["file"], "propagate": False, "level": "INFO"},
-            "uvicorn.error":  {"handlers": ["file"], "propagate": False, "level": "INFO"},
-            "watchfiles":     {"handlers": ["file"], "propagate": False, "level": "WARNING"},
-        },
-    })
-
-
-# 优先级：
-#   1. COPERNICUS_LOG_FILE  — 由 run_dev.py 设置，reload worker 复用同一文件
-#   2. LOG_TO_FILE=true     — 直接用 uvicorn 命令时的兼容模式（每次 worker 重启新建文件）
-#   3. 无配置               — 生产环境，stdout 由 journald 接管
-if _lf := os.environ.get("COPERNICUS_LOG_FILE"):
-    _apply_file_logging(Path(_lf))
-elif _flag_from_env_or_dotenv("LOG_TO_FILE"):
-    _log_dir = Path(__file__).resolve().parents[3] / "logs"
-    _log_dir.mkdir(parents=True, exist_ok=True)
-    _apply_file_logging(_log_dir / f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log")
-else:
-    # 生产环境（systemctl）：stdout/stderr 由 journald 接管，直接输出即可
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+setup_logging_from_environment()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 
-from copernicus.config import Settings, settings
 from copernicus.error_handlers import register_error_handlers
 from copernicus.request_context import REQUEST_ID_HEADER, RequestIdMiddleware
 from copernicus.services.audio import AudioService

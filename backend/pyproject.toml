@@ -60,3 +60,4 @@ select = ["E4", "E7", "E9", "F"]
 # 这两处必须先设置环境变量/日志，再导入 torch、funasr 等（导入顺序是有意的）
 "src/copernicus/main.py" = ["E402"]
 "src/copernicus/services/tts.py" = ["E402"]
+"run_dev.py" = ["E402"]

@@ -20,7 +20,7 @@ import { useTranscriptStore } from "../../stores/transcriptStore";
 import { usePlayerStore } from "../../stores/playerStore";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
-import type { ViolationSource } from "../../types/compliance";
+import type { Violation, ViolationSource } from "../../types/compliance";
 
 const SEVERITY_CONFIG = {
   high: { icon: AlertTriangle, label: "高风险", color: "text-error" },
@@ -38,14 +38,18 @@ const CONTEXT_RANGE = 3;
 
 export function EvidenceDetailPanel() {
   const violation = useComplianceStore((s) => s.evidenceDetail);
+  // 以违规 id 作为 key：切换条目时重置备注等本地状态
+  return violation ? <EvidenceDetail key={violation.id} violation={violation} /> : null;
+}
+
+function EvidenceDetail({ violation }: { violation: Violation }) {
   const closeEvidenceDetail = useComplianceStore((s) => s.closeEvidenceDetail);
   const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
   const seekAndPlay = usePlayerStore((s) => s.seekAndPlay);
   const taskId = useTaskStore((s) => s.taskId);
   const [imageZoom, setImageZoom] = useState(false);
-
-  if (!violation) return null;
+  const [note, setNote] = useState(violation.review_note ?? "");
 
   const imageUrl = resolveEvidenceUrl(violation.evidence_url, taskId);
 
@@ -71,12 +75,12 @@ export function EvidenceDetailPanel() {
   })();
 
   const handleConfirm = () => {
-    setViolationStatus(violation, "confirmed");
+    setViolationStatus(violation, "confirmed", note);
     useToastStore.getState().addToast("info", "已确认违规");
   };
 
   const handleReject = () => {
-    setViolationStatus(violation, "rejected");
+    setViolationStatus(violation, "rejected", note);
     useToastStore.getState().addToast("info", "已标记为误报");
   };
 
@@ -235,7 +239,29 @@ export function EvidenceDetailPanel() {
       </div>
 
       {/* Action bar */}
-      <div className="p-3 border-t border-base-300 shrink-0">
+      <div className="p-3 border-t border-base-300 shrink-0 flex flex-col gap-2">
+        {isPending ? (
+          <textarea
+            className="textarea textarea-bordered textarea-sm w-full"
+            rows={2}
+            maxLength={500}
+            placeholder="复核备注（可选，如误报原因）"
+            aria-label="复核备注"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        ) : (
+          (violation.review_note || violation.reviewed_at) && (
+            <div className="text-xs text-base-content/60 bg-base-200 rounded p-2">
+              {violation.review_note && <p>备注：{violation.review_note}</p>}
+              {violation.reviewed_at && (
+                <p className="text-base-content/40">
+                  复核于 {new Date(violation.reviewed_at).toLocaleString("zh-CN", { hour12: false })}
+                </p>
+              )}
+            </div>
+          )
+        )}
         {isPending ? (
           <div className="flex gap-2">
             <button

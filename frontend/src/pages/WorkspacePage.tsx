@@ -6,6 +6,7 @@ import { useTranscriptStore } from "../stores/transcriptStore";
 import { useEvaluationStore } from "../stores/evaluationStore";
 import { useComplianceStore } from "../stores/complianceStore";
 import { useSynthesisStore } from "../stores/synthesisStore";
+import { resetWorkspaceStores } from "../stores/resetWorkspace";
 import { useTaskPolling } from "../hooks/useTaskPolling";
 import { getTaskResults, getTaskMediaUrl } from "../api/task";
 import { AppLayout } from "../components/layout/AppLayout";
@@ -27,6 +28,7 @@ export function WorkspacePage() {
 
   useEffect(() => {
     if (taskId && taskId !== currentTaskId) {
+      resetWorkspaceStores();
       setTask(taskId, "pending");
     }
   }, [taskId, currentTaskId, setTask]);

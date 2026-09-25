@@ -82,20 +82,12 @@ else:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import JSONResponse
 
 from copernicus.config import Settings, settings
-from copernicus.exceptions import (
-    AudioNotFoundError,
-    CopernicusError,
-    InvalidIdentifierError,
-    ServiceNotConfiguredError,
-    TaskBusyError,
-    TaskNotFoundError,
-)
+from copernicus.error_handlers import register_error_handlers
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.lifecycle import LifecycleService
@@ -297,32 +289,4 @@ app.include_router(evaluation.router)
 app.include_router(compliance.router)
 app.include_router(synthesis_router.router)
 
-
-@app.exception_handler(TaskNotFoundError)
-async def task_not_found_handler(request: Request, exc: TaskNotFoundError):
-    return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-
-@app.exception_handler(AudioNotFoundError)
-async def audio_not_found_handler(request: Request, exc: AudioNotFoundError):
-    return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-
-@app.exception_handler(TaskBusyError)
-async def task_busy_handler(request: Request, exc: TaskBusyError):
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-
-@app.exception_handler(ServiceNotConfiguredError)
-async def service_not_configured_handler(request: Request, exc: ServiceNotConfiguredError):
-    return JSONResponse(status_code=503, content={"detail": str(exc)})
-
-
-@app.exception_handler(CopernicusError)
-async def copernicus_error_handler(request: Request, exc: CopernicusError):
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
-
-
-@app.exception_handler(InvalidIdentifierError)
-async def invalid_identifier_handler(request: Request, exc: InvalidIdentifierError):
-    return JSONResponse(status_code=422, content={"detail": str(exc)})
+register_error_handlers(app)

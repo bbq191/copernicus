@@ -12,7 +12,6 @@ import { formatTime } from "./formatTime";
 
 export async function exportToWord(
   blocks: MergedBlock[],
-  speakerMap: Record<string, string>,
   mode: "original" | "corrected" = "corrected",
   title = "转录文稿",
 ) {
@@ -26,7 +25,7 @@ export async function exportToWord(
   ];
 
   for (const block of blocks) {
-    const speaker = speakerMap[block.speaker] ?? block.speaker;
+    const speaker = block.speaker;
     const time = formatTime(block.startMs);
 
     children.push(

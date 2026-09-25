@@ -29,6 +29,10 @@ export interface Violation {
   // 认知审计推理链
   reasoning?: string;
 
+  // 人工复核留痕（旧数据可能缺失）
+  reviewed_at?: string | null;
+  review_note?: string | null;
+
   // 音频/文本
   timestamp: string;
   timestamp_ms: number;

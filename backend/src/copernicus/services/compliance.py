@@ -250,13 +250,11 @@ class ComplianceService:
         if on_progress:
             on_progress(total_steps, total_steps)
 
-        score = _calculate_score(len(rules), all_violations)
-
         source_counts: dict[str, int] = {}
         for v in all_violations:
             source_counts[v.source] = source_counts.get(v.source, 0) + 1
 
-        return ComplianceReport(
+        report = ComplianceReport(
             total_rules=len(rules),
             total_segments_checked=len(transcript_entries),
             total_segments=total_segments,
@@ -265,9 +263,10 @@ class ComplianceService:
             failed_chunks=failed_chunks,
             violations=all_violations,
             summary=summary,
-            compliance_score=score,
             source_counts=source_counts,
         )
+        report.recalculate_score()
+        return report
 
     # ------------------------------------------------------------------ #
     #  内部方法
@@ -563,19 +562,6 @@ def _ms_to_timestamp(ms: int) -> str:
     minutes = total_s // 60
     seconds = total_s % 60
     return f"{minutes:02d}:{seconds:02d}"
-
-
-def _calculate_score(total_rules: int, violations: list[Violation]) -> float:
-    """计算合规评分。基础分 100，按 severity 扣分。"""
-    deduction = 0.0
-    for v in violations:
-        if v.severity == "high":
-            deduction += 15.0
-        elif v.severity == "medium":
-            deduction += 8.0
-        else:
-            deduction += 3.0
-    return max(0.0, round(100.0 - deduction, 1))
 
 
 def _parse_timestamp_to_ms(ts: str) -> int:

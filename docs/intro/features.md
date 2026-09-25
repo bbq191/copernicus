@@ -358,10 +358,11 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | 句子级时间对齐 | 每个句子可独立点击跳转到对应音频位置 |
 | 自动滚动 | 播放时自动滚动到当前位置，二分查找定位 |
 | 原文/修正文切换 | 一键切换显示 ASR 原始文本或纠正后文本 |
-| 文本编辑 | 支持在线编辑纠正后的文本 |
+| 文本校对 | 双击句子即可编辑修正文（Enter/失焦保存，Esc 取消），修订实时保存到服务器并进入后续导出；仅修正文模式可编辑 |
 | 全文搜索 | 实时搜索匹配并高亮显示 |
 | 说话人筛选 | 按说话人显隐过滤，专注特定发言者 |
-| 说话人重命名 | 批量将 spk_0 等标签重命名为具体姓名 |
+| 说话人重命名与合并 | 将 Speaker N 重命名为真实姓名并保存到服务器；多个说话人改成同一名称即合并 |
+| 历史任务 | 首页列出历史任务（状态、时间），支持重命名与彻底删除；服务重启后被中断的任务显示为失败并可重新转写 |
 | 重新转写 | 支持修改热词后重新执行 ASR + 纠正 |
 | 多格式导出 | 支持导出为 SRT 字幕 / Word 文档 / PDF 文档 |
 
@@ -405,7 +406,10 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | AI 推理展示 | 可折叠查看 CoT 完整判定逻辑 |
 | 证据展示 | 语音原文引用 / OCR 文本块+截图 / 视觉截图+描述 |
 | 规则引用 | 带 tooltip 展示完整规则内容 |
-| 状态操作 | 确认违规 / 误报忽略 / 重新审核（重置为待审）|
+| 状态操作 | 确认违规 / 误报忽略 / 重新审核（重置为待审），可附复核备注；记录复核时间 |
+| 评分重算 | 合规评分随复核实时重算，已驳回的条目不再扣分 |
+| 完整性提示 | 文本被截断或审核分块失败时，结果顶部显示警示条，避免把部分审核误读为"无违规" |
+| 报告导出 | 导出 Excel（概览 + 违规明细，含复核状态、时间与备注）|
 | 批量操作 | B 键开关批量模式，Ctrl+A 全选，批量确认/忽略 |
 | 证据详情面板 | 右侧 380px 抽屉，展示完整证据信息 + 截图缩放 + 转录上下文 |
 | 时间跳转 | 点击违规时间戳自动跳转播放器并设置循环区间 |
@@ -478,7 +482,11 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | GET | /api/v1/tasks/{task_id}/results | 获取任务完整结果（转写+评估+合规+is_synthesis）|
 | GET | /api/v1/tasks/{task_id}/media | 获取原始媒体文件（视频优先，回退音频）|
 | GET | /api/v1/tasks/{task_id}/frames/{filename} | 获取关键帧图片 |
-| DELETE | /api/v1/tasks/{task_id} | 作废任务缓存（不删除磁盘文件）|
+| GET | /api/v1/tasks | 历史任务列表 |
+| PATCH | /api/v1/tasks/{task_id} | 重命名任务 |
+| DELETE | /api/v1/tasks/{task_id} | 作废任务缓存；`purge=true` 时彻底删除任务及磁盘文件 |
+| PATCH | /api/v1/tasks/{task_id}/transcript | 人工修订转写文本 |
+| PATCH | /api/v1/tasks/{task_id}/speakers | 重命名或合并说话人 |
 | POST | /api/v1/tasks/{task_id}/rerun-transcript | 重新转写 |
 | POST | /api/v1/tasks/{task_id}/synthesize | 触发 TTS 多说话人音频合成 |
 | GET | /api/v1/tasks/{task_id}/synthesis/status | 查询合成任务状态 |
@@ -488,7 +496,8 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | POST | /api/v1/evaluate/text/async | 提交纯文本评估任务（支持 template_id）|
 | POST | /api/v1/evaluate/transcript/async | 接收第三方转写结果并评估 |
 | POST | /api/v1/tasks/compliance_audit | 提交合规审核任务 |
-| PATCH | /api/v1/tasks/{task_id}/compliance/violations | 批量更新违规审核状态 |
+| PATCH | /api/v1/tasks/{task_id}/compliance/violations | 批量更新违规审核状态（含复核备注，返回重算评分）|
+| GET | /api/v1/tasks/{task_id}/compliance/export | 导出合规报告 Excel |
 | GET | /api/v1/health | 服务健康检查（组件状态 + 任务统计 + VRAM 水位，unhealthy 时 503）|
 
 ---

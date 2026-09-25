@@ -1,6 +1,11 @@
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+
+# 各严重度的扣分；被人工驳回的条目不扣分
+SEVERITY_PENALTY: dict[str, float] = {"high": 15.0, "medium": 8.0, "low": 3.0}
 
 
 class ComplianceRule(BaseModel):
@@ -38,6 +43,23 @@ class Violation(BaseModel):
     # 认知审计（CoT 推理链）
     reasoning: str | None = None
 
+    # 人工复核留痕
+    reviewed_at: str | None = None  # 最近一次确认/驳回的 UTC 时间（ISO 8601）
+    review_note: str | None = None
+
+    def apply_review(
+        self, status: Literal["pending", "confirmed", "rejected"], note: str | None = None
+    ) -> None:
+        """记录一次人工复核：回到待审会清空留痕，确认/驳回则写入时间与（可选）备注。"""
+        self.status = status
+        if status == "pending":
+            self.reviewed_at = None
+            self.review_note = None
+            return
+        self.reviewed_at = datetime.now(timezone.utc).isoformat()
+        if note is not None:
+            self.review_note = note.strip() or None
+
 
 class ComplianceReport(BaseModel):
     """Full compliance audit report."""
@@ -53,6 +75,14 @@ class ComplianceReport(BaseModel):
     summary: str = ""
     compliance_score: float = 100.0
     source_counts: dict[str, int] = Field(default_factory=dict)
+
+    def recalculate_score(self) -> float:
+        """基础分 100，按严重度扣分，已驳回的条目不计入；写回并返回新分数。"""
+        deduction = sum(
+            SEVERITY_PENALTY[v.severity] for v in self.violations if v.status != "rejected"
+        )
+        self.compliance_score = max(0.0, round(100.0 - deduction, 1))
+        return self.compliance_score
 
     @model_validator(mode="after")
     def _assign_violation_ids(self) -> "ComplianceReport":

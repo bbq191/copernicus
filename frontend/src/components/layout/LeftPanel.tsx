@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Sparkles, ShieldCheck, Mic2 } from "lucide-react";
 import { MediaPlayer } from "../player/MediaPlayer";
 import { SummaryPanel } from "../summary/SummaryPanel";
@@ -13,12 +13,14 @@ export function LeftPanel() {
   const report = useComplianceStore((s) => s.report);
   const hasSynthesis = useSynthesisStore((s) => s.hasSynthesis);
 
-  const [synthesisOpen, setSynthesisOpen] = useState(false);
+  const [synthesisOpen, setSynthesisOpen] = useState(hasSynthesis);
+  const [prevHasSynthesis, setPrevHasSynthesis] = useState(hasSynthesis);
 
-  // 检测到已有合成音频时自动展开面板
-  useEffect(() => {
+  // 检测到已有合成音频时自动展开面板（渲染期同步状态，避免在 effect 中 setState）
+  if (hasSynthesis !== prevHasSynthesis) {
+    setPrevHasSynthesis(hasSynthesis);
     if (hasSynthesis) setSynthesisOpen(true);
-  }, [hasSynthesis]);
+  }
 
   const evaluationBadge = evaluation ? "已生成" : null;
   const complianceBadge = report

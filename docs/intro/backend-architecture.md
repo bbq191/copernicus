@@ -33,12 +33,13 @@ backend/src/copernicus/
   config.py               # pydantic-settings 配置（含 models_dir 派生路径等计算属性）
   dependencies.py         # FastAPI Depends 提供器（从 app.state 取服务实例）
   exceptions.py           # 自定义异常（CopernicusError 基类 + 子类）
+  error_handlers.py       # 领域异常 → HTTP 状态码的统一映射（404 / 409 / 422 / 503 / 500）
   routers/                # FastAPI 路由层
-    task.py               #   任务管理（上传/轮询/结果/重跑/媒体）
+    task.py               #   任务管理（列表/重命名/删除/上传/轮询/结果/重跑/媒体/转写校对）
     synthesis.py          #   TTS 音频合成与下载
     upload.py             #   分片上传（断点续传）
     evaluation.py         #   文本评估 + 模板管理
-    compliance.py         #   合规审核
+    compliance.py         #   合规审核（提交/复核/导出）
     transcription.py      #   /health 健康检查
   services/               # 业务服务层
     pipeline/             #   Pipeline 插件化编排
@@ -65,6 +66,8 @@ backend/src/copernicus/
     hotword_replacer.py   #   FlashText 热词替换
     evaluator.py          #   Map-Reduce 内容评估（模板驱动）
     compliance.py         #   多源合规审核
+    compliance_export.py  #   合规报告 Excel 导出
+    transcript_edit.py    #   转写人工校对（文本修订、说话人改名/合并，纯函数）
     compliance_filters.py #   后处理过滤器链
     rule_registry.py      #   结构化规则注册表
     llm/                  #   LLM 客户端包：base（重试 + 并发）/ ollama / openai_compat / 工厂
@@ -164,13 +167,17 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
 |------|------|------|
 | /api/v1/tasks/standard_minutes | POST | **主入口**：上传文件，ASR + 纠错 + 摘要全流程 |
 | /api/v1/tasks/transcript | POST | 轻量入口：仅 ASR + 纠错，不含摘要 |
+| /api/v1/tasks | GET | 历史任务列表（按创建时间倒序，含运行中与失败的任务，`limit` 上限 500）|
 | /api/v1/tasks/lookup | GET | 按文件 SHA-256 查询已有任务（上传前预检）|
 | /api/v1/tasks/{task_id} | GET | 查询任务状态和进度（前端轮询）|
+| /api/v1/tasks/{task_id} | PATCH | 重命名任务（显示名称）|
 | /api/v1/tasks/{task_id}/results | GET | 获取完整持久化结果 |
 | /api/v1/tasks/{task_id}/media | GET | 获取原始媒体文件（视频优先，回退音频）|
 | /api/v1/tasks/{task_id}/frames/{filename} | GET | 获取关键帧 JPEG 图片 |
 | /api/v1/tasks/{task_id}/rerun-transcript | POST | 基于已有音频重新转写 |
-| /api/v1/tasks/{task_id} | DELETE | 作废任务缓存（不删磁盘文件）|
+| /api/v1/tasks/{task_id}/transcript | PATCH | 人工修订句段的修正文（按下标批量）|
+| /api/v1/tasks/{task_id}/speakers | PATCH | 重命名或合并说话人 |
+| /api/v1/tasks/{task_id} | DELETE | 默认仅作废缓存；`purge=true` 彻底删除任务及磁盘文件 |
 
 **standard_minutes 参数**: `file` + `hotwords` + `visual_scan` + `generate_summary` + `template_id`（默认 universal）。
 
@@ -193,8 +200,9 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
 |------|------|------|
 | /api/v1/tasks/compliance_audit | POST | 提交合规审核任务 |
 | /api/v1/tasks/{task_id}/compliance/violations | PATCH | 批量更新违规审核状态 |
+| /api/v1/tasks/{task_id}/compliance/export | GET | 导出 Excel 报告（概览 + 违规明细）|
 
-audit 端点接收 rules_file（CSV/XLSX）+ transcript（JSON 字符串）+ parent_task_id。violations PATCH 端点接收 `[{violation_id, status}]` 数组（`violation_id` 为报告内稳定唯一标识；旧的 `index` 字段仍兼容但已废弃），返回实际更新数与未匹配的目标。
+audit 端点接收 rules_file（CSV/XLSX）+ transcript（JSON 字符串）+ parent_task_id。violations PATCH 端点接收 `[{violation_id, status}]` 数组（`violation_id` 为报告内稳定唯一标识；旧的 `index` 字段仍兼容但已废弃），每项可带 `note` 复核备注；确认/驳回会记录复核时间，改回待审则清空留痕。合规评分随复核重算（已驳回的条目不再扣分），响应返回实际更新数、未匹配的目标与最新评分。导出的 Excel 对来自转写与模型的文本做了公式注入防护（以 = 开头的内容按文本存储）。
 
 ### 4.4 音频重塑路由 (routers/synthesis.py)
 
@@ -587,12 +595,23 @@ uploads/
 | 状态 | 百分比计算 |
 |------|-----------|
 | PENDING | 0% |
-| PROCESSING_ASR | 5% |
-| CORRECTING | 5% + (current/total) * 85% |
+| EXTRACTING_FRAMES | 5% |
+| SCANNING_VISUAL | 5% + (current/total) * 15% |
+| PROCESSING_ASR | 20% |
+| CORRECTING | 20% + (current/total) * 70% |
 | EVALUATING（独立任务）| (current/total) * 100% |
 | EVALUATING（附属任务）| 90% + (current/total) * 10% |
 | AUDITING | (current/total) * 100% |
 | COMPLETED | 100% |
+
+**任务管理**:
+
+| 方法 | 说明 |
+|------|------|
+| list_tasks | 以磁盘扫描为准合并内存状态，返回按创建时间倒序的摘要；名称优先级：用户重命名 > 纪要标题 > 原始文件名 |
+| rename_task | 写入 meta.json 的 display_name |
+| purge_task | 彻底删除内存状态、哈希索引与磁盘目录；任务或合成仍在运行时抛出 TaskBusyError（409）|
+| edit_transcript / rename_speakers | 校对结果回写 transcript.json 并同步内存中的任务结果，仅已完成任务允许；说话人多对一映射即合并 |
 
 **内存管理**: LRU 淘汰机制，任务数超过 task_max_in_memory 时移除最早的已完成/失败任务。
 
@@ -691,8 +710,10 @@ ProgressCallback: `Callable[[int, int], None]` 类型别名，(current, total) �
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| llm_base_url | "https://api.deepseek.com" | LLM 服务地址 |
-| llm_model_name | "deepseek-chat" | 模型名称 |
+| llm_provider | "ollama" | 协议：ollama（原生 /api/chat）或 openai（OpenAI 兼容 /chat/completions）|
+| llm_api_key | "" | API Key，openai 协议必填，以 Bearer 头发送 |
+| llm_base_url | "http://localhost:11434" | LLM 服务地址 |
+| llm_model_name | "qwen3:latest" | 模型名称 |
 | llm_temperature | 0.1 | 低温度保证一致性 |
 | llm_timeout | 120.0 | 单次请求超时（秒） |
 | llm_max_retries | 2 | 重试次数 |

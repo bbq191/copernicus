@@ -11,7 +11,6 @@ export function useExport() {
   const [isExporting, setIsExporting] = useState(false);
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
   const mergedBlocks = useTranscriptStore((s) => s.mergedBlocks);
-  const speakerMap = useTranscriptStore((s) => s.speakerMap);
   const textMode = useTranscriptStore((s) => s.textMode);
 
   const exportAs = useCallback(
@@ -25,10 +24,10 @@ export function useExport() {
             break;
           }
           case "word":
-            await exportToWord(mergedBlocks, speakerMap, textMode);
+            await exportToWord(mergedBlocks, textMode);
             break;
           case "pdf":
-            await exportToPdf(mergedBlocks, speakerMap, textMode);
+            await exportToPdf(mergedBlocks, textMode);
             break;
         }
         const labels = { srt: "SRT 字幕", word: "Word 文档", pdf: "PDF 文档" };
@@ -42,7 +41,7 @@ export function useExport() {
         setIsExporting(false);
       }
     },
-    [rawEntries, mergedBlocks, speakerMap, textMode],
+    [rawEntries, mergedBlocks, textMode],
   );
 
   return { isExporting, exportAs };

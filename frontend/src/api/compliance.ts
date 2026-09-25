@@ -37,12 +37,26 @@ export async function auditCompliance(
   return pollForCompliance(task.task_id);
 }
 
+export interface ViolationStatusUpdate {
+  violation_id: string;
+  status: string;
+  note?: string;
+}
+
+/** 持久化复核结果，返回服务端按复核状态重算后的合规评分。 */
 export async function persistViolationStatuses(
   taskId: string,
-  updates: { violation_id: string; status: string }[],
-): Promise<void> {
-  await client.patch(`/tasks/${taskId}/compliance/violations`, { updates });
+  updates: ViolationStatusUpdate[],
+): Promise<number> {
+  const { data } = await client.patch<{ compliance_score: number }>(
+    `/tasks/${taskId}/compliance/violations`,
+    { updates },
+  );
+  return data.compliance_score;
 }
+
+export const complianceExportUrl = (taskId: string) =>
+  `/api/v1/tasks/${taskId}/compliance/export`;
 
 async function pollForCompliance(taskId: string): Promise<ComplianceResponse> {
   const result = await pollUntilDone(taskId, {

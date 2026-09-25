@@ -199,6 +199,9 @@ export function ViolationCard({ violation, isSelected, onClick }: Props) {
 
         {/* Row 2: reason */}
         <p className="text-sm">{violation.reason}</p>
+        {violation.review_note && (
+          <p className="text-xs text-base-content/50">备注：{violation.review_note}</p>
+        )}
 
         {/* Row 2.5: reasoning (collapsed) */}
         {violation.reasoning && (

@@ -7,28 +7,31 @@ import type {
   ViolationStatus,
 } from "../types/compliance";
 import { persistViolationStatuses } from "../api/compliance";
+import type { ViolationStatusUpdate } from "../api/compliance";
 
 // ---------------------------------------------------------------------------
 // Debounced persistence: batch status changes within 500ms into one API call
 // ---------------------------------------------------------------------------
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
-let pendingUpdates: Map<string, string> = new Map();
+let pendingUpdates: Map<string, ViolationStatusUpdate> = new Map();
 
-function schedulePersist(violationId: string, status: string) {
-  pendingUpdates.set(violationId, status);
+function schedulePersist(violationId: string, status: string, note?: string) {
+  pendingUpdates.set(violationId, { violation_id: violationId, status, note });
   clearTimeout(persistTimer);
   persistTimer = setTimeout(async () => {
-    const updates = Array.from(pendingUpdates, ([id, s]) => ({
-      violation_id: id,
-      status: s,
-    }));
+    const updates = Array.from(pendingUpdates.values());
     pendingUpdates = new Map();
     // Lazy imports avoid circular dependencies between stores
     const { useTaskStore } = await import("./taskStore");
     const taskId = useTaskStore.getState().taskId;
     if (!taskId) return;
     try {
-      await persistViolationStatuses(taskId, updates);
+      const score = await persistViolationStatuses(taskId, updates);
+      // 评分由服务端按复核结果重算（已驳回的不再扣分）
+      const { report } = useComplianceStore.getState();
+      if (report) {
+        useComplianceStore.setState({ report: { ...report, compliance_score: score } });
+      }
     } catch {
       const { useToastStore } = await import("./toastStore");
       useToastStore
@@ -87,7 +90,7 @@ interface ComplianceState {
   setStatusFilter: (filter: StatusFilter) => void;
   setSourceFilter: (filter: SourceFilter) => void;
   setSearchQuery: (q: string) => void;
-  setViolationStatus: (v: Violation, status: ViolationStatus) => void;
+  setViolationStatus: (v: Violation, status: ViolationStatus, note?: string) => void;
   navigateViolation: (direction: "prev" | "next") => void;
   setActiveTab: (tab: RightTab) => void;
 
@@ -169,20 +172,25 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
   setSourceFilter: (filter) => set({ sourceFilter: filter }),
   setSearchQuery: (q) => set({ searchQuery: q }),
 
-  setViolationStatus: (v, status) => {
-    const { report, selectedViolation } = get();
+  setViolationStatus: (v, status, note) => {
+    const { report, selectedViolation, evidenceDetail } = get();
     if (!report) return;
-    let updatedSelected = selectedViolation;
-    const violations = report.violations.map((item) => {
-      if (item === v) {
-        const updated = { ...item, status };
-        if (selectedViolation === v) updatedSelected = updated;
-        return updated;
-      }
-      return item;
+
+    // 本地乐观更新；持久化时服务端会以自己的时间戳为准
+    const reviewedAt = status === "pending" ? null : new Date().toISOString();
+    const reviewNote =
+      status === "pending" ? null : (note === undefined ? v.review_note : note.trim()) || null;
+    const apply = (item: Violation): Violation =>
+      item.id === v.id
+        ? { ...item, status, reviewed_at: reviewedAt, review_note: reviewNote }
+        : item;
+
+    set({
+      report: { ...report, violations: report.violations.map(apply) },
+      selectedViolation: selectedViolation ? apply(selectedViolation) : null,
+      evidenceDetail: evidenceDetail ? apply(evidenceDetail) : null,
     });
-    set({ report: { ...report, violations }, selectedViolation: updatedSelected });
-    schedulePersist(v.id, status);
+    schedulePersist(v.id, status, note);
   },
 
   navigateViolation: (direction) => {
@@ -245,7 +253,12 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
     const violations = report.violations.map((item) => {
       if (selectedIds.has(violationKey(item))) {
         schedulePersist(item.id, status);
-        return { ...item, status };
+        return {
+          ...item,
+          status,
+          reviewed_at: status === "pending" ? null : new Date().toISOString(),
+          review_note: status === "pending" ? null : item.review_note,
+        };
       }
       return item;
     });

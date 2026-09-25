@@ -2,9 +2,11 @@ import client, { taskMediaUrl, taskFrameUrl } from "./client";
 import { computeFileSHA256 } from "../utils/fileHash";
 import { chunkedUploadFile } from "../utils/chunkedUpload";
 import type {
+  TaskListResponse,
   TaskSubmitResponse,
   TaskStatusResponse,
   TaskResultsResponse,
+  TranscriptTextEdit,
 } from "../types/task";
 
 // 大于此阈值使用分片上传（断点续传），小于此阈值使用普通上传（带重试）
@@ -128,4 +130,34 @@ export function resolveEvidenceUrl(
     ? evidenceUrl.split(/[/\\]/).pop()!
     : evidenceUrl;
   return getFrameUrl(taskId, filename);
+}
+
+export async function listTasks(limit = 100): Promise<TaskListResponse> {
+  const { data } = await client.get<TaskListResponse>("/tasks", {
+    params: { limit },
+  });
+  return data;
+}
+
+export async function renameTask(taskId: string, name: string): Promise<void> {
+  await client.patch(`/tasks/${taskId}`, { name });
+}
+
+/** 彻底删除任务（含磁盘上的媒体与全部结果），不可恢复。 */
+export async function purgeTask(taskId: string): Promise<void> {
+  await client.delete(`/tasks/${taskId}`, { params: { purge: true } });
+}
+
+export async function editTranscript(
+  taskId: string,
+  edits: TranscriptTextEdit[],
+): Promise<void> {
+  await client.patch(`/tasks/${taskId}/transcript`, { edits });
+}
+
+export async function renameSpeakers(
+  taskId: string,
+  renames: Record<string, string>,
+): Promise<void> {
+  await client.patch(`/tasks/${taskId}/speakers`, { renames });
 }

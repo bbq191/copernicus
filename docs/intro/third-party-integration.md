@@ -38,7 +38,7 @@ Copernicus 提供标准 REST API，基于四层架构将任务按复杂度分层
 **V1.2 主要变化**：
 - **新增音频重塑 API**：通过 `POST /api/v1/tasks/{task_id}/synthesize` 将转写结果合成为多说话人对话音频，配套状态查询和下载端点（见 4.16–4.18）；
 - **`/health` 响应结构升级**：`asr_loaded`/`llm_reachable` 布尔字段改为 `asr`/`llm`/`tts` 组件对象，新增整体 `status` 字段和 `tasks` 任务统计（见 4.12）；
-- **新增 `DELETE /api/v1/tasks/{task_id}`**：作废任务内存缓存并重置哈希索引，用于强制重新处理同一文件（见 4.10）；
+- **新增 `DELETE /api/v1/tasks/{task_id}`**：作废任务内存缓存并重置哈希索引，用于强制重新处理同一文件；`purge=true` 可彻底删除（见 4.10）；
 - **分片上传不支持 `template_id`**：分片上传流程（4.3–4.4）始终使用默认模板，如需指定模板请改用普通上传（4.1）；
 - **删除 `rerun-evaluation` 端点**：重新生成纪要请改用 `POST /api/v1/evaluate/text/async`（见 4.13）；
 - `results` 响应新增 `has_synthesis` 字段，标识该任务是否已有合成音频。
@@ -295,9 +295,11 @@ PATCH /api/v1/tasks/{task_id}/compliance/violations
 Content-Type: application/json
 ```
 
-请求体：`{"updates": [{"violation_id": "v0001", "status": "confirmed"}, {"violation_id": "v0002", "status": "rejected"}]}`
+请求体：`{"updates": [{"violation_id": "v0001", "status": "confirmed", "note": "已核实原文"}, {"violation_id": "v0002", "status": "rejected", "note": "误报"}]}`
 
-`violation_id` 取自报告中每条违规的 `id` 字段，在同一份报告内稳定唯一。旧的按列表下标更新（`index`）仍兼容但已废弃。响应为 `{"ok": true, "updated": 更新条数, "missing": [未匹配的目标]}`，未匹配的目标不会中断其余更新。
+`violation_id` 取自报告中每条违规的 `id` 字段，在同一份报告内稳定唯一。旧的按列表下标更新（`index`）仍兼容但已废弃。`note` 为可选的复核备注（最长 500 字）。确认/驳回会记录复核时间 `reviewed_at`，改回 `pending` 会清空留痕。合规评分随复核重算（已驳回的条目不再扣分）。响应为 `{"ok": true, "updated": 更新条数, "missing": [未匹配的目标], "compliance_score": 最新评分}`，未匹配的目标不会中断其余更新。
+
+**导出报告**：`GET /api/v1/tasks/{task_id}/compliance/export` 返回 Excel（概览 + 违规明细，含复核状态、时间与备注）；合规结果不存在时返回 404。
 
 `status` 取值：`pending`（待审）/ `confirmed`（已确认）/ `rejected`（已驳回）。
 更新立即持久化，页面刷新后状态保留。
@@ -312,13 +314,35 @@ Content-Type: multipart/form-data
 对已保存的媒体文件重新执行 ASR + 纠错（视频优先，回退音频，视频任务同样支持重跑）。原始媒体文件须仍存在（未被 24 小时生命周期清理）。
 执行后会清除旧的 `evaluation.json` 和 `compliance.json`，需重新提交相应任务。
 
-### 4.10 作废任务缓存
+### 4.10 作废或删除任务
 
 ```
 DELETE /api/v1/tasks/{task_id}
+DELETE /api/v1/tasks/{task_id}?purge=true
 ```
 
-无需请求体，成功返回 204。作废该任务的内存缓存并重置哈希索引，**不删除磁盘上的持久化文件**。用于强制重新处理同一文件（作废后再次上传同一文件不会命中去重）。
+无需请求体，成功返回 204。
+
+- 默认（`purge=false`）：作废该任务的内存缓存并重置哈希索引，**不删除磁盘上的持久化文件**。用于强制重新处理同一文件（作废后再次上传同一文件不会命中去重）。
+- `purge=true`：彻底删除任务——原始媒体、转写、纪要、合规报告与关键帧全部移除，**不可恢复**。任务或合成仍在运行时返回 409。
+
+### 4.10.1 历史任务与重命名
+
+```
+GET   /api/v1/tasks?limit=100
+PATCH /api/v1/tasks/{task_id}      {"name": "季度复盘会"}
+```
+
+列表按创建时间倒序，每项含 `task_id / name / filename / created_at / status / error / has_video / has_evaluation / has_compliance`，`total` 为任务总数。`name` 的优先级为：用户重命名 > 纪要标题 > 原始文件名。重命名成功返回 204。
+
+### 4.10.2 人工校对转写
+
+```
+PATCH /api/v1/tasks/{task_id}/transcript   {"edits": [{"index": 3, "text_corrected": "修订后的文本"}]}
+PATCH /api/v1/tasks/{task_id}/speakers     {"renames": {"Speaker 1": "张三", "Speaker 2": "张三"}}
+```
+
+仅已完成的任务可用（否则 409）。文本修订只改 `text_corrected`，原始 `text` 不变，越界下标与无变化的句段被忽略；说话人多对一映射即合并。两者均返回 `{"updated": 变更条数}`，并已持久化，此后 `results` 与导出都基于校对后的内容。已生成的纪要和合规报告**不会自动重算**，如需更新请重新提交。
 
 > 原 `rerun-evaluation` 端点已在 V1.2 删除。重新生成纪要请改用 `POST /api/v1/evaluate/text/async`（见 4.13），将转写文本和目标 `template_id` 一并传入。
 

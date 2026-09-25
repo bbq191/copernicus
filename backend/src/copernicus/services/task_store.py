@@ -6,7 +6,7 @@ import uuid
 
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResponse
-from copernicus.schemas.task import TaskProgress, TaskStatus
+from copernicus.schemas.task import TaskProgress, TaskStatus, TaskSummary
 from copernicus.schemas.transcription import (
     TranscriptEntrySchema,
     TranscriptResponse,
@@ -25,6 +25,7 @@ from copernicus.services.model_manager import ModelManager
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.template_manager import TemplateManager
+from copernicus.services.transcript_edit import apply_speaker_renames, apply_text_edits
 
 logger = logging.getLogger(__name__)
 
@@ -296,30 +297,126 @@ class TaskStore:
 
         logger.info("Total tasks in memory: %d", len(self._tasks))
 
+    @staticmethod
+    def _disk_status(entry: dict) -> TaskStatus | None:
+        """由磁盘内容推断任务状态：有转写为 COMPLETED，仅剩媒体为 FAILED，其余不可恢复。"""
+        if entry["has_transcript"]:
+            return TaskStatus.COMPLETED
+        if entry["audio_path"] or entry["has_video"]:
+            return TaskStatus.FAILED
+        return None
+
     def _build_task_from_disk(self, entry: dict) -> TaskInfo | None:
         """依据磁盘扫描条目重建 TaskInfo；无可恢复内容时返回 None。"""
+        status = self._disk_status(entry)
+        if status is None:
+            return None
+
         task_id = entry["task_id"]
         info = TaskInfo(task_id)
         info.audio_path = entry["audio_path"]
+        info.status = status
 
-        if entry["has_transcript"]:
+        if status == TaskStatus.COMPLETED:
             try:
                 data = self._persistence.load_json(task_id, "transcript.json")
-                if data:
-                    info.result = TranscriptResponse.model_validate(data)
-                    info.status = TaskStatus.COMPLETED
-                    return info
+                if not data:
+                    return None
+                info.result = TranscriptResponse.model_validate(data)
             except Exception as e:
                 logger.warning("Skipping task %s during restore: %s", task_id, e)
                 return None
+        else:
+            info.error = self._failure_error(task_id)
+        return info
 
-        if entry["audio_path"] or entry["has_video"]:
-            info.status = TaskStatus.FAILED
-            info.error = (
-                self._persistence.load_failure_error(task_id) or _INTERRUPTED_MESSAGE
+    def _failure_error(self, task_id: str) -> str:
+        return self._persistence.load_failure_error(task_id) or _INTERRUPTED_MESSAGE
+
+    # -- task management (history / rename / purge / transcript proofreading) --
+
+    def list_tasks(self, limit: int = 100) -> tuple[list[TaskSummary], int]:
+        """按创建时间倒序返回历史任务摘要，以及磁盘上的任务总数。"""
+        entries = [
+            e for e in self._persistence.scan_completed_tasks()
+            if e["task_id"] not in self._invalidated
+        ]
+        entries.sort(key=lambda e: e["meta"].get("created_at", ""), reverse=True)
+
+        summaries: list[TaskSummary] = []
+        for entry in entries[:limit]:
+            task_id = entry["task_id"]
+            live = self._tasks.get(task_id)
+            status = live.status if live else self._disk_status(entry)
+            if status is None:
+                continue
+            if live:
+                error = live.error
+            else:
+                error = self._failure_error(task_id) if status == TaskStatus.FAILED else None
+            meta = entry["meta"]
+            filename = meta.get("filename", "")
+            summaries.append(
+                TaskSummary(
+                    task_id=task_id,
+                    name=meta.get("display_name")
+                    or self._evaluation_title(task_id, entry)
+                    or filename,
+                    filename=filename,
+                    created_at=meta.get("created_at", ""),
+                    status=status,
+                    error=error,
+                    has_video=entry["has_video"],
+                    has_evaluation=entry["has_evaluation"],
+                    has_compliance=entry["has_compliance"],
+                )
             )
-            return info
-        return None
+        return summaries, len(entries)
+
+    def _evaluation_title(self, task_id: str, entry: dict) -> str:
+        if not entry["has_evaluation"]:
+            return ""
+        data = self._persistence.load_json(task_id, "evaluation.json")
+        return (data or {}).get("title", "")
+
+    def rename_task(self, task_id: str, name: str) -> None:
+        if not self._persistence.update_meta(task_id, display_name=name):
+            raise TaskNotFoundError(f"Task {task_id} not found")
+
+    def purge_task(self, task_id: str) -> bool:
+        """彻底删除任务：内存状态、哈希索引与磁盘上的全部文件。运行中的任务不允许删除。"""
+        task = self.get(task_id)
+        job = self._synthesis_jobs.get(task_id)
+        if (task and task.status not in TERMINAL_STATUSES) or (job and job.status == "running"):
+            raise TaskBusyError(f"Task {task_id} is still running")
+        invalidated = self.invalidate_task(task_id)
+        deleted = self._persistence.delete_task(task_id)
+        self._synthesis_jobs.pop(task_id, None)
+        return invalidated or deleted
+
+    def edit_transcript(self, task_id: str, edits: dict[int, str]) -> int:
+        """人工修订句段文本并回写，返回实际变更条数。"""
+        return self._update_transcript(task_id, lambda t: apply_text_edits(t, edits))
+
+    def rename_speakers(self, task_id: str, renames: dict[str, str]) -> int:
+        """重命名/合并说话人并回写，返回受影响句段数。"""
+        return self._update_transcript(task_id, lambda t: apply_speaker_renames(t, renames))
+
+    def _update_transcript(self, task_id: str, transform) -> int:
+        task = self.get(task_id)
+        if task is None:
+            raise TaskNotFoundError(f"Task {task_id} not found")
+        if task.status != TaskStatus.COMPLETED:
+            raise TaskBusyError(f"Task {task_id} is not completed")
+        data = self._persistence.load_json(task_id, "transcript.json")
+        if data is None:
+            raise TaskNotFoundError(f"transcript.json not found for task {task_id}")
+
+        updated, changed = transform(TranscriptResponse.model_validate(data))
+        if changed:
+            self._persistence.save_json(task_id, "transcript.json", updated)
+            task.result = updated
+        return changed
 
     # -- submit methods ------------------------------------------------------
 
@@ -474,22 +571,6 @@ class TaskStore:
         )
         logger.info("Task %s rerun (transcript)", task_id)
         return task_id
-
-    def rerun_evaluation(self, parent_task_id: str, template_id: str = "universal") -> str:
-        """基于已有转写结果重新执行评估，返回子任务 task_id。"""
-        data = self._persistence.load_json(parent_task_id, "transcript.json")
-        if data is None:
-            raise AudioNotFoundError(f"transcript.json not found for task {parent_task_id}")
-
-        transcript = TranscriptResponse.model_validate(data)
-        full_text = "\n".join(e.text_corrected for e in transcript.transcript)
-        if not full_text.strip():
-            raise ValueError("Transcript text is empty")
-
-        self._persistence.delete_file(parent_task_id, "evaluation.json")
-        return self.submit_text_evaluation(
-            full_text, template_id=template_id, parent_task_id=parent_task_id
-        )
 
     # -- get -----------------------------------------------------------------
 

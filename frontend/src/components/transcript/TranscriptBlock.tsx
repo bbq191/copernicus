@@ -12,13 +12,13 @@ interface Props {
 
 export function TranscriptBlock({ block }: Props) {
   const currentTime = usePlayerStore((s) => s.currentTime);
-  const speakerMap = useTranscriptStore((s) => s.speakerMap);
+  const speakers = useTranscriptStore((s) => s.speakers);
 
-  const displayName = speakerMap[block.speaker] ?? block.speaker;
   const isBlockActive =
     currentTime >= block.startMs && currentTime <= block.endMs + 5000;
 
-  const isEven = block.speaker.endsWith("1") || block.speaker.endsWith("3");
+  // 按说话人首次出现顺序交替左右排布，与说话人名称无关（重命名后不受影响）
+  const isEven = speakers.indexOf(block.speaker) % 2 === 0;
 
   return (
     <div
@@ -28,10 +28,10 @@ export function TranscriptBlock({ block }: Props) {
       )}
     >
       <div className="chat-image">
-        <SpeakerAvatar speaker={block.speaker} displayName={displayName} />
+        <SpeakerAvatar speaker={block.speaker} displayName={block.speaker} />
       </div>
       <div className="chat-header text-xs opacity-50 mb-1">
-        {displayName}
+        {block.speaker}
         <time className="ml-2">{formatTime(block.startMs)}</time>
       </div>
       <div
@@ -46,11 +46,7 @@ export function TranscriptBlock({ block }: Props) {
       >
         {block.sentences.map((sent, idx) => (
           <div key={idx} className={idx > 0 ? "mt-0.5" : ""}>
-            <SentenceSpan
-              entry={sent}
-              blockId={block.id}
-              sentIdx={idx}
-            />
+            <SentenceSpan entry={sent} />
           </div>
         ))}
       </div>

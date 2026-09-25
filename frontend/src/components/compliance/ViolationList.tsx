@@ -8,6 +8,7 @@ import {
   Check,
   CheckCheck,
   ListChecks,
+  Download,
 } from "lucide-react";
 import {
   useComplianceStore,
@@ -15,6 +16,8 @@ import {
   violationKey,
 } from "../../stores/complianceStore";
 import { ViolationCard } from "./ViolationCard";
+import { complianceExportUrl } from "../../api/compliance";
+import { useTaskStore } from "../../stores/taskStore";
 import { IncompleteNotice } from "../shared/IncompleteNotice";
 import { reportIncompleteness } from "../../utils/completeness";
 
@@ -62,6 +65,7 @@ export function ViolationList() {
   const selectAll = useComplianceStore((s) => s.selectAll);
   const clearSelection = useComplianceStore((s) => s.clearSelection);
   const batchSetStatus = useComplianceStore((s) => s.batchSetStatus);
+  const taskId = useTaskStore((s) => s.taskId);
 
   const violations = getFilteredViolations(useComplianceStore.getState());
 
@@ -254,6 +258,18 @@ export function ViolationList() {
             <ListChecks className="h-3.5 w-3.5" />
             批量
           </button>
+
+          {taskId && (
+            <a
+              className="btn btn-xs btn-ghost gap-1"
+              href={complianceExportUrl(taskId)}
+              download
+              title="导出 Excel 报告（含复核状态与备注）"
+            >
+              <Download className="h-3.5 w-3.5" />
+              导出
+            </a>
+          )}
 
           <label className="input input-sm input-bordered flex items-center gap-2 w-48 ml-auto">
             <Search className="h-4 w-4 opacity-50" />

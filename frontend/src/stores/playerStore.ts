@@ -31,6 +31,8 @@ interface PlayerState {
   setVolume: (vol: number) => void;
   setLoopEnabled: (enabled: boolean) => void;
   setLoopRegion: (region: LoopRegion | null) => void;
+  /** 清除媒体与播放状态（切换任务时使用） */
+  resetMedia: () => void;
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -94,4 +96,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   setLoopEnabled: (enabled) => set({ loopEnabled: enabled }),
   setLoopRegion: (region) => set({ loopRegion: region }),
+
+  resetMedia: () =>
+    set({
+      mediaSrc: null,
+      mediaType: "audio",
+      currentTime: 0,
+      duration: 0,
+      isPlaying: false,
+      loopEnabled: false,
+      loopRegion: null,
+    }),
 }));

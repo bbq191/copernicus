@@ -2,6 +2,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+# 人工校对的输入上限
+MAX_SPEAKER_NAME_LEN = 50
+MAX_TRANSCRIPT_TEXT_LEN = 5000
+
 
 class ComponentStatus(BaseModel):
     status: Literal["ok", "degraded", "down"]

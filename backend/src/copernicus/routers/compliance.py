@@ -1,12 +1,13 @@
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field, model_validator
 
 from copernicus.dependencies import get_task_store
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.task import TaskStatus, TaskSubmitResponse
+from copernicus.services.compliance_export import build_compliance_xlsx
 from copernicus.services.task_store import TaskStore
 
 router = APIRouter(prefix="/api/v1", tags=["高阶 AI"])
@@ -70,6 +71,7 @@ class ViolationStatusUpdate(BaseModel):
         default=None, description="已废弃：列表下标，请改用 violation_id"
     )
     status: Literal["pending", "confirmed", "rejected"]
+    note: str | None = Field(default=None, max_length=500, description="复核备注（如驳回原因）")
 
     @model_validator(mode="after")
     def _require_target(self) -> "ViolationStatusUpdate":
@@ -95,6 +97,8 @@ async def update_violation_statuses(
 
     通过 `violation_id`（报告内稳定唯一）定位条目；`index`（列表下标）仅为兼容旧客户端保留。
     `status` 取值：`pending`（待审）、`confirmed`（已确认）、`rejected`（已驳回）。
+    确认/驳回会记录复核时间 `reviewed_at`，可附 `note` 备注；改回 `pending` 会清空留痕。
+    合规评分随复核重算（已驳回的条目不再扣分），新分数在响应的 `compliance_score` 中返回。
     更新立即持久化到 `compliance.json`，页面刷新后状态保留。
     未匹配到条目的更新会在 `missing` 中返回，不会中断其余更新。
     """
@@ -117,8 +121,37 @@ async def update_violation_statuses(
         if target is None:
             missing.append(u.violation_id if u.violation_id is not None else str(u.index))
             continue
-        target.status = u.status
+        target.apply_review(u.status, u.note)
         updated += 1
 
+    score = compliance.report.recalculate_score()
     persistence.save_json(task_id, "compliance.json", compliance)
-    return {"ok": True, "updated": updated, "missing": missing}
+    return {"ok": True, "updated": updated, "missing": missing, "compliance_score": score}
+
+
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get(
+    "/tasks/{task_id}/compliance/export",
+    summary="导出合规审核报告（Excel）",
+    response_class=Response,
+    responses={200: {"content": {_XLSX_MEDIA_TYPE: {}}}},
+)
+async def export_compliance_report(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> Response:
+    """导出包含概览与违规明细两个工作表的 Excel 报告，含人工复核状态、时间与备注。"""
+    data = store.persistence.load_json(task_id, "compliance.json")
+    if data is None:
+        raise HTTPException(status_code=404, detail="compliance.json not found")
+
+    content = build_compliance_xlsx(ComplianceResponse.model_validate(data))
+    return Response(
+        content=content,
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="compliance_{task_id[:8]}.xlsx"'
+        },
+    )

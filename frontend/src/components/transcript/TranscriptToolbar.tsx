@@ -2,8 +2,7 @@ import { useCallback } from "react";
 import { Download, Search, Users, FileText, ToggleLeft, ToggleRight, Eye, RefreshCw } from "lucide-react";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useTaskStore } from "../../stores/taskStore";
-import { useEvaluationStore } from "../../stores/evaluationStore";
-import { useComplianceStore } from "../../stores/complianceStore";
+import { resetWorkspaceStores } from "../../stores/resetWorkspace";
 import { useExport } from "../../hooks/useExport";
 import { useToastStore } from "../../stores/toastStore";
 import { rerunTranscript } from "../../api/task";
@@ -17,7 +16,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
   const setTextMode = useTranscriptStore((s) => s.setTextMode);
   const searchQuery = useTranscriptStore((s) => s.searchQuery);
   const setSearchQuery = useTranscriptStore((s) => s.setSearchQuery);
-  const speakerMap = useTranscriptStore((s) => s.speakerMap);
+  const speakers = useTranscriptStore((s) => s.speakers);
   const visibleSpeakers = useTranscriptStore((s) => s.visibleSpeakers);
   const toggleSpeakerVisibility = useTranscriptStore((s) => s.toggleSpeakerVisibility);
   const taskId = useTaskStore((s) => s.taskId);
@@ -25,11 +24,8 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
 
   const handleRerunTranscript = useCallback(async () => {
     if (!taskId) return;
-    // reset all downstream stores
-    useTranscriptStore.getState().setRawEntries([]);
-    useEvaluationStore.getState().setError(null);
-    useEvaluationStore.getState().setLoading(false);
-    useComplianceStore.getState().reset();
+    // 后端已清除旧的纪要与合规结果，前端同步清空下游状态
+    resetWorkspaceStores();
 
     try {
       await rerunTranscript(taskId);
@@ -44,8 +40,6 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
       );
     }
   }, [taskId]);
-
-  const speakers = Object.keys(speakerMap);
 
   return (
     <div className="flex flex-col gap-2 p-3 bg-base-200 rounded-lg">
@@ -162,7 +156,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
                 checked={visibleSpeakers.has(spk)}
                 onChange={() => toggleSpeakerVisibility(spk)}
               />
-              <span>{speakerMap[spk]}</span>
+              <span>{spk}</span>
             </label>
           ))}
         </div>

@@ -73,7 +73,7 @@ frontend/src/
 
 ### 3.1 HomePage
 
-职责单一，作为 UploadPage 的容器页面，承载文件上传入口。
+职责单一，作为 UploadPage 的容器页面，承载文件上传入口；页面下方由 TaskHistory 展示历史任务（状态、时间、重命名、彻底删除，点击进入工作区）。
 
 ### 3.2 WorkspacePage
 
@@ -150,6 +150,7 @@ AppLayout 采用**固定三栏布局**，顶部 Navbar 贯穿全宽：
 
 ```
 UploadPage
+  ├── TaskHistory（历史任务：useTaskHistory 拉取 GET /tasks，行内重命名、二次确认后删除）
   ├── 模板选择下拉（从 listTemplates() 加载，> 1 个模板时显示）
   └── 拖拽区域 / 点击选择
         ↓ 1. computeFileSHA256(file)          本地计算 SHA-256，无网络请求
@@ -212,16 +213,19 @@ TranscriptList（Virtuoso 虚拟滚动）
         └── SentenceSpan（句子级）
               ├── 细粒度时间标签
               ├── 点击跳转播放
+              ├── 双击进入行内编辑（EditableText，仅修正文模式）
               ├── 当前播放高亮
               └── 搜索关键词高亮
 
 SpeakerRenameModal
-  └── 批量重命名说话人（spk_0 → 实际姓名）
+  └── 批量重命名/合并说话人（改为同名即合并），保存到服务器
 ```
 
 **虚拟滚动**: TranscriptList 基于 React Virtuoso 实现，处理数千条转写记录无压力。数据源为 transcriptStore.mergedBlocks 经说话人筛选后的 filteredBlocks。
 
-**聊天气泡**: TranscriptBlock 按说话人奇偶 ID 左右交替排列，当前播放块带高亮边框。
+**聊天气泡**: TranscriptBlock 按说话人首次出现顺序的奇偶左右交替排列（与名称无关，重命名后布局不变），当前播放块带高亮边框。
+
+**转写校对**: useTranscriptEditing 封装文本修订与说话人重命名——先乐观更新 transcriptStore，再调用 PATCH 接口持久化，失败时回滚并提示。校对结果直接写入 rawEntries，因此 SRT/Word/PDF 导出和后续纪要生成读取的就是校对后的内容。已生成的纪要不会自动重算。
 
 **句子级交互**: SentenceSpan 每个句子独立显示时间标签，点击即跳转播放器到对应时间点，搜索关键词实时高亮。
 
@@ -280,10 +284,11 @@ ViolationList（中栏违规工作台）
   │     ├── 来源（全部 / 语音 / OCR / 视觉）
   │     └── 状态（全部 / 待审 / 已确认 / 已忽略）
   ├── 搜索框（匹配违规原因 / 原文 / 规则 / 证据文本）
-  ├── 批量模式切换
+  ├── 批量模式切换 + 导出 Excel 按钮
+  ├── IncompleteNotice（截断 / 分块失败的完整性警示，位于顶部）
   └── ViolationCard 列表
         ├── 徽章行（时间戳 / 来源 / 严重程度 / 说话人 / 状态 / 置信度）
-        ├── 违规原因
+        ├── 违规原因（已复核的条目附复核备注）
         ├── AI 判定逻辑（CoT 推理链，可折叠）
         ├── EvidenceBlock（按来源分策略渲染）
         │     ├── [transcript] 原文引用
@@ -302,6 +307,7 @@ EvidenceDetailPanel（右栏抽屉面板，380px）
   │     ├── 原始文本引用
   │     ├── 规则详细内容
   │     └── 转录上下文（前后 3 条，当前高亮）
+  ├── 复核备注输入（待审时；已复核则只读显示备注与复核时间）
   └── 操作按钮（确认 / 忽略 / 重新审核）
 ```
 
@@ -326,7 +332,7 @@ EvidenceDetailPanel（右栏抽屉面板，380px）
 ```
 taskStore          任务生命周期（taskId / status / progress / pollEnabled）
 playerStore        播放器状态（currentTime / duration / mediaSrc / loopRegion）
-transcriptStore    转写数据（rawEntries / mergedBlocks / speakerMap / textMode）
+transcriptStore    转写数据（rawEntries / mergedBlocks / speakers / textMode）
 evaluationStore    评估结果（evaluation / progress / loading）
 synthesisStore     TTS 合成状态（hasSynthesis / durationMs / synthesisMs）
 complianceStore    合规审核（report / filters / batchMode / evidencePanel）
@@ -373,13 +379,16 @@ toastStore         通知消息（toasts 队列）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| rawEntries | TranscriptEntry[] | 后端原始转写条目 |
+| rawEntries | TranscriptEntry[] | 转写条目，与后端持久化内容保持一致（校对成功后同步更新）|
 | mergedBlocks | MergedBlock[] | 前端聚合视图（同说话人 30s 内合并）|
-| speakerMap | Record | 说话人重命名映射 |
+| speakers | string[] | 说话人列表（按首次出现顺序）|
 | textMode | "original" / "corrected" | 显示模式 |
-| editedTexts | Record | 用户在线编辑的文本（blockId:idx → 文本）|
 | searchQuery | string | 搜索关键词 |
 | visibleSpeakers | Set | 可见说话人集合 |
+
+**校对动作**: setSentenceText（本地更新某句修正文）与 applySpeakerRenames（本地应用重命名/合并，同步可见性集合），均由 useTranscriptEditing 在接口成功后/乐观阶段调用。
+
+**工作区重置**: 切换任务时通过 resetWorkspaceStores 一并清空转写、纪要、合规、合成与播放器状态，避免残留上一个任务的内容（例如播放器仍指向旧媒体）。
 
 **聚合逻辑**: setRawEntries 写入原始数据后自动调用 processTranscriptForView，将连续相同说话人且间隔小于 30 秒的条目合并为 MergedBlock。
 

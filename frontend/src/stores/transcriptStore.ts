@@ -5,19 +5,35 @@ import { processTranscriptForView } from "../utils/processTranscript";
 
 type TextMode = "original" | "corrected";
 
+/** 按首次出现顺序返回去重后的说话人列表。 */
+function uniqueSpeakers(entries: TranscriptEntry[]): string[] {
+  return [...new Set(entries.map((e) => e.speaker))];
+}
+
+function deriveView(entries: TranscriptEntry[]) {
+  return {
+    rawEntries: entries,
+    mergedBlocks: processTranscriptForView(entries),
+    speakers: uniqueSpeakers(entries),
+  };
+}
+
 interface TranscriptState {
+  /** 转写条目：与后端持久化内容保持一致（人工校对成功后同步更新） */
   rawEntries: TranscriptEntry[];
   mergedBlocks: MergedBlock[];
-  speakerMap: Record<string, string>;
+  /** 说话人列表（按首次出现顺序） */
+  speakers: string[];
   textMode: TextMode;
-  editedTexts: Record<string, string>;
   searchQuery: string;
   visibleSpeakers: Set<string>;
 
   setRawEntries: (entries: TranscriptEntry[]) => void;
-  renameSpeaker: (oldName: string, newName: string) => void;
+  /** 本地更新某句的修正文（调用方负责与后端同步/回滚） */
+  setSentenceText: (index: number, text: string) => void;
+  /** 本地应用说话人重命名/合并，{原名: 新名} */
+  applySpeakerRenames: (renames: Record<string, string>) => void;
   setTextMode: (mode: TextMode) => void;
-  updateText: (key: string, text: string) => void;
   setSearchQuery: (q: string) => void;
   toggleSpeakerVisibility: (speaker: string) => void;
 }
@@ -25,34 +41,35 @@ interface TranscriptState {
 export const useTranscriptStore = create<TranscriptState>((set) => ({
   rawEntries: [],
   mergedBlocks: [],
-  speakerMap: {},
+  speakers: [],
   textMode: "corrected",
-  editedTexts: {},
   searchQuery: "",
   visibleSpeakers: new Set<string>(),
 
-  setRawEntries: (entries) => {
-    const blocks = processTranscriptForView(entries);
-    const speakers: Record<string, string> = {};
-    const allSpeakers = new Set<string>();
-    for (const e of entries) {
-      if (!speakers[e.speaker]) speakers[e.speaker] = e.speaker;
-      allSpeakers.add(e.speaker);
-    }
-    set({ rawEntries: entries, mergedBlocks: blocks, speakerMap: speakers, visibleSpeakers: allSpeakers });
-  },
+  setRawEntries: (entries) =>
+    set({ ...deriveView(entries), visibleSpeakers: new Set(uniqueSpeakers(entries)) }),
 
-  renameSpeaker: (oldName, newName) =>
-    set((state) => ({
-      speakerMap: { ...state.speakerMap, [oldName]: newName },
-    })),
+  setSentenceText: (index, text) =>
+    set((state) =>
+      deriveView(
+        state.rawEntries.map((e, i) =>
+          i === index ? { ...e, text_corrected: text } : e,
+        ),
+      ),
+    ),
+
+  applySpeakerRenames: (renames) =>
+    set((state) => {
+      const rename = (name: string) => renames[name] ?? name;
+      // 合并后的说话人：只要有一个来源可见即可见
+      const visible = new Set([...state.visibleSpeakers].map(rename));
+      return {
+        ...deriveView(state.rawEntries.map((e) => ({ ...e, speaker: rename(e.speaker) }))),
+        visibleSpeakers: visible,
+      };
+    }),
 
   setTextMode: (mode) => set({ textMode: mode }),
-
-  updateText: (key, text) =>
-    set((state) => ({
-      editedTexts: { ...state.editedTexts, [key]: text },
-    })),
 
   setSearchQuery: (q) => set({ searchQuery: q }),
 

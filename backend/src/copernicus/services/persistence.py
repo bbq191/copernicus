@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,6 +99,27 @@ class PersistenceService:
 
     def load_meta(self, task_id: str) -> dict | None:
         return self.load_json(task_id, "meta.json")
+
+    def update_meta(self, task_id: str, **fields: str) -> bool:
+        """合并更新 meta.json 中的字段；任务不存在返回 False。"""
+        meta = self.load_meta(task_id) if self.has_file(task_id, "meta.json") else None
+        if meta is None:
+            return False
+        meta.update(fields)
+        self._atomic_write(
+            self.task_dir(task_id) / "meta.json",
+            json.dumps(meta, ensure_ascii=False, indent=2),
+        )
+        return True
+
+    def delete_task(self, task_id: str) -> bool:
+        """删除任务目录及其全部文件（原始媒体、结果、关键帧等）。"""
+        d = self._task_dir_unchecked(task_id)
+        if not d.is_dir():
+            return False
+        shutil.rmtree(d)
+        logger.info("Purged task directory %s", task_id)
+        return True
 
     # -- audio ---------------------------------------------------------------
 

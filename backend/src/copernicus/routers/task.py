@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 _SAFE_FILENAME_RE = re.compile(r'^[A-Za-z0-9_.-]+$')
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from copernicus.config import settings
@@ -14,10 +14,15 @@ from copernicus.dependencies import get_task_store
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResult
 from copernicus.schemas.task import (
+    SpeakerRenameRequest,
+    TaskListResponse,
+    TaskRenameRequest,
     TaskStatus,
     TaskStatusResponse,
     TaskSubmitResponse,
     TaskResultsResponse,
+    TranscriptEditRequest,
+    TranscriptUpdateResponse,
 )
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.task_store import TaskStore
@@ -176,23 +181,59 @@ async def rerun_transcript(
 # 任务管理 — 查询与媒体
 # ---------------------------------------------------------------------------
 
+@router.get(
+    "/tasks",
+    response_model=TaskListResponse,
+    tags=["任务管理"],
+    summary="历史任务列表",
+)
+async def list_tasks(
+    limit: int = Query(default=100, ge=1, le=500),
+    store: TaskStore = Depends(get_task_store),
+) -> TaskListResponse:
+    """按创建时间倒序返回历史任务摘要（含运行中与失败的任务）。
+
+    `total` 为磁盘上的任务总数，大于返回条数时表示被 `limit` 截断。
+    """
+    tasks, total = store.list_tasks(limit)
+    return TaskListResponse(tasks=tasks, total=total)
+
+
+@router.patch(
+    "/tasks/{task_id}",
+    status_code=204,
+    tags=["任务管理"],
+    summary="重命名任务",
+)
+async def rename_task(
+    task_id: str,
+    body: TaskRenameRequest,
+    store: TaskStore = Depends(get_task_store),
+) -> None:
+    """设置任务的显示名称，用于历史列表。"""
+    store.rename_task(task_id, body.name.strip())
+
+
 @router.delete(
     "/tasks/{task_id}",
     status_code=204,
     tags=["任务管理"],
-    summary="作废任务缓存（不删除磁盘文件）",
+    summary="作废任务缓存，或彻底删除任务",
 )
-async def invalidate_task(
+async def delete_task(
     task_id: str,
+    purge: bool = Query(default=False, description="true 时同时删除磁盘上的全部文件，不可恢复"),
     store: TaskStore = Depends(get_task_store),
 ) -> None:
-    """从内存和哈希索引中移除指定任务的缓存记录。
+    """默认仅从内存和哈希索引中移除任务缓存（`purge=false`）。
 
     清除后，使用相同文件重新调用 `POST /api/v1/tasks/standard_minutes`
-    将触发完整流水线重新处理，而不是返回 `existing=true`。
-    磁盘上的原始媒体和结果文件不会被删除。
+    将触发完整流水线重新处理，而不是返回 `existing=true`；磁盘文件保留。
+
+    `purge=true` 会彻底删除任务：原始媒体、转写、纪要、合规报告与关键帧全部移除，
+    不可恢复。任务仍在运行时返回 409。
     """
-    found = store.invalidate_task(task_id)
+    found = store.purge_task(task_id) if purge else store.invalidate_task(task_id)
     if not found:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -315,6 +356,44 @@ async def get_task_results(
         ocr_text_count=ocr_text_count,
         visual_event_count=visual_event_count,
     )
+
+
+@router.patch(
+    "/tasks/{task_id}/transcript",
+    response_model=TranscriptUpdateResponse,
+    tags=["任务管理"],
+    summary="人工修订转写文本",
+)
+async def edit_transcript(
+    task_id: str,
+    body: TranscriptEditRequest,
+    store: TaskStore = Depends(get_task_store),
+) -> TranscriptUpdateResponse:
+    """按句段下标批量修订 `text_corrected` 并持久化（原始 `text` 不变）。
+
+    仅已完成的任务可修订；越界下标与内容未变化的句段会被忽略，
+    `updated` 为实际变更条数。已生成的纪要与合规报告不会自动重算。
+    """
+    edits = {e.index: e.text_corrected for e in body.edits}
+    return TranscriptUpdateResponse(updated=store.edit_transcript(task_id, edits))
+
+
+@router.patch(
+    "/tasks/{task_id}/speakers",
+    response_model=TranscriptUpdateResponse,
+    tags=["任务管理"],
+    summary="重命名或合并说话人",
+)
+async def rename_speakers(
+    task_id: str,
+    body: SpeakerRenameRequest,
+    store: TaskStore = Depends(get_task_store),
+) -> TranscriptUpdateResponse:
+    """按 `{原名: 新名}` 重写转写中的说话人标签并持久化。
+
+    多个原名映射到同一新名即合并说话人。`updated` 为受影响的句段数。
+    """
+    return TranscriptUpdateResponse(updated=store.rename_speakers(task_id, body.renames))
 
 
 @router.get(

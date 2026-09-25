@@ -6,6 +6,8 @@ import { listTemplates } from "../../api/templates";
 import type { TemplateInfo } from "../../api/templates";
 import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
+import { resetWorkspaceStores } from "../../stores/resetWorkspace";
+import { TaskHistory } from "./TaskHistory";
 import { UploadProgress } from "./UploadProgress";
 
 const VIDEO_EXTS = new Set([".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"]);
@@ -45,6 +47,7 @@ export function UploadPage() {
           templateId,
           onProgress: (received, total) => setUploadProgress({ received, total }),
         });
+        if (useTaskStore.getState().taskId !== res.task_id) resetWorkspaceStores();
         if (!res.existing) {
           setTask(res.task_id, res.status);
         } else if (res.status === "completed") {
@@ -101,7 +104,7 @@ export function UploadPage() {
   );
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-8">
+    <div className="min-h-screen flex flex-col items-center gap-8 p-8 pt-16">
       <div className="text-center">
         <h1 className="text-4xl font-bold mb-2">Copernicus</h1>
         <p className="text-base-content/60">音视频智能听写平台</p>
@@ -228,6 +231,8 @@ export function UploadPage() {
       )}
 
       {taskId && <UploadProgress />}
+
+      <TaskHistory />
 
       <div className="mt-4">
         <Link

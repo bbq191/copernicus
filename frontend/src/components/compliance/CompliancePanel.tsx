@@ -1,5 +1,7 @@
 import { useCallback, useRef } from "react";
 import { Upload, AlertTriangle } from "lucide-react";
+import { IncompleteNotice } from "../shared/IncompleteNotice";
+import { reportIncompleteness } from "../../utils/completeness";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useComplianceStore } from "../../stores/complianceStore";
 import { useTaskStore } from "../../stores/taskStore";
@@ -107,6 +109,7 @@ export function CompliancePanel() {
 
     return (
       <div className="flex flex-col gap-3 p-4">
+        <IncompleteNotice notes={reportIncompleteness(report)} />
         <div className="flex items-center justify-center">
           <div
             className={`radial-progress text-2xl font-bold ${

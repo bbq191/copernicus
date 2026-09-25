@@ -28,3 +28,11 @@ class AudioNotFoundError(CopernicusError):
 
 class ServiceNotConfiguredError(CopernicusError):
     """Raised when a required service was not initialized."""
+
+
+class InvalidIdentifierError(CopernicusError, ValueError):
+    """Raised when a client-supplied identifier (task_id / file_hash) has an illegal format."""
+
+
+class TaskBusyError(CopernicusError):
+    """Raised when an operation requires a task that is currently running."""

@@ -12,7 +12,13 @@ from copernicus.schemas.transcription import (
     TranscriptResponse,
 )
 from copernicus.config import Settings
-from copernicus.exceptions import AudioNotFoundError, ServiceNotConfiguredError, TaskNotFoundError
+from copernicus.exceptions import (
+    AudioNotFoundError,
+    InvalidIdentifierError,
+    ServiceNotConfiguredError,
+    TaskBusyError,
+    TaskNotFoundError,
+)
 from copernicus.services.compliance import ComplianceService
 from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.model_manager import ModelManager
@@ -34,6 +40,9 @@ TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset({
     TaskStatus.COMPLETED,
     TaskStatus.FAILED,
 })
+
+# 服务重启时仍无结果的任务：进程内状态已丢失，只能标记为失败
+_INTERRUPTED_MESSAGE = "服务重启导致任务中断，请重新转写或重新上传"
 
 _PIPELINE_STAGE_STATUS: dict[str, "TaskStatus"] = {
     "video_preprocess": "extracting_frames",
@@ -154,6 +163,7 @@ class TaskStore:
         self._task_timeout = settings.task_timeout_seconds
         self._max_tasks = settings.task_max_in_memory
         self._tasks: dict[str, TaskInfo] = {}
+        self._invalidated: set[str] = set()  # 已被用户作废，不再从磁盘惰性恢复
         self._hash_index: dict[str, str] = persistence.load_hash_index()
 
     @property
@@ -209,8 +219,12 @@ class TaskStore:
         task_id = self._hash_index.get(file_hash)
         if task_id is None:
             return None
-        # Task still in memory (running / pending / failed)
-        if task_id in self._tasks:
+        # Task still in memory (running / pending)；失败任务不复用，允许同一文件重新提交
+        task = self._tasks.get(task_id)
+        if task is not None:
+            if task.status == TaskStatus.FAILED:
+                del self._hash_index[file_hash]
+                return None
             return task_id
         # Task completed and persisted to disk
         if self._persistence.has_file(task_id, "transcript.json"):
@@ -230,6 +244,7 @@ class TaskStore:
         返回 True 表示任务存在并已清除，False 表示任务不在内存中。
         """
         task = self._tasks.pop(task_id, None)
+        self._invalidated.add(task_id)
         stale_hashes = [h for h, tid in self._hash_index.items() if tid == task_id]
         for h in stale_hashes:
             del self._hash_index[h]
@@ -240,7 +255,11 @@ class TaskStore:
     # -- restore from disk ---------------------------------------------------
 
     def restore_from_disk(self) -> None:
-        """扫描上传目录，将已完成任务恢复到内存中，并从 meta.json 重建 hash index。"""
+        """扫描上传目录，恢复任务到内存，并从 meta.json 重建 hash index。
+
+        有转写结果的恢复为 COMPLETED；仍保留媒体但无结果的（失败或被重启打断）恢复为 FAILED，
+        使前端轮询得到明确状态而非 404，并可通过重新转写恢复。
+        """
         index_dirty = False
         for entry in self._persistence.scan_completed_tasks():
             task_id = entry["task_id"]
@@ -253,25 +272,11 @@ class TaskStore:
 
             if task_id in self._tasks:
                 continue
-
-            info = TaskInfo(task_id)
-            info.audio_path = entry["audio_path"]
-
-            if entry["has_transcript"]:
-                try:
-                    data = self._persistence.load_json(task_id, "transcript.json")
-                    if data:
-                        info.result = TranscriptResponse.model_validate(data)
-                        info.status = TaskStatus.COMPLETED
-                except Exception as e:
-                    logger.warning("Skipping task %s during restore: %s", task_id, e)
-                    continue
-
-            if info.status != TaskStatus.COMPLETED:
+            info = self._build_task_from_disk(entry)
+            if info is None:
                 continue
-
             self._tasks[task_id] = info
-            logger.info("Restored task %s from disk", task_id)
+            logger.info("Restored task %s from disk (%s)", task_id, info.status.value)
 
         # 清理 hash_index 中指向不存在任务的 stale 条目
         stale = [
@@ -290,6 +295,31 @@ class TaskStore:
             logger.info("Rebuilt hash index from meta.json files")
 
         logger.info("Total tasks in memory: %d", len(self._tasks))
+
+    def _build_task_from_disk(self, entry: dict) -> TaskInfo | None:
+        """依据磁盘扫描条目重建 TaskInfo；无可恢复内容时返回 None。"""
+        task_id = entry["task_id"]
+        info = TaskInfo(task_id)
+        info.audio_path = entry["audio_path"]
+
+        if entry["has_transcript"]:
+            try:
+                data = self._persistence.load_json(task_id, "transcript.json")
+                if data:
+                    info.result = TranscriptResponse.model_validate(data)
+                    info.status = TaskStatus.COMPLETED
+                    return info
+            except Exception as e:
+                logger.warning("Skipping task %s during restore: %s", task_id, e)
+                return None
+
+        if entry["audio_path"] or entry["has_video"]:
+            info.status = TaskStatus.FAILED
+            info.error = (
+                self._persistence.load_failure_error(task_id) or _INTERRUPTED_MESSAGE
+            )
+            return info
+        return None
 
     # -- submit methods ------------------------------------------------------
 
@@ -410,9 +440,11 @@ class TaskStore:
         hotwords: list[str] | None = None,
     ) -> str:
         """对已有音频重新执行 ASR 和纠正，返回相同的 task_id。"""
-        task = self._tasks.get(task_id)
+        task = self.get(task_id)
         if task is None:
             raise TaskNotFoundError(f"Task {task_id} not found")
+        if task.status not in TERMINAL_STATUSES:
+            raise TaskBusyError(f"Task {task_id} is still running")
 
         media_path = self._persistence.find_video(task_id) or self._persistence.find_audio(task_id)
         if media_path is None:
@@ -429,6 +461,7 @@ class TaskStore:
         task.error = None
 
         # invalidate all prior results
+        self._persistence.clear_failure(task_id)
         self._persistence.delete_file(task_id, "transcript.json")
         self._persistence.delete_file(task_id, "evaluation.json")
         self._persistence.delete_file(task_id, "compliance.json")
@@ -461,7 +494,20 @@ class TaskStore:
     # -- get -----------------------------------------------------------------
 
     def get(self, task_id: str) -> TaskInfo | None:
-        return self._tasks.get(task_id)
+        """获取任务；内存中不存在时（如已被淘汰）尝试从磁盘惰性恢复。"""
+        task = self._tasks.get(task_id)
+        if task is not None or task_id in self._invalidated:
+            return task
+        try:
+            entry = self._persistence.scan_task(task_id)
+        except InvalidIdentifierError:
+            return None
+        if entry is None:
+            return None
+        task = self._build_task_from_disk(entry)
+        if task is not None:
+            self._tasks[task_id] = task
+        return task
 
     # -- memory management ---------------------------------------------------
 
@@ -483,6 +529,15 @@ class TaskStore:
         if to_remove > 0:
             logger.info("Evicted %d completed tasks (total: %d)", min(to_remove, len(evict_ids)), len(self._tasks))
 
+    def _mark_failed(self, task: TaskInfo, error: str) -> None:
+        """置任务为失败并落盘失败原因，使服务重启后仍能恢复该状态。"""
+        task.status = TaskStatus.FAILED
+        task.error = error
+        try:
+            self._persistence.save_failure(task.task_id, error)
+        except Exception:
+            logger.warning("Failed to persist failure of task %s", task.task_id, exc_info=True)
+
     # -- timeout wrapper -----------------------------------------------------
 
     async def _run_with_timeout(self, task_id: str, coro) -> None:
@@ -492,8 +547,7 @@ class TaskStore:
         except asyncio.TimeoutError:
             task = self._tasks.get(task_id)
             if task and task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                task.status = TaskStatus.FAILED
-                task.error = f"任务超时（{self._task_timeout}s）"
+                self._mark_failed(task, f"任务超时（{self._task_timeout}s）")
                 logger.error("Task %s timed out after %ds", task_id, self._task_timeout)
 
     # -- run implementations -------------------------------------------------
@@ -507,8 +561,7 @@ class TaskStore:
             task.status = TaskStatus.COMPLETED
             logger.info("Task %s completed (%s)", task_id, label)
         except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error = str(e) or type(e).__name__
+            self._mark_failed(task, str(e) or type(e).__name__)
             logger.error(
                 "Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True
             )

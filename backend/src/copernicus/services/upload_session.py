@@ -6,6 +6,8 @@ import re
 import shutil
 from pathlib import Path
 
+from copernicus.exceptions import InvalidIdentifierError
+
 logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = ".sessions"
@@ -21,7 +23,7 @@ class UploadSessionService:
 
     def _session_dir(self, file_hash: str) -> Path:
         if not _SAFE_FILE_HASH.fullmatch(file_hash):
-            raise ValueError(f"Invalid file_hash format: {file_hash!r}")
+            raise InvalidIdentifierError(f"Invalid file_hash format: {file_hash!r}")
         return self._sessions_dir / file_hash
 
     def _meta_path(self, file_hash: str) -> Path:

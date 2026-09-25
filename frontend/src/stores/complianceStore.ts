@@ -12,19 +12,29 @@ import { persistViolationStatuses } from "../api/compliance";
 // Debounced persistence: batch status changes within 500ms into one API call
 // ---------------------------------------------------------------------------
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
-let pendingUpdates: Map<number, string> = new Map();
+let pendingUpdates: Map<string, string> = new Map();
 
-function schedulePersist(index: number, status: string) {
-  pendingUpdates.set(index, status);
+function schedulePersist(violationId: string, status: string) {
+  pendingUpdates.set(violationId, status);
   clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    const updates = Array.from(pendingUpdates, ([i, s]) => ({ index: i, status: s }));
+  persistTimer = setTimeout(async () => {
+    const updates = Array.from(pendingUpdates, ([id, s]) => ({
+      violation_id: id,
+      status: s,
+    }));
     pendingUpdates = new Map();
-    // Obtain taskId from taskStore (avoid circular import via lazy import)
-    import("./taskStore").then(({ useTaskStore }) => {
-      const taskId = useTaskStore.getState().taskId;
-      if (taskId) persistViolationStatuses(taskId, updates);
-    });
+    // Lazy imports avoid circular dependencies between stores
+    const { useTaskStore } = await import("./taskStore");
+    const taskId = useTaskStore.getState().taskId;
+    if (!taskId) return;
+    try {
+      await persistViolationStatuses(taskId, updates);
+    } catch {
+      const { useToastStore } = await import("./toastStore");
+      useToastStore
+        .getState()
+        .addToast("error", "复核状态保存失败，刷新页面后可能丢失，请重试");
+    }
   }, 500);
 }
 
@@ -32,7 +42,7 @@ function schedulePersist(index: number, status: string) {
 // Violation unique key helper
 // ---------------------------------------------------------------------------
 function violationKey(v: Violation): string {
-  return `${v.timestamp_ms}-${v.rule_id}`;
+  return v.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,10 +173,8 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
     const { report, selectedViolation } = get();
     if (!report) return;
     let updatedSelected = selectedViolation;
-    let changedIndex = -1;
-    const violations = report.violations.map((item, i) => {
+    const violations = report.violations.map((item) => {
       if (item === v) {
-        changedIndex = i;
         const updated = { ...item, status };
         if (selectedViolation === v) updatedSelected = updated;
         return updated;
@@ -174,9 +182,7 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
       return item;
     });
     set({ report: { ...report, violations }, selectedViolation: updatedSelected });
-    if (changedIndex >= 0) {
-      schedulePersist(changedIndex, status);
-    }
+    schedulePersist(v.id, status);
   },
 
   navigateViolation: (direction) => {
@@ -236,9 +242,9 @@ export const useComplianceStore = create<ComplianceState>((set, get) => ({
     const { report, selectedIds } = get();
     if (!report || selectedIds.size === 0) return;
 
-    const violations = report.violations.map((item, i) => {
+    const violations = report.violations.map((item) => {
       if (selectedIds.has(violationKey(item))) {
-        schedulePersist(i, status);
+        schedulePersist(item.id, status);
         return { ...item, status };
       }
       return item;

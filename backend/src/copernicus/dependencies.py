@@ -1,7 +1,7 @@
 from fastapi import Request
 
 from copernicus.services.compliance import ComplianceService
-from copernicus.services.llm import OllamaClient
+from copernicus.services.llm import LLMClient
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
@@ -33,5 +33,5 @@ def get_template_manager(request: Request) -> TemplateManager:
     return request.app.state.template_manager
 
 
-def get_llm_client(request: Request) -> OllamaClient:
+def get_llm_client(request: Request) -> LLMClient:
     return request.app.state.llm_client

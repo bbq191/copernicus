@@ -23,7 +23,7 @@ from copernicus.config import Settings
 from copernicus.exceptions import ComplianceError
 from copernicus.schemas.compliance import ComplianceReport, ComplianceRule, Violation
 from copernicus.services.compliance_filters import run_filters
-from copernicus.services.llm import OllamaClient
+from copernicus.services.llm import LLMClient
 from copernicus.services.rule_registry import RuleRegistry, StructuredRule
 from copernicus.utils.llm_parse import extract_json_array, strip_think_tags
 from copernicus.utils.types import ProgressCallback
@@ -98,7 +98,7 @@ _SUMMARY_SYSTEM_PROMPT = """\
 
 
 class ComplianceService:
-    def __init__(self, client: OllamaClient, settings: Settings) -> None:
+    def __init__(self, client: LLMClient, settings: Settings) -> None:
         self._client = client
         self._settings = settings
         self._max_text_chars = settings.compliance_max_text_chars
@@ -144,20 +144,8 @@ class ComplianceService:
         - ocr_results: OCR 识别结果列表
         - visual_events: 视觉事件列表
         """
-        total_text = sum(len(e.get("text_corrected", "")) for e in transcript_entries)
-        if total_text > self._max_text_chars:
-            logger.warning(
-                "Transcript too long (%d chars), truncating entries", total_text
-            )
-            truncated: list[dict] = []
-            acc = 0
-            for e in transcript_entries:
-                t = e.get("text_corrected", "")
-                if acc + len(t) > self._max_text_chars:
-                    break
-                truncated.append(e)
-                acc += len(t)
-            transcript_entries = truncated
+        total_segments = len(transcript_entries)
+        transcript_entries, truncated = self._truncate_entries(transcript_entries)
 
         # 结构化规则
         structured_rules = self._registry.enrich(rules)
@@ -200,7 +188,7 @@ class ComplianceService:
             chunk: list[dict],
             group_name: str,
             group_rules: list[StructuredRule],
-        ) -> list[Violation]:
+        ) -> list[Violation] | None:
             nonlocal completed
             # 决定是否附加 OCR 数据
             include_ocr = group_name in ("ocr", "mixed", "all") and ocr_results
@@ -233,9 +221,13 @@ class ComplianceService:
         ]
         chunk_results = await asyncio.gather(*tasks)
 
+        failed_chunks = sum(1 for vs in chunk_results if vs is None)
+        if tasks and failed_chunks == len(tasks):
+            raise ComplianceError("所有审核分块均失败，请检查 LLM 服务后重试")
+
         all_violations: list[Violation] = []
         for vs in chunk_results:
-            all_violations.extend(vs)
+            all_violations.extend(vs or [])
 
         # 按时间戳排序
         all_violations.sort(key=lambda v: v.timestamp_ms)
@@ -267,6 +259,10 @@ class ComplianceService:
         return ComplianceReport(
             total_rules=len(rules),
             total_segments_checked=len(transcript_entries),
+            total_segments=total_segments,
+            truncated=truncated,
+            total_chunks=len(tasks),
+            failed_chunks=failed_chunks,
             violations=all_violations,
             summary=summary,
             compliance_score=score,
@@ -276,6 +272,23 @@ class ComplianceService:
     # ------------------------------------------------------------------ #
     #  内部方法
     # ------------------------------------------------------------------ #
+
+    def _truncate_entries(self, entries: list[dict]) -> tuple[list[dict], bool]:
+        """按字符预算保留前部完整句段，返回 (保留的句段, 是否发生截断)。"""
+        total_text = sum(len(e.get("text_corrected", "")) for e in entries)
+        if total_text <= self._max_text_chars:
+            return entries, False
+
+        logger.warning("Transcript too long (%d chars), truncating entries", total_text)
+        kept: list[dict] = []
+        acc = 0
+        for e in entries:
+            t = e.get("text_corrected", "")
+            if acc + len(t) > self._max_text_chars:
+                break
+            kept.append(e)
+            acc += len(t)
+        return kept, True
 
     def _build_entry_chunks(
         self, entries: list[dict]
@@ -318,8 +331,8 @@ class ComplianceService:
         *,
         group_name: str = "all",
         ocr_records: list[dict] | None = None,
-    ) -> list[Violation]:
-        """Map 阶段：对单个 chunk 执行 LLM 合规审核。"""
+    ) -> list[Violation] | None:
+        """Map 阶段：对单个 chunk 执行 LLM 合规审核，全部重试失败时返回 None。"""
         logger.info(
             "Audit chunk %d/%d group=%s (%d entries, %d rules)...",
             chunk_index + 1,
@@ -451,7 +464,7 @@ class ComplianceService:
             total_chunks,
             group_name,
         )
-        return []
+        return None
 
     async def _generate_summary(
         self,

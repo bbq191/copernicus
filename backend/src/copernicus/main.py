@@ -91,13 +91,15 @@ from copernicus.config import Settings, settings
 from copernicus.exceptions import (
     AudioNotFoundError,
     CopernicusError,
+    InvalidIdentifierError,
     ServiceNotConfiguredError,
+    TaskBusyError,
     TaskNotFoundError,
 )
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.lifecycle import LifecycleService
-from copernicus.services.llm import OllamaClient
+from copernicus.services.llm import LLMClient, create_llm_client
 from copernicus.services.corrector import CorrectorService
 from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.services.hotword_replacer import HotwordReplacerService
@@ -119,7 +121,7 @@ from copernicus.services.preflight import run_preflight
 logger = logging.getLogger(__name__)
 
 
-async def _init_app_services(app: FastAPI, settings: Settings, llm_client: OllamaClient) -> asyncio.Task:
+async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMClient) -> asyncio.Task:
     """构造并注册所有服务到 app.state，返回后台任务句柄。"""
     # 基础依赖层
     app.state.template_manager = TemplateManager(settings.templates_dir)
@@ -192,15 +194,17 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: Ollam
 async def lifespan(app: FastAPI):
     logger.info("Starting Copernicus service ...")
     await run_preflight(settings)
-    llm_client = OllamaClient(settings)
+    llm_client = create_llm_client(settings)
+    lifecycle_task: asyncio.Task | None = None
     try:
         lifecycle_task = await _init_app_services(app, settings, llm_client)
         logger.info("Copernicus service ready.")
         yield
     finally:
         logger.info("Shutting down Copernicus service ...")
-        lifecycle_task.cancel()
-        await asyncio.gather(lifecycle_task, return_exceptions=True)
+        if lifecycle_task is not None:
+            lifecycle_task.cancel()
+            await asyncio.gather(lifecycle_task, return_exceptions=True)
         await llm_client.close()
 
 
@@ -304,6 +308,11 @@ async def audio_not_found_handler(request: Request, exc: AudioNotFoundError):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
+@app.exception_handler(TaskBusyError)
+async def task_busy_handler(request: Request, exc: TaskBusyError):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
 @app.exception_handler(ServiceNotConfiguredError)
 async def service_not_configured_handler(request: Request, exc: ServiceNotConfiguredError):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
@@ -314,7 +323,6 @@ async def copernicus_error_handler(request: Request, exc: CopernicusError):
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
-@app.exception_handler(ValueError)
-async def value_error_handler(request: Request, exc: ValueError):
-    # persistence.task_dir() 在 task_id 格式非法时抛出 ValueError
+@app.exception_handler(InvalidIdentifierError)
+async def invalid_identifier_handler(request: Request, exc: InvalidIdentifierError):
     return JSONResponse(status_code=422, content={"detail": str(exc)})

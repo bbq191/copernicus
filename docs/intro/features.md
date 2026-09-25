@@ -424,17 +424,18 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 
 ---
 
-### 3.11 LLM 客户端（OllamaClient）
+### 3.11 LLM 客户端（LLMClient）
 
 | 功能 | 说明 |
 |---|---|
 | 流式响应 | stream=True 逐 token 接收，避免长推理超时 |
+| 双协议 | `LLM_PROVIDER` 选择 Ollama 原生或 OpenAI 兼容协议（DeepSeek / vLLM / 通义等）|
 | 全局并发控制 | Semaphore 限制最大并发 LLM 请求数（默认 3）|
-| 重试机制 | 指数退避重试（2^attempt * retry_delay），默认 2 次 |
+| 重试机制 | 指数退避重试（2^attempt * retry_delay），默认 2 次；仅对网络错误、5xx、429 重试，鉴权/参数类 4xx 直接失败 |
 | 动态超时 | 大文本 prompt 可覆盖默认 read_timeout |
 | 思考模式 | think 参数控制：None（默认）/ False（批量纠正）/ True（深度推理）|
 | 动态 num_ctx | 纠正 4096 / 评估 8192 / 通用 32768，按场景适配显存 |
-| 口语改写专属客户端 | TTS 改写使用独立 OllamaClient 实例，与主 LLM 流程隔离 |
+| 口语改写专属客户端 | TTS 改写使用独立的 Ollama 客户端实例，与主 LLM 流程隔离 |
 
 ---
 

@@ -295,7 +295,9 @@ PATCH /api/v1/tasks/{task_id}/compliance/violations
 Content-Type: application/json
 ```
 
-请求体：`{"updates": [{"index": 0, "status": "confirmed"}, {"index": 1, "status": "rejected"}]}`
+请求体：`{"updates": [{"violation_id": "v0001", "status": "confirmed"}, {"violation_id": "v0002", "status": "rejected"}]}`
+
+`violation_id` 取自报告中每条违规的 `id` 字段，在同一份报告内稳定唯一。旧的按列表下标更新（`index`）仍兼容但已废弃。响应为 `{"ok": true, "updated": 更新条数, "missing": [未匹配的目标]}`，未匹配的目标不会中断其余更新。
 
 `status` 取值：`pending`（待审）/ `confirmed`（已确认）/ `rejected`（已驳回）。
 更新立即持久化，页面刷新后状态保留。
@@ -460,8 +462,8 @@ GET /api/v1/tasks/{task_id}/synthesis
 |---|---|---|
 | 202 | 任务提交成功 | 正常，开始轮询 |
 | 400 | 请求格式错误 | 检查 Content-Range 头或请求体是否为空 |
-| 404 | 任务 ID 不存在 | 检查 task_id 是否正确，服务重启后磁盘有持久化可恢复 |
-| 409 | 冲突 | 分片上传：偏移量冲突，重新调用 GET /uploads/{hash} 获取最新 offset 后续传；synthesize：该任务已有合成在进行中，轮询状态即可 |
+| 404 | 任务 ID 不存在 | 检查 task_id 是否正确；服务重启后，有结果的任务会从磁盘恢复，保留媒体但无结果的任务会恢复为 `failed`（提示服务重启导致中断），可调用重新转写 |
+| 409 | 冲突 | 重新转写：任务仍在运行，待其结束后再试；分片上传：偏移量冲突，重新调用 GET /uploads/{hash} 获取最新 offset 后续传；synthesize：该任务已有合成在进行中，轮询状态即可 |
 | 413 | 文件过大 | 音视频上限 500 MB，规则文件上限 2 MB |
 | 422 | 参数校验失败 | 检查必填字段和格式，`transcript` 必须为合法 JSON 数组 |
 | 500 | 服务内部错误 | 查看 `error` 字段，常见原因：ASR 模型未加载、LLM 不可达 |
@@ -574,6 +576,8 @@ GET /api/v1/tasks/a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d/results
   },
   "evaluation": {
     "title": "保险产品说明会",
+    "truncated": false,
+    "degraded_chunks": 0,
     "formatted_content": "【会议主题】\n保险产品说明会\n\n【会议概述】\n本次会议围绕某款终身寿险产品展开，介绍了产品保障责任和投保注意事项。\n\n【会议内容】\n- 介绍年化收益 3.5%、保障期 20 年的核心产品条款\n- 说明投保适合人群及健康告知要求\n\n【会议结论】\n1. 产品整体符合客户保障需求\n2. 建议客户结合自身情况选择缴费期\n\n【待办事项】\n- 向客户发送完整产品说明书"
   },
   "compliance": null,
@@ -619,11 +623,16 @@ parent_task_id: a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d
   "report": {
     "total_rules": 1,
     "total_segments_checked": 24,
+    "total_segments": 24,
+    "truncated": false,
+    "total_chunks": 2,
+    "failed_chunks": 0,
     "compliance_score": 72,
     "summary": "发现 1 处高风险违规，主要集中在收益承诺表述...",
     "source_counts": { "transcript": 1, "ocr": 0, "vision": 0 },
     "violations": [
       {
+        "id": "v0001",
         "rule_id": 1,
         "rule_content": "禁止承诺保证收益",
         "timestamp_ms": 18300,

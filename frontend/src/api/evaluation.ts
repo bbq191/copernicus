@@ -1,6 +1,7 @@
-import client, { POLL_INTERVAL_MS } from "./client";
+import client from "./client";
+import { pollUntilDone } from "./polling";
 import type { EvaluationResult, EvaluationResponse } from "../types/evaluation";
-import type { TaskSubmitResponse, TaskStatusResponse } from "../types/task";
+import type { TaskSubmitResponse } from "../types/task";
 import { useEvaluationStore } from "../stores/evaluationStore";
 
 const STATUS_TEXT: Record<string, string> = {
@@ -29,24 +30,11 @@ export async function evaluateText(
 }
 
 async function pollForEvaluation(taskId: string): Promise<EvaluationResult> {
-  const store = useEvaluationStore.getState;
-
-  while (true) {
-    const { data } = await client.get<TaskStatusResponse>(`/tasks/${taskId}`);
-
-    if (data.status === "completed" && data.result) {
-      const response = data.result as EvaluationResponse;
-      return response.evaluation;
-    }
-
-    if (data.status === "failed") {
-      throw new Error(data.error || "评估失败");
-    }
-
-    const percent = data.progress?.percent ?? 0;
-    const statusText = STATUS_TEXT[data.status] || "处理中...";
-    store().setProgress(percent, statusText);
-
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
+  const result = await pollUntilDone(taskId, {
+    statusText: STATUS_TEXT,
+    failedText: "评估失败",
+    onProgress: (percent, text) =>
+      useEvaluationStore.getState().setProgress(percent, text),
+  });
+  return (result as EvaluationResponse).evaluation;
 }

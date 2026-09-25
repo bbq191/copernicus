@@ -12,7 +12,7 @@ from copernicus.config import settings
 from copernicus.dependencies import get_model_manager, get_task_store
 from copernicus.schemas.synthesis import SynthesisRequest, SynthesisStatusResponse
 from copernicus.schemas.transcription import TranscriptResponse
-from copernicus.services.llm import OllamaClient
+from copernicus.services.llm import LLMClient, OllamaClient
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.task_store import LLM_ACTIVE_STATUSES, TaskStore
 import copernicus.services.tts as tts_service
@@ -60,7 +60,7 @@ router = APIRouter(prefix="/api/v1", tags=["音频重塑"])
 async def _rewrite_chunk(
     speaker: str,
     text: str,
-    llm: OllamaClient,
+    llm: LLMClient,
     num_ctx: int,
     energy_level: int,
 ) -> tuple[str, str]:
@@ -90,11 +90,11 @@ async def _rewrite_chunk(
 
 async def _rewrite_chunks(
     chunks: list[tuple[str, str]],
-    llm: OllamaClient,
+    llm: LLMClient,
     num_ctx: int,
     energy_level: int,
 ) -> list[tuple[str, str]]:
-    """并发改写所有 chunk，利用 OllamaClient 内置的并发信号量限流。"""
+    """并发改写所有 chunk，利用 LLMClient 内置的并发信号量限流。"""
     results = await asyncio.gather(
         *[_rewrite_chunk(s, t, llm, num_ctx, energy_level) for s, t in chunks]
     )
@@ -202,7 +202,7 @@ async def synthesize_task_audio(
     if settings.tts_rewrite_enabled and chunks:
         logger.info("Rewriting %d chunks for natural speech ...", len(chunks))
         t_rewrite = time.perf_counter()
-        rewrite_llm = OllamaClient._make_rewrite_client(settings)
+        rewrite_llm = OllamaClient.for_rewrite(settings)
         try:
             chunks = await _rewrite_chunks(chunks, rewrite_llm, settings.tts_rewrite_num_ctx, settings.tts_energy_level)
         finally:

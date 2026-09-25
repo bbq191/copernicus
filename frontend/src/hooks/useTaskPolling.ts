@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { getTaskStatus, getTaskResults, getTaskMediaUrl } from "../api/task";
 import { POLL_INTERVAL_MS } from "../api/client";
+import { createFailureGuard } from "../api/polling";
 import { useTaskStore } from "../stores/taskStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useEvaluationStore } from "../stores/evaluationStore";
@@ -15,15 +16,19 @@ export function useTaskPolling(enabled = true) {
   const setError = useTaskStore((s) => s.setError);
   const setRawEntries = useTranscriptStore((s) => s.setRawEntries);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const guardRef = useRef(createFailureGuard());
 
   useEffect(() => {
     if (!enabled || !taskId || status === "completed" || status === "failed") {
       return;
     }
 
+    guardRef.current = createFailureGuard();
+
     const poll = async () => {
       try {
         const res = await getTaskStatus(taskId);
+        guardRef.current.recordSuccess();
         updateStatus(res.status, res.progress);
 
         if (res.status === "completed" && res.result) {
@@ -58,6 +63,8 @@ export function useTaskPolling(enabled = true) {
           clearInterval(timerRef.current);
         }
       } catch (err) {
+        // 网络抖动等可恢复错误：保留定时器，下个周期重试；连续失败或不可恢复才报错
+        if (guardRef.current.shouldRetry(err)) return;
         setError(err instanceof Error ? err.message : "轮询失败");
         clearInterval(timerRef.current);
       }

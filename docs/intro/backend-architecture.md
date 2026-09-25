@@ -13,7 +13,7 @@
 | Web 框架 | FastAPI | 异步路由 + Lifespan 生命周期 |
 | 配置 | pydantic-settings | .env 文件驱动，类型安全 |
 | ASR 引擎 | FunASR (Paraformer / SenseVoice) | 双模式语音识别 + 说话人分离 |
-| LLM | Ollama 本地 / DeepSeek 云端 | httpx 直连 /api/chat 端点，流式响应，无官方 SDK |
+| LLM | Ollama 本地 / OpenAI 兼容云端（DeepSeek、vLLM 等）| httpx 直连，流式响应，无官方 SDK；由 `LLM_PROVIDER` 选择协议 |
 | TTS | ChatTTS | 多说话人对话音频合成，LLM 口语化改写（默认关闭）|
 | OCR | RapidOCR (ONNX) | CPU 推理，不占 GPU 显存 |
 | 人脸检测 | ultralytics YOLO | yolov8n-face 轻量模型 |
@@ -67,7 +67,7 @@ backend/src/copernicus/
     compliance.py         #   多源合规审核
     compliance_filters.py #   后处理过滤器链
     rule_registry.py      #   结构化规则注册表
-    llm.py                #   OllamaClient（流式 + 重试 + 并发）
+    llm/                  #   LLM 客户端包：base（重试 + 并发）/ ollama / openai_compat / 工厂
     persistence.py        #   JSON 文件持久化 + 去重
     task_store.py         #   任务生命周期管理
     template_manager.py   #   纪要模板加载与热重载（Markdown + frontmatter）
@@ -110,7 +110,7 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
    └── LOKY_MAX_CPU_COUNT / OMP_NUM_THREADS（修复 joblib 物理核心检测）
    └── MODELSCOPE_CACHE 指向 models/funasr/ + PYTORCH_CUDA_ALLOC_CONF=expandable_segments
 
-2. OllamaClient
+2. LLM 客户端（create_llm_client，按 LLM_PROVIDER 选择 Ollama 或 OpenAI 兼容实现）
    └── 全局 Semaphore(llm_max_concurrent) + httpx.AsyncClient
 
 3. 基础服务
@@ -120,7 +120,7 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
    └── HotwordReplacerService（FlashText 热词表）
 
 4. CorrectorService
-   └── 组合: OllamaClient + TextCorrectorService + HotwordReplacerService
+   └── 组合: LLMClient + TextCorrectorService + HotwordReplacerService
 
 5. PersistenceService
    └── upload_dir 目录初始化
@@ -134,15 +134,15 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
 
 8. 上层服务
    ├── TemplateManager（扫描 templates/ 目录，加载所有 .md 模板）
-   ├── EvaluatorService（OllamaClient + Settings + TemplateManager）
-   └── ComplianceService（OllamaClient + Settings）
+   ├── EvaluatorService（LLMClient + Settings + TemplateManager）
+   └── ComplianceService（LLMClient + Settings）
 
 9. ModelManager
    └── 注册 ASR / TTS 加载器（互斥锁模式）
 
 10. TaskStore
     └── 注入 Pipeline + Persistence + Evaluator + Compliance + TemplateManager
-    └── restore_from_disk() 恢复历史任务（同时修剪失效 hash 索引）
+    └── restore_from_disk() 恢复历史任务：有结果的为 COMPLETED，保留媒体但无结果的（失败或被重启打断）为 FAILED；同时修剪失效 hash 索引
 
 11. LifecycleService
     └── asyncio 定时任务：每小时清理超过 media_retention_hours(24h) 的原始媒体文件（保留 JSON 结果）
@@ -194,7 +194,7 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
 | /api/v1/tasks/compliance_audit | POST | 提交合规审核任务 |
 | /api/v1/tasks/{task_id}/compliance/violations | PATCH | 批量更新违规审核状态 |
 
-audit 端点接收 rules_file（CSV/XLSX）+ transcript（JSON 字符串）+ parent_task_id。violations PATCH 端点接收 `[{index, status}]` 数组。
+audit 端点接收 rules_file（CSV/XLSX）+ transcript（JSON 字符串）+ parent_task_id。violations PATCH 端点接收 `[{violation_id, status}]` 数组（`violation_id` 为报告内稳定唯一标识；旧的 `index` 字段仍兼容但已废弃），返回实际更新数与未匹配的目标。
 
 ### 4.4 音频重塑路由 (routers/synthesis.py)
 
@@ -350,7 +350,7 @@ PipelineService 是对外暴露的唯一接口，构造时注册 9 个 Stage：
 阶段 3: pycorrector 轻量纠错 (TextCorrectorService)
   └── MacBERT 模型检测同音字/形近字（可配置开关）
     ↓
-阶段 4: LLM 润色 (OllamaClient)
+阶段 4: LLM 润色 (LLMClient)
   ├── JSON-to-JSON 格式：{"entries": [{id, text}]} → {"entries": [{id, text}]}
   ├── System Prompt: 字幕校对专家，严禁合并/拆分/改写
   ├── 批次分组：同时满足 max_entries(15) 和 max_chars(800) 限制
@@ -496,15 +496,23 @@ concat_parts_to_mp3（ffmpeg 合并为 synthesis.mp3）
 
 **ModelManager 互斥**: synthesize 路由在合成前通过 `model_manager.acquire("tts")` 卸载 ASR 模型，合成完成后可重新加载 ASR。
 
-### 6.8 LLM 客户端 (llm.py)
+### 6.8 LLM 客户端 (services/llm/)
 
-OllamaClient 封装了 Ollama 原生 /api/chat 端点的完整交互逻辑：
+客户端包由三部分组成，上层服务只依赖抽象类型 LLMClient：
 
-**流式响应**: 所有请求使用 stream=True，逐 token 接收。非流式模式下 httpx 必须等待 Ollama 完成整个推理，复杂文本推理时间可能超过 120 秒导致 ReadTimeout。流式模式下只要 token 生成间隔 < read_timeout 就不会超时。
+| 模块 | 职责 |
+|------|------|
+| base | 抽象基类：全局并发信号量、指数退避重试、超时覆盖，协议细节交由子类 |
+| ollama | Ollama 原生 /api/chat 协议（支持 num_ctx、think、keep_alive、format=json），另提供 TTS 改写专用的独立实例 |
+| openai_compat | OpenAI 兼容 /chat/completions 协议（SSE 流式，Bearer 鉴权，response_format 输出 JSON，用量取自 usage）|
+
+**协议选择**: 由 `LLM_PROVIDER`（ollama / openai）决定，`create_llm_client` 工厂创建单例。openai 协议请求地址为 `{LLM_BASE_URL}/chat/completions`，OpenAI 等需要 /v1 的服务须在地址中带上；DeepSeek 直接使用其根地址。Ollama 专有参数（num_ctx、think、keep_alive）在 openai 协议下被忽略。
+
+**流式响应**: 所有请求使用流式，逐 token 接收。非流式模式下 httpx 必须等待整个推理完成，复杂文本可能超过 120 秒导致 ReadTimeout；流式模式下只要 token 间隔 < read_timeout 就不会超时。
 
 **并发控制**: asyncio.Semaphore(llm_max_concurrent) 全局限制，chat 方法在获取信号量后才发起请求。
 
-**重试机制**: 遇到 ReadTimeout / ConnectError / HTTPStatusError 时自动重试，延迟按指数退避（2^attempt * retry_delay）。
+**重试机制**: 仅对可恢复错误重试——ReadTimeout、ConnectError、流式响应被对端中断、HTTP 5xx 与 429；401/404/422 等 4xx（鉴权或参数错误）重试无意义，直接抛出。延迟按指数退避（2^attempt * retry_delay）。
 
 **chat 方法参数**:
 
@@ -512,13 +520,13 @@ OllamaClient 封装了 Ollama 原生 /api/chat 端点的完整交互逻辑：
 |------|------|
 | messages | 对话消息列表 |
 | temperature | 温度（默认 0.1） |
-| json_format | 强制 JSON 输出（Ollama format="json"）|
-| num_ctx | 上下文窗口大小（按场景动态设置）|
-| think | None=默认 / False=禁用推理 / True=强制推理 |
-| num_predict | 最大输出 token 数 |
+| json_format | 强制 JSON 输出（Ollama format="json" / OpenAI response_format=json_object）|
+| num_ctx | 上下文窗口大小（仅 Ollama）|
+| think | None=默认 / False=禁用推理 / True=强制推理（仅 Ollama）|
+| num_predict | 最大输出 token 数（OpenAI 协议映射为 max_tokens）|
 | timeout | 覆盖默认 read timeout |
 
-**健康检查**: is_reachable() 调用 /api/tags 端点，5 秒超时。
+**健康检查**: is_reachable() 在 Ollama 下调用 /api/tags，在 openai 协议下调用 /models，均为 5 秒超时。
 
 ### 6.9 持久化服务 (persistence.py)
 
@@ -811,12 +819,16 @@ FastAPI 事件循环（单进程 asyncio）
 | LLM 输出 | 正则 fallback | JSON 解析全失败时正则提取 id/text 对 |
 | LLM 输出 | think 标签清理 | strip_think_tags 处理未关闭标签 |
 | 评估 Map | chunk fallback | Map 单段失败时截取原文前 500 字替代 |
-| 合规 Map | chunk 容错 | 单 chunk 审核全失败时返回空列表 |
+| 合规 Map | chunk 容错 | 单 chunk 审核失败被跳过并计入 failed_chunks，报告显式标记；全部 chunk 失败则任务失败，不产出"无违规"的假报告 |
+| 合规 / 纪要 | 完整性标记 | 超过文本上限被截断时，报告 truncated=true 并给出已检查/总段落数；纪要 Map 阶段失败的分块计入 degraded_chunks |
 | 合规摘要 | 模板 fallback | LLM 生成摘要失败时用统计模板替代 |
 | 合规过滤 | exact 二次验证 | Python 正则 + 拼音匹配双重验证 |
 | 任务执行 | 超时保护 | asyncio.wait_for(task_timeout_seconds) |
 | 任务执行 | 生命周期包装 | _task_lifecycle 统一异常捕获 + 状态标记 |
 | 文件持久化 | 原子写入 | tempfile + rename 防数据损坏 |
+| 任务状态 | 失败原因落盘 | 任务失败时写入 failure.json（仅对有 meta.json 的任务），重启后恢复原始失败原因；无记录则提示"服务重启导致任务中断" |
+| 任务状态 | 惰性恢复 | 内存淘汰后的任务在被查询时从磁盘重建，被用户作废（DELETE）的任务不再恢复 |
+| 任务状态 | 重跑保护 | 运行中的任务不允许重新转写（409） |
 | 哈希索引 | stale 清理 | restore_from_disk() 启动时确定性清理并持久化；lookup 时发现 stale 条目惰性移除内存状态 |
 | 分片上传 | 断点续传 | GET 返回已接收字节，客户端续传剩余分块 |
 
@@ -856,10 +868,10 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 |--------|---------|
 | TranscriptEntrySchema | timestamp / timestamp_ms / end_ms / speaker / text / text_corrected |
 | TranscriptResponse | transcript: list[TranscriptEntrySchema] + processing_time_ms |
-| EvaluationResult | title（纪要标题）/ formatted_content（Markdown 纪要正文） |
+| EvaluationResult | title（纪要标题）/ formatted_content（Markdown 纪要正文）/ truncated（输入被截断）/ degraded_chunks（Map 失败降级的分块数）；后两项由服务端写入，模型输出中的同名字段会被覆盖 |
 | ComplianceRule | id / content |
-| Violation | rule_id / rule_content / timestamp_ms / end_ms / speaker / original_text / reason / reasoning / severity / confidence / source / evidence_url / evidence_text / rule_ref / status |
-| ComplianceReport | total_rules / total_segments_checked / violations[] / summary / compliance_score / source_counts |
+| Violation | id（报告内稳定唯一）/ rule_id / rule_content / timestamp_ms / end_ms / speaker / original_text / reason / reasoning / severity / confidence / source / evidence_url / evidence_text / rule_ref / status |
+| ComplianceReport | total_rules / total_segments_checked / total_segments / truncated / total_chunks / failed_chunks / violations[] / summary / compliance_score / source_counts；缺失 id 的违规条目在构造时按顺序补齐，兼容旧数据 |
 | TaskResultsResponse | task_id / transcript / evaluation / compliance / has_audio / has_video / **has_synthesis** / keyframe_count / ocr_text_count / visual_event_count |
 
 ### 12.3 视觉 Schema

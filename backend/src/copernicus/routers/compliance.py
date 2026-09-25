@@ -2,7 +2,7 @@ import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from copernicus.dependencies import get_task_store
 from copernicus.schemas.compliance import ComplianceResponse
@@ -65,8 +65,17 @@ async def submit_compliance_audit(
 
 
 class ViolationStatusUpdate(BaseModel):
-    index: int
+    violation_id: str | None = None
+    index: int | None = Field(
+        default=None, description="已废弃：列表下标，请改用 violation_id"
+    )
     status: Literal["pending", "confirmed", "rejected"]
+
+    @model_validator(mode="after")
+    def _require_target(self) -> "ViolationStatusUpdate":
+        if self.violation_id is None and self.index is None:
+            raise ValueError("violation_id 与 index 至少提供一个")
+        return self
 
 
 class ViolationBatchUpdate(BaseModel):
@@ -84,8 +93,10 @@ async def update_violation_statuses(
 ) -> dict:
     """人工复核时更新违规条目的状态。
 
+    通过 `violation_id`（报告内稳定唯一）定位条目；`index`（列表下标）仅为兼容旧客户端保留。
     `status` 取值：`pending`（待审）、`confirmed`（已确认）、`rejected`（已驳回）。
     更新立即持久化到 `compliance.json`，页面刷新后状态保留。
+    未匹配到条目的更新会在 `missing` 中返回，不会中断其余更新。
     """
     persistence = store.persistence
     data = persistence.load_json(task_id, "compliance.json")
@@ -94,10 +105,20 @@ async def update_violation_statuses(
 
     compliance = ComplianceResponse.model_validate(data)
     violations = compliance.report.violations
+    by_id = {v.id: v for v in violations}
 
+    updated = 0
+    missing: list[str] = []
     for u in body.updates:
-        if 0 <= u.index < len(violations):
-            violations[u.index].status = u.status
+        if u.violation_id is not None:
+            target = by_id.get(u.violation_id)
+        else:
+            target = violations[u.index] if 0 <= u.index < len(violations) else None
+        if target is None:
+            missing.append(u.violation_id if u.violation_id is not None else str(u.index))
+            continue
+        target.status = u.status
+        updated += 1
 
     persistence.save_json(task_id, "compliance.json", compliance)
-    return {"ok": True}
+    return {"ok": True, "updated": updated, "missing": missing}

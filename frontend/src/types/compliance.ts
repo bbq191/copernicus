@@ -7,6 +7,9 @@ export type ViolationStatus = "pending" | "confirmed" | "rejected";
 export type ViolationSource = "transcript" | "ocr" | "vision";
 
 export interface Violation {
+  /** 报告内稳定唯一的标识，用于选择与状态持久化 */
+  id: string;
+
   // 通用
   rule_id: number;
   rule_content: string;
@@ -44,6 +47,11 @@ export interface EvidenceItem {
 export interface ComplianceReport {
   total_rules: number;
   total_segments_checked: number;
+  /** 转写原始句段数，大于已检查数表示文本被截断（旧数据无此字段） */
+  total_segments?: number;
+  truncated?: boolean;
+  total_chunks?: number;
+  failed_chunks?: number;
   violations: Violation[];
   summary: string;
   compliance_score: number;

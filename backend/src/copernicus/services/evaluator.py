@@ -16,12 +16,15 @@ import logging
 
 from copernicus.config import Settings
 from copernicus.schemas.evaluation import EvaluationResult
-from copernicus.services.llm import OllamaClient
+from copernicus.services.llm import LLMClient
 from copernicus.utils.llm_parse import extract_json_object, strip_think_tags
 from copernicus.utils.text import chunk_text
 from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
+
+# Map 阶段 LLM 失败时，用该长度的原文片段代替要点
+_MAP_FALLBACK_CHARS = 500
 
 
 def build_map_prompt(template_prompt: str) -> str:
@@ -58,7 +61,7 @@ def build_reduce_prompt(template_prompt: str) -> str:
 
 
 class EvaluatorService:
-    def __init__(self, client: OllamaClient, settings: Settings) -> None:
+    def __init__(self, client: LLMClient, settings: Settings) -> None:
         self._client = client
         self._max_text_chars = settings.evaluation_max_text_chars
         self._chunk_size = settings.evaluation_chunk_size
@@ -73,7 +76,8 @@ class EvaluatorService:
         on_progress: ProgressCallback | None = None,
     ) -> EvaluationResult:
         """评估文本内容，长文本自动使用 Map-Reduce 策略。"""
-        if len(text) > self._max_text_chars:
+        truncated = len(text) > self._max_text_chars
+        if truncated:
             logger.warning(
                 "Text too long for evaluation (%d chars), truncating to %d chars",
                 len(text),
@@ -81,16 +85,19 @@ class EvaluatorService:
             )
             text = text[: self._max_text_chars]
 
+        degraded_chunks = 0
         if len(text) <= self._chunk_size:
             if on_progress:
                 on_progress(0, 1)
             result = await self._evaluate_direct(text, template_prompt, max_retries=max_retries)
             if on_progress:
                 on_progress(1, 1)
-            return result
-
-        return await self._evaluate_map_reduce(
-            text, template_prompt, max_retries=max_retries, on_progress=on_progress
+        else:
+            result, degraded_chunks = await self._evaluate_map_reduce(
+                text, template_prompt, max_retries=max_retries, on_progress=on_progress
+            )
+        return result.model_copy(
+            update={"truncated": truncated, "degraded_chunks": degraded_chunks}
         )
 
     # ------------------------------------------------------------------ #
@@ -114,7 +121,8 @@ class EvaluatorService:
         *,
         max_retries: int = 2,
         on_progress: ProgressCallback | None = None,
-    ) -> EvaluationResult:
+    ) -> tuple[EvaluationResult, int]:
+        """返回 (评估结果, Map 阶段降级为原文兜底的分块数)。"""
         chunks = chunk_text(text, self._chunk_size, overlap=0)
         total_steps = len(chunks) + 1
         logger.info(
@@ -129,7 +137,7 @@ class EvaluatorService:
         completed = 0
         lock = asyncio.Lock()
 
-        async def _map_with_progress(i: int, chunk: str) -> str:
+        async def _map_with_progress(i: int, chunk: str) -> str | None:
             nonlocal completed
             result = await self._map_chunk(i, chunk, len(chunks), template_prompt)
             async with lock:
@@ -141,8 +149,13 @@ class EvaluatorService:
         map_tasks = [
             _map_with_progress(i, chunk) for i, chunk in enumerate(chunks)
         ]
-        summaries = await asyncio.gather(*map_tasks)
+        map_results = await asyncio.gather(*map_tasks)
 
+        degraded_chunks = sum(1 for r in map_results if r is None)
+        summaries = [
+            r if r is not None else chunk[:_MAP_FALLBACK_CHARS]
+            for r, chunk in zip(map_results, chunks)
+        ]
         combined = "\n\n---\n\n".join(
             f"【片段 {i + 1}/{len(chunks)}】\n{s}" for i, s in enumerate(summaries)
         )
@@ -153,11 +166,12 @@ class EvaluatorService:
         result = await self._reduce(combined, template_prompt, max_retries=max_retries)
         if on_progress:
             on_progress(total_steps, total_steps)
-        return result
+        return result, degraded_chunks
 
     async def _map_chunk(
         self, index: int, chunk: str, total: int, template_prompt: str
-    ) -> str:
+    ) -> str | None:
+        """提炼单个分块要点；LLM 调用失败返回 None，由调用方兜底并计数。"""
         logger.info("Map chunk %d/%d (%d chars)...", index + 1, total, len(chunk))
         try:
             response = await self._client.chat(
@@ -180,7 +194,7 @@ class EvaluatorService:
             return content or f"（片段 {index + 1} 无法提取要点）"
         except Exception as e:
             logger.warning("Map chunk %d/%d failed: %s", index + 1, total, e)
-            return chunk[:500]
+            return None
 
     async def _reduce(
         self, combined_summary: str, template_prompt: str, *, max_retries: int = 2

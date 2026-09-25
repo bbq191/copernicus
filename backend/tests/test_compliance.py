@@ -618,3 +618,89 @@ class TestEvidenceEnricher:
         ]
         result = EvidenceEnricher().apply(vs, None)
         assert result[0].evidence_text is None
+
+
+# ------------------------------------------------------------------ #
+#  9. 完整性标记：截断 / 分块失败
+# ------------------------------------------------------------------ #
+
+
+def _entry(i: int, text: str) -> dict:
+    return {
+        "timestamp": f"00:{i:02d}",
+        "timestamp_ms": i * 1000,
+        "end_ms": i * 1000 + 900,
+        "speaker": "讲师",
+        "text_corrected": text,
+    }
+
+
+class TestReportCompleteness:
+    @pytest.mark.asyncio
+    async def test_truncated_flag_and_segment_counts(self, mock_client: MagicMock):
+        settings = Settings(
+            llm_base_url="http://localhost:11434",
+            compliance_max_text_chars=25,
+            compliance_group_by_source=False,
+        )
+        service = ComplianceService(mock_client, settings)
+        mock_client.chat = AsyncMock(
+            return_value=ChatResponse(content="[]", model="m")
+        )
+        entries = [_entry(i, "一二三四五六七八九十") for i in range(5)]  # 每条 10 字
+
+        report = await service.audit([ComplianceRule(id=1, content="r")], entries)
+
+        assert report.truncated is True
+        assert report.total_segments == 5
+        assert report.total_segments_checked == 2
+
+    @pytest.mark.asyncio
+    async def test_not_truncated_by_default(
+        self, service: ComplianceService, mock_client: MagicMock
+    ):
+        mock_client.chat = AsyncMock(
+            return_value=ChatResponse(content="[]", model="m")
+        )
+        report = await service.audit(
+            [ComplianceRule(id=1, content="r")], [_entry(1, "内容")]
+        )
+        assert report.truncated is False
+        assert report.failed_chunks == 0
+        assert report.total_segments == report.total_segments_checked == 1
+
+    @pytest.mark.asyncio
+    async def test_all_chunks_failed_raises(
+        self, service: ComplianceService, mock_client: MagicMock
+    ):
+        from copernicus.exceptions import ComplianceError
+
+        mock_client.chat = AsyncMock(side_effect=RuntimeError("llm down"))
+        with pytest.raises(ComplianceError):
+            await service.audit(
+                [ComplianceRule(id=1, content="r")], [_entry(1, "内容")]
+            )
+
+    @pytest.mark.asyncio
+    async def test_partial_chunk_failure_is_reported(self, mock_client: MagicMock):
+        settings = Settings(
+            llm_base_url="http://localhost:11434",
+            compliance_chunk_size=10,
+            compliance_group_by_source=False,
+        )
+        service = ComplianceService(mock_client, settings)
+
+        # 两个 chunk：第一个 chunk 两次尝试都失败，第二个成功
+        mock_client.chat = AsyncMock(
+            side_effect=[
+                RuntimeError("boom"),
+                RuntimeError("boom"),
+                ChatResponse(content="[]", model="m"),
+            ]
+        )
+        entries = [_entry(1, "一二三四五六七八九十"), _entry(2, "甲乙丙丁戊己庚辛壬癸")]
+
+        report = await service.audit([ComplianceRule(id=1, content="r")], entries)
+
+        assert report.total_chunks == 2
+        assert report.failed_chunks == 1

@@ -1,6 +1,7 @@
-import client, { POLL_INTERVAL_MS } from "./client";
+import client from "./client";
+import { pollUntilDone } from "./polling";
 import type { ComplianceResponse } from "../types/compliance";
-import type { TaskSubmitResponse, TaskStatusResponse } from "../types/task";
+import type { TaskSubmitResponse } from "../types/task";
 import { useComplianceStore } from "../stores/complianceStore";
 import type { TranscriptEntry } from "../types/transcript";
 
@@ -38,29 +39,17 @@ export async function auditCompliance(
 
 export async function persistViolationStatuses(
   taskId: string,
-  updates: { index: number; status: string }[],
+  updates: { violation_id: string; status: string }[],
 ): Promise<void> {
   await client.patch(`/tasks/${taskId}/compliance/violations`, { updates });
 }
 
 async function pollForCompliance(taskId: string): Promise<ComplianceResponse> {
-  const store = useComplianceStore.getState;
-
-  while (true) {
-    const { data } = await client.get<TaskStatusResponse>(`/tasks/${taskId}`);
-
-    if (data.status === "completed" && data.result) {
-      return data.result as ComplianceResponse;
-    }
-
-    if (data.status === "failed") {
-      throw new Error(data.error || "合规审核失败");
-    }
-
-    const percent = data.progress?.percent ?? 0;
-    const statusText = STATUS_TEXT[data.status] || "处理中...";
-    store().setProgress(percent, statusText);
-
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
+  const result = await pollUntilDone(taskId, {
+    statusText: STATUS_TEXT,
+    failedText: "合规审核失败",
+    onProgress: (percent, text) =>
+      useComplianceStore.getState().setProgress(percent, text),
+  });
+  return result as ComplianceResponse;
 }

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ComplianceRule(BaseModel):
@@ -13,6 +13,8 @@ class ComplianceRule(BaseModel):
 class Violation(BaseModel):
     """Single violation detected by LLM."""
 
+    # 报告内稳定唯一的条目标识，由 ComplianceReport 在构造时补齐
+    id: str = ""
     rule_id: int
     rule_content: str
     reason: str
@@ -42,10 +44,23 @@ class ComplianceReport(BaseModel):
 
     total_rules: int
     total_segments_checked: int
+    total_segments: int = 0  # 转写原始句段数；大于 checked 表示文本被截断
+    # 完整性标记：避免"部分审核"被误读为"无违规"
+    truncated: bool = False
+    total_chunks: int = 0
+    failed_chunks: int = 0
     violations: list[Violation] = Field(default_factory=list)
     summary: str = ""
     compliance_score: float = 100.0
     source_counts: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _assign_violation_ids(self) -> "ComplianceReport":
+        """为缺失 id 的违规条目按顺序补齐（同时兼容旧版持久化数据）。"""
+        for i, v in enumerate(self.violations):
+            if not v.id:
+                v.id = f"v{i + 1:04d}"
+        return self
 
 
 class ComplianceResponse(BaseModel):

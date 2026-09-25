@@ -30,9 +30,10 @@
 frontend/src/
   api/              # 后端通信层（Axios 封装 + 轮询逻辑）
     client.ts       #   Axios 实例 + 响应拦截器
+    polling.ts      #   任务轮询公共逻辑（容错重试 + 轮询至完成）
     task.ts         #   任务上传/查询/媒体（含 SHA-256 预检）
-    evaluation.ts   #   文本评估（内部轮询）
-    compliance.ts   #   合规审核（内部轮询）
+    evaluation.ts   #   文本评估（复用 polling）
+    compliance.ts   #   合规审核（复用 polling）
     synthesis.ts    #   TTS 合成触发 + 状态查询 + 音频 URL
     templates.ts    #   模板列表查询
     health.ts       #   服务健康检查（/health）
@@ -429,7 +430,7 @@ toastStore         通知消息（toasts 队列）
 
 **多维过滤**: 辅助函数 getFilteredViolations 对违规列表依次应用严重程度、来源、状态、搜索关键词四层过滤。
 
-**防抖持久化**: setViolationStatus 修改违规状态后，内部调用 schedulePersist 聚合 500ms 内的变更，批量调用后端 PATCH 接口持久化。
+**防抖持久化**: setViolationStatus 修改违规状态后，内部调用 schedulePersist 聚合 500ms 内的变更，以 violation_id 为键批量调用后端 PATCH 接口持久化；保存失败时弹出错误提示。违规条目的选择、批量操作也统一以 id 作为唯一键。
 
 ### 6.8 toastStore
 
@@ -442,6 +443,8 @@ toastStore         通知消息（toasts 队列）
 ### 7.1 useTaskPolling
 
 接受 enabled 参数，以 2 秒间隔轮询 getTaskStatus。
+
+**轮询容错**: 网络中断、超时、5xx、429 视为可恢复错误，保留定时器下个周期重试，连续失败 5 次才向用户报错；404、422 等不可恢复错误立即报错。判定与计数逻辑位于 api/polling.ts，评估与合规审核的内部轮询复用同一实现。
 
 **竞态修复**: 任务完成时的操作顺序至关重要——先 `await getTaskResults()` 写入 evaluation / synthesis / video 状态到各 store，再调用 `setRawEntries` 触发 SummaryPanel 的自动评估 effect。这确保 SummaryPanel 看到已有 evaluation 时不会用默认模板重复提交评估。
 
@@ -542,8 +545,10 @@ MergedBlock（前端聚合视图）
 EvaluationResult（评估结果，对应后端 schema）
   title: string          -- 纪要标题
   formatted_content: string  -- Markdown 格式纪要正文
+  truncated / degraded_chunks  -- 完整性标记（输入被截断 / Map 阶段失败降级的分块数），旧数据可能缺失
 
 Violation（违规记录）
+  标识: id（报告内稳定唯一，用于选择与状态持久化）
   通用: rule_id / rule_content / reason / severity / confidence / status
   来源: source(transcript/ocr/vision) / evidence_url / evidence_text
   认知: reasoning（CoT 推理链）
@@ -551,6 +556,7 @@ Violation（违规记录）
 
 ComplianceReport
   violations[] + summary + compliance_score + total_rules
+  完整性: truncated / total_segments / total_segments_checked / total_chunks / failed_chunks（旧数据可能缺失）
 
 TaskResultsResponse
   task_id / transcript / evaluation / compliance
@@ -724,6 +730,7 @@ resolveEvidenceUrl 函数兼容三种路径格式：http/api 开头直接使用�
 
 | 函数 | 位置 | 职责 |
 |------|------|------|
+| reportIncompleteness / evaluationIncompleteness | utils/completeness.ts | 由完整性标记生成警示文案，供 IncompleteNotice 展示 |
 | formatTime | utils/formatTime.ts | 毫秒转 MM:SS 或 HH:MM:SS |
 | formatTimeSrt | utils/formatTime.ts | 毫秒转 SRT 时间格式 HH:MM:SS,mmm |
 | processTranscriptForView | utils/processTranscript.ts | 同说话人 30s 内合并为 MergedBlock |

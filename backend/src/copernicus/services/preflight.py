@@ -7,9 +7,9 @@
 import logging
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 from copernicus.config import Settings
+from copernicus.services.llm.ollama import normalize_ollama_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -89,39 +89,40 @@ def _check_face_model(settings: Settings) -> list[tuple[str, bool]]:
 
 
 async def _check_llm(settings: Settings) -> list[tuple[str, bool]]:
+    if settings.llm_provider == "openai":
+        return _check_openai_compat_llm(settings)
+    return await _check_ollama(settings)
+
+
+def _check_openai_compat_llm(settings: Settings) -> list[tuple[str, bool]]:
+    base_url = settings.llm_base_url.rstrip("/")
+    if not settings.llm_api_key:
+        return [(_warn(f"LLM API key empty for openai-compatible service : {base_url}"), False)]
+    return [(_ok(f"LLM openai-compatible : {base_url}  model={settings.llm_model_name}"), True)]
+
+
+async def _check_ollama(settings: Settings) -> list[tuple[str, bool]]:
     import httpx
 
-    base_url = settings.llm_base_url.rstrip("/")
-    # 与 OllamaClient 保持一致：去掉 /v1 后缀
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-
-    hostname = urlparse(base_url).hostname or ""
-    is_local = hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-
-    if is_local:
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{base_url}/api/tags")
-            if resp.status_code != 200:
-                return [(_warn(f"Ollama HTTP {resp.status_code} : {base_url}"), False)]
-            installed = {m["name"] for m in (resp.json().get("models") or [])}
-            target = settings.llm_model_name
-            # 精确匹配或前缀匹配（"qwen3:latest" 匹配 "qwen3"）
-            found = target in installed or any(n.startswith(target.split(":")[0]) for n in installed)
-            if found:
-                return [(_ok(f"Ollama reachable, model found : {target}"), True)]
-            available = ", ".join(sorted(installed)) or "(none)"
-            return [(_warn(
-                f"Ollama model not found : '{target}'  — run: ollama pull {target}"
-                f"  (installed: {available})"
-            ), False)]
-        except Exception as exc:
-            return [(_warn(f"Ollama not reachable : {base_url}  ({exc})"), False)]
-    else:
-        if not settings.llm_api_key:
-            return [(_warn(f"LLM API key empty for external service : {base_url}"), False)]
-        return [(_ok(f"LLM API key set : {base_url}  model={settings.llm_model_name}"), True)]
+    base_url = normalize_ollama_base_url(settings.llm_base_url)
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{base_url}/api/tags")
+        if resp.status_code != 200:
+            return [(_warn(f"Ollama HTTP {resp.status_code} : {base_url}"), False)]
+        installed = {m["name"] for m in (resp.json().get("models") or [])}
+        target = settings.llm_model_name
+        # 精确匹配或前缀匹配（"qwen3:latest" 匹配 "qwen3"）
+        found = target in installed or any(n.startswith(target.split(":")[0]) for n in installed)
+        if found:
+            return [(_ok(f"Ollama reachable, model found : {target}"), True)]
+        available = ", ".join(sorted(installed)) or "(none)"
+        return [(_warn(
+            f"Ollama model not found : '{target}'  — run: ollama pull {target}"
+            f"  (installed: {available})"
+        ), False)]
+    except Exception as exc:
+        return [(_warn(f"Ollama not reachable : {base_url}  ({exc})"), False)]
 
 
 def _check_funasr_patches() -> list[tuple[str, bool]]:

@@ -3,7 +3,7 @@ import json
 import logging
 import re
 
-from copernicus.services.llm import OllamaClient
+from copernicus.services.llm import LLMClient
 from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.config import Settings
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class CorrectorService:
     def __init__(
         self,
-        client: OllamaClient,
+        client: LLMClient,
         settings: Settings,
         text_corrector: TextCorrectorService | None = None,
         hotword_replacer: HotwordReplacerService | None = None,

@@ -2,7 +2,7 @@
 
 音视频智能听写与合规审核工作台。上传会议音视频后自动完成：ASR 语音识别（含说话人分离）→ 四阶段文本纠正 → 模板驱动的会议纪要生成，并可选执行多源合规审核（语音 + OCR + 视觉）与多说话人 TTS 音频重塑。
 
-**技术栈**：FastAPI + FunASR (Paraformer / SenseVoice) + Ollama/DeepSeek LLM + ChatTTS + RapidOCR + YOLO ｜ React 19 + TypeScript + Vite + Zustand + DaisyUI
+**技术栈**：FastAPI + FunASR (Paraformer / SenseVoice) + Ollama / OpenAI 兼容 LLM（DeepSeek 等） + ChatTTS + RapidOCR + YOLO ｜ React 19 + TypeScript + Vite + Zustand + DaisyUI
 
 ## 仓库结构
 

@@ -115,7 +115,7 @@
 
 | 参数 | 值 |
 |------|---|
-| `EVALUATION_MAX_TEXT_CHARS` | **50,000**（超过直接截断，静默不报错） |
+| `EVALUATION_MAX_TEXT_CHARS` | **50,000**（超过则截断，结果中 `truncated=true`） |
 | `EVALUATION_CHUNK_SIZE` | 6,000 字符 |
 | `EVALUATION_NUM_CTX` | 8,192 |
 
@@ -128,7 +128,7 @@
 | **50,000 字（上限）** | **9** | **3 批** | **~90–150 s** |
 | >50,000 字 | 截断 | 同上 | 同上 |
 
-**极限：50,000 字（对应约 2–3 小时会议），约 2 分钟完成。超出部分被静默截断。**
+**极限：50,000 字（对应约 2–3 小时会议），约 2 分钟完成。超出部分被截断，结果的 `truncated` 字段为 true，前端会给出提示。**
 
 ---
 
@@ -138,7 +138,7 @@
 
 | 参数 | 值 |
 |------|---|
-| `COMPLIANCE_MAX_TEXT_CHARS` | **50,000**（同样静默截断） |
+| `COMPLIANCE_MAX_TEXT_CHARS` | **50,000**（同样截断，报告 `truncated=true`） |
 | `COMPLIANCE_CHUNK_SIZE` | 4,000 字符 |
 | `COMPLIANCE_NUM_CTX` | 8,192 |
 | `COMPLIANCE_CONFIDENCE_THRESHOLD` | 0.7 |
@@ -182,7 +182,7 @@
 | 单次音频时长 | **3 小时** | 10 小时（代码） | 任务超时 3600s |
 | ASR 并发 | **1 任务** | 1（`asyncio.Lock`） | GPU 串行推理 |
 | LLM 并发路数 | **3 路** | 3（`asyncio.Semaphore`） | Ollama 本地吞吐 |
-| 评估/审核文本 | **50,000 字** | 50,000（静默截断） | VRAM KV Cache |
+| 评估/审核文本 | **50,000 字** | 50,000（截断并标记） | VRAM KV Cache |
 | TTS 单次文本 | **无硬限** | 40 字/句（防幻读） | 输出文件体积 |
 | 内存任务队列 | **500 个** | 500（LRU 淘汰） | 内存占用 |
 
@@ -216,8 +216,6 @@ TASK_TIMEOUT_SECONDS=3600
 OLLAMA_KEEP_ALIVE=300
 ```
 
-### 风险四：评估/审核超过 50,000 字时静默截断
+### ~~风险四：评估/审核超过 50,000 字时静默截断~~（已解决）
 
-**现状**：`text = text[:self._max_text_chars]`，截断无任何用户侧提示，仅记录 `WARNING` 日志。
-
-**建议**：在 `TaskStatusResponse` 中增加 `truncated: bool` 字段，前端在结果界面给出提示。
+截断现在会在结果中显式标记：合规报告带 `truncated`、`total_segments`、`total_segments_checked`，纪要结果带 `truncated`；纪要 Map 阶段有分块失败时 `degraded_chunks` 大于 0，合规审核有分块失败时 `failed_chunks` 大于 0。前端在结果顶部显示警示条。

@@ -5,6 +5,8 @@ import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { evaluateText } from "../../api/evaluation";
+import { IncompleteNotice } from "../shared/IncompleteNotice";
+import { evaluationIncompleteness } from "../../utils/completeness";
 import { listTemplates } from "../../api/templates";
 import type { TemplateInfo } from "../../api/templates";
 import { ErrorAlert } from "../shared/ErrorAlert";
@@ -130,6 +132,7 @@ export function SummaryPanel() {
 
   return (
     <div className="flex flex-col gap-3 p-4">
+      <IncompleteNotice notes={evaluationIncompleteness(evaluation)} />
       {evaluation.title && (
         <h3 className="font-bold text-base">{evaluation.title}</h3>
       )}

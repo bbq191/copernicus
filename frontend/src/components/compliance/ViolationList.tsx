@@ -15,6 +15,8 @@ import {
   violationKey,
 } from "../../stores/complianceStore";
 import { ViolationCard } from "./ViolationCard";
+import { IncompleteNotice } from "../shared/IncompleteNotice";
+import { reportIncompleteness } from "../../utils/completeness";
 
 const SEVERITY_OPTIONS = [
   { value: "all", label: "全部" },
@@ -103,6 +105,7 @@ export function ViolationList() {
 
   return (
     <div className="flex flex-col h-full">
+      <IncompleteNotice notes={reportIncompleteness(report)} />
       {/* Stats Dashboard */}
       <div className="stats stats-horizontal shadow-sm w-full bg-base-200 border-b border-base-300">
         <div className="stat place-items-center py-2 px-3">

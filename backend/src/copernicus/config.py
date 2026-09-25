@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -43,9 +44,11 @@ class Settings(BaseSettings):
     audio_enhance: bool = True
 
     # LLM configuration
+    # ollama = 本地 Ollama 原生 /api/chat；openai = OpenAI 兼容 /chat/completions（DeepSeek/vLLM 等）
+    llm_provider: Literal["ollama", "openai"] = "ollama"
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.deepseek.com"
-    llm_model_name: str = "deepseek-chat"
+    llm_base_url: str = "http://localhost:11434"
+    llm_model_name: str = "qwen3:latest"
     llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     llm_timeout: float = 120.0  # 单次 LLM 请求超时，超时后使用原文作为 fallback
     llm_max_retries: int = 2  # LLM 调用失败重试次数（指数退避）

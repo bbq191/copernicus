@@ -21,7 +21,7 @@
 **本地开发**
 
 1. 后端：进入 `backend/`，按 `.env.example` 准备 `.env`（LLM 地址、ASR 模式等）；模型可用 `scripts/download_models.py` 预下载（ChatTTS、YOLO 权重需手动放入 `models/`）；运行 `python run_dev.py`（端口 8000）。
-2. 前端：进入 `frontend/`，`npm install && npm run dev`（端口 3000）。仓库同时保留 `package-lock.json` 与 `pnpm-lock.yaml`，CI 与部署脚本只用 npm。
+2. 前端：进入 `frontend/`，`npm install && npm run dev`（端口 3000）。依赖锁只有 `package-lock.json`，本地、CI 与部署脚本统一用 npm。
 3. 检查：后端在 `backend/` 下运行 `ruff check src tests` 与 `pytest -q`（全部用假对象，**不需要 GPU、模型或 LLM**）；前端在 `frontend/` 下运行 `npx tsc -b`、`npm run lint`、`npm test`。GitHub Actions 会在推送与 PR 时运行同样的检查，并对部署脚本做 ShellCheck 与 dry-run。
 
 **生产部署**：装好显卡驱动、ffmpeg、Node.js、Nginx、Ollama 后，在仓库根目录以 root 执行 `deploy/install.sh`（建议先加 `--dry-run` 预演）；卸载用 `deploy/uninstall.sh`。详见 [部署指南](docs/intro/deployment.md)。
@@ -55,6 +55,6 @@
 - 已在带 GPU 的开发机上做过端到端冒烟（上传→转写→工作区→历史→合成→审核复核）；**尚未在生产机器（Rocky Linux + RTX 2080 Ti）上完整验证部署脚本**，GitHub Actions 工作流也尚未在 GitHub 上真实运行。
 - 没有鉴权，请部署在内网或网关之后。
 - 合规审核只有 13 条内置规则，证据来源只有转写与 OCR，没有评测集，无法给出准确率；人脸检测结果目前不参与判定。
-- 纪要是自由文本，没有行动项等结构化字段。
+- 纪要正文是自由文本；行动项与决议由单独的一次 LLM 调用提取（可回溯到转写时间点），提取质量尚未用真实模型评估。
 
 完整列表见各文档末尾的"已知限制"。

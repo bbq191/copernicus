@@ -40,9 +40,12 @@
 | `routers/` | `task`（任务全生命周期）、`upload`（分片上传）、`evaluation`（文本评估与模板）、`compliance`（合规）、`synthesis`（音频重塑）、`transcription`（健康检查） |
 | `services/pipeline/` | 流水线：`orchestrator` 顺序执行，`base` 定义上下文与阶段协议，`stages/` 是 9 个阶段 |
 | `services/task_store.py`、`task_state.py` | 任务调度与内存状态（提交、排队上限、取消、超时、重启恢复） |
-| `services/asr.py` | 语音识别：Paraformer 与 SenseVoice 两种模式，说话人分离 |
+| `services/task_executor.py` | 各类任务的执行体：管线状态切换、摘要、合规审核（与调度分离，便于单独测试） |
+| `services/asr/` | 语音识别包：`service`（两种模式的加载与推理）、`diarization`（声纹聚类分离说话人）、`text_cleanup`、`segment_builders`、`model_loading`、`types` |
 | `services/corrector/`、`text_corrector.py`、`hotword_replacer.py` | 四阶段文本纠正 |
 | `services/evaluator.py`、`template_manager.py` | 纪要生成与模板管理 |
+| `services/minutes_structure.py` | 纪要结构化：提取行动项与决议，并回溯到转写时间点 |
+| `metrics.py`、`routers/metrics.py` | Prometheus 文本指标（无第三方依赖）与 `/metrics` 端点 |
 | `services/compliance*.py`、`rule_registry.py` | 合规审核、过滤器链、内置规则库、Excel 导出 |
 | `services/synthesis.py`、`tts.py` | 音频重塑（服务编排 + ChatTTS 推理） |
 | `services/llm/` | LLM 客户端（Ollama / OpenAI 兼容）：并发限流与重试 |
@@ -94,7 +97,8 @@
 `TaskStore` 为每个任务在内存里保存一个 `TaskInfo`（状态、当前批次、结果、错误），并持有它的后台协程句柄：
 
 - **超时**：每个任务协程外层有 `TASK_TIMEOUT_SECONDS`（默认 3600 秒）的超时，**包含排队等 GPU 的时间**。
-- **取消**：只允许取消"排队 / 文本纠正 / 生成纪要 / 合规审核"。ASR 与视觉扫描跑在线程里，无法中断；强行取消会让线程继续占着 GPU 而协程已退出，下一个任务就会并行占用 GPU。这类阶段返回 409。
+- **等待 ASR**：ASR 一次只服务一个任务。轮到语音识别阶段时若模型被占用，任务状态变为 `queued_asr`（进度仍显示 20%），拿到锁后才变为 `processing_asr`。状态由编排器在每个阶段开始时通知外层切换，不依赖阶段自己上报进度。
+- **取消**：只允许取消"排队 / 等待识别 / 文本纠正 / 生成纪要 / 合规审核"。ASR 与视觉扫描跑在线程里，无法中断；强行取消会让线程继续占着 GPU 而协程已退出，下一个任务就会并行占用 GPU。这类阶段返回 409。
 - **保护**：运行中的任务不能被作废（`DELETE`）或删除（`purge`），返回 409。
 - **内存淘汰**：内存里最多 `TASK_MAX_IN_MEMORY`（默认 500）个任务，超出时淘汰最早结束的；被淘汰的任务再次被访问时会从磁盘惰性恢复。
 - **进度换算**：百分比由状态与批次进度换算，见下图；失败任务不显示进度。
@@ -137,7 +141,7 @@
 3. **视觉推理串行**：OCR 与 YOLO 的模型内部各有一把锁。多个视频任务同时推理只会互相抢 CPU 核，串行既安全（YOLO 实例不保证线程安全）也更省电。
 4. **不可信的中间产物不入库**：`processed.wav`、`extracted.wav` 在 ASR 结束后即删除。
 
-### 5.1 语音识别（asr.py）
+### 5.1 语音识别（services/asr/）
 
 | 模式 | 适用 | 做法 |
 |---|---|---|
@@ -169,6 +173,10 @@
 标准纪要任务里，**摘要失败不会让任务失败**：转写已经落盘，任务保持"已完成"，只记一条警告；同一文件再次上传仍会复用它，前端发现没有摘要会自动重新生成。（旧版本会把整个任务标为失败，导致内存状态与重启后的磁盘状态不一致。）
 
 不完整的结果会带标记：`truncated`（超过 50000 字被截断）、`degraded_chunks`（有片段的要点提炼失败）。
+
+**结构化提取**（`MINUTES_STRUCTURE_ENABLED`，默认开启）：排版纪要之外，再用一次独立的 LLM 调用从转写里提取**行动项**（事项、负责人、时间要求）与**决议**。转写按 `EVALUATION_CHUNK_SIZE` 分块，每块一次调用，结果合并去重。
+
+时间点的回溯不让模型报时间——模型不擅长——而是要求它给出一句从原文摘抄的"引文"，由服务端在转写里匹配：先找单句包含，再找相邻两句拼接，最后按序匹配字数占比 ≥ 60% 的模糊匹配；匹配不到时间点为空，不会给出错误的时间。结果写入 `evaluation` 的 `action_items`、`decisions`，`structure_status` 说明完整性（`ok` / `partial` / `failed` / `skipped`）。提取失败只降级为"未提取"，不影响纪要本身；"重新评估"时会读取父任务已保存的转写来做回溯。
 
 ---
 
@@ -231,7 +239,7 @@
 | Ollama | `OLLAMA_NUM_CTX`（32768）、`OLLAMA_NUM_CTX_CORRECTION`（4096）、`OLLAMA_KEEP_ALIVE`（0） | 上下文窗口与显存；`0` 表示每次调用后立即卸载模型（有意为之，见并发文档） |
 | ASR | `ASR_MODE`（paraformer）、`ASR_DEVICE`（auto）、`ASR_DTYPE`、`ASR_BATCH_SIZE` | 模式、设备、精度、批大小 |
 | 纠正 | `CORRECTION_CHUNK_SIZE`（800）、`CORRECTION_MAX_CONCURRENCY`（3）、`CONFIDENCE_THRESHOLD`（0.95） | 批大小、并发、跳过 LLM 的置信度线 |
-| 纪要 / 合规 | `EVALUATION_*`、`COMPLIANCE_*` | 文本上限 50000 字、分块大小、`num_ctx`、置信度阈值 |
+| 纪要 / 合规 | `EVALUATION_*`、`COMPLIANCE_*`、`MINUTES_STRUCTURE_ENABLED`（true） | 文本上限 50000 字、分块大小、`num_ctx`、置信度阈值；是否额外提取行动项与决议 |
 | 任务 | `TASK_TIMEOUT_SECONDS`（3600）、`TASK_MAX_ACTIVE`（5）、`TASK_MAX_IN_MEMORY`（500） | 超时、排队上限、内存任务数 |
 | 存储 | `UPLOAD_DIR`、`MAX_UPLOAD_SIZE_MB`（500）、`MEDIA_RETENTION_HOURS`（24）、`MAX_STORAGE_GB`（0=不限）、`MODELS_DIR` | 目录、上限、保留时长、配额 |
 | 视觉 | `KEYFRAME_*`、`OCR_ENABLED`、`FACE_DETECT_ENABLED` | 抽帧策略与开关 |
@@ -257,6 +265,8 @@
 
 **标识符校验**：task_id、文件哈希、文件名都有严格格式校验，杜绝路径穿越；关键帧接口对 `..` 返回 404。
 
+**指标**：`GET /metrics`（不在 `/api/v1` 之下，Nginx 模板不转发，只能直连后端端口，默认仅本机回环）输出 Prometheus 文本格式：`copernicus_http_requests_total` 与 `copernicus_http_request_duration_seconds`（按路由模板而非真实 URL 分组，避免标签爆炸）、`copernicus_tasks_finished_total` 与 `copernicus_task_duration_seconds`（按完成/失败）、抓取时计算的 `copernicus_tasks{status}`、`copernicus_model_loaded`、`copernicus_vram_estimated_gb`、`copernicus_synthesis_running`。指标计数器只在进程内累计，重启清零，与 Prometheus 的 counter 语义一致。
+
 **健康检查**：`/api/v1/health/live` 只表示进程能响应；`/api/v1/health` 返回 ASR / LLM / TTS 三个组件的状态、任务统计与显存水位。ASR 权重被卸载（给 TTS 让显存）属于正常，显示 `degraded`。响应里保留了 `unhealthy` 取值但目前不会返回。健康检查每次都会探测一次 LLM 是否可达。
 
 **日志**：生产环境输出到 stderr，由 journald 管理；开发用 `run_dev.py` 写按 8 小时分槽的文件。uvicorn 的 access log 在生产单元里关闭（前端每 2 秒轮询一次，逐条记录只增加磁盘写入），排查请求请用 Nginx 的访问日志或 request_id。
@@ -270,7 +280,8 @@
 | 单进程单 worker | 任务状态在内存、GPU 只有一块 | 无法在单机内横向扩展 |
 | 文件存储无数据库 | 文档型数据、易备份与排查 | 列表要扫目录，万级任务后需索引 |
 | 媒体先落盘再启动流水线 | 流水线首步就读文件 | 提交接口在大文件落盘期间会多等一会儿（一次 rename，通常瞬时） |
-| ASR 用"使用锁"而非临时锁 | 使用期间不允许卸载；取消时线程未结束不能放锁 | 排队中的任务仍显示为"语音识别中" |
+| ASR 用"使用锁"而非临时锁 | 使用期间不允许卸载；取消时线程未结束不能放锁 | 排队者需要单独的 `queued_asr` 状态才能在界面上区分 |
+| 时间点靠引文匹配而非让模型报时间 | 模型给的时间戳不可靠；匹配不到宁可为空 | 引文被大幅改写时会丢失时间点 |
 | 摘要失败不使任务失败 | 转写已可用，且失败不应破坏去重 | 需要前端在无摘要时自动重试 |
 | 合规不再用 ASR 显存时才卸载 | 远端 LLM 不占本机显存，卸载只会让下次转写白重载 | — |
 | `OLLAMA_KEEP_ALIVE=0` | 避免 ASR 与 LLM 同时驻留 OOM | 每批纠正多 2-5 秒冷启动，见并发文档的调优建议 |
@@ -280,7 +291,7 @@
 
 ## 十四、测试与质量保障
 
-- 后端 260+ 个测试（`pytest`），全部使用假对象，**不需要 GPU、模型或 LLM**；涵盖任务提交与恢复、调度与取消、上传路由、生命周期、模型管理器与 ASR 取消语义、合成服务、四阶段纠正、合规、评估、请求追踪、部署脚本工具等。预处理阶段的测试会用真实 ffmpeg 生成小文件验证（无 ffmpeg 时自动跳过）。
+- 后端 350+ 个测试（`pytest`），全部使用假对象，**不需要 GPU、模型或 LLM**；涵盖任务提交与恢复、调度与取消、上传路由、生命周期、模型管理器与 ASR 取消语义、合成服务、四阶段纠正、合规、评估、请求追踪、部署脚本工具等。预处理阶段的测试会用真实 ffmpeg 生成小文件验证（无 ffmpeg 时自动跳过）。
 - `ruff` 只启用能发现真实缺陷的规则（语法、未定义/未使用名称、导入位置）。
 - GitHub Actions（`.github/workflows/ci.yml`）在推送与 PR 时运行：后端 lint + 测试、前端类型检查 + lint + 测试 + 构建、部署脚本的 ShellCheck 与 dry-run。**该工作流尚未在 GitHub 上真实跑过**，只在本地校验了语法与各步骤命令。
 - 已在带 GPU 的开发机上做过端到端冒烟：表单与分片上传、音频与视频（含视觉扫描）转写、去重、重转写、删除保护、音频重塑、ASR 卸载后自动重载；LLM 不可用时降级行为符合预期（任务完成、给出降级标记）。**没有验证**：真实 LLM 的纪要/合规/润色质量、多任务长时间压力、生产机器（RTX 2080 Ti + Rocky Linux）上的部署脚本。
@@ -291,11 +302,11 @@
 
 | 项 | 说明 |
 |---|---|
-| ASR 不可中断 | 已开始的识别只能跑完；排队中被取消的任务不会占用 GPU，但排队期间界面仍显示"语音识别中" |
+| ASR 不可中断 | 已开始的识别只能跑完；排队等待（`queued_asr`）时可以取消，不会占用 GPU |
 | 合规能力 | 只有 13 条内置规则；证据来源只有转写与 OCR；没有评测集，无法给出准确率/召回率 |
 | 视觉扫描收益 | 人脸检测结果目前仅保存与统计，不参与任何判定；不需要时可关闭 `FACE_DETECT_ENABLED` 省 CPU |
-| 关键帧抽取 | 先按间隔全部抽出再抽样到 500 张，3 小时视频会先落盘数千张 |
-| 纪要结构化 | 纪要是自由文本（Markdown），没有行动项/责任人等结构化字段，也没有结论到原始时间戳的溯源 |
+| 关键帧抽取 | 长视频会按时长把抽帧间隔拉宽，使总数不超过 500（先用 ffmpeg 读时长；读不到时按配置间隔抽取，再抽样兜底）；场景切换策略无法预知帧数，仍是先抽后删 |
+| 纪要结构化 | 行动项与决议的提取质量取决于 LLM，尚未用真实模型评估；纪要正文仍是自由文本 |
 | 大文件重转写 | 重转写读取已保存的媒体，媒体已过期被清理后无法重转写 |
-| 指标 | 没有 Prometheus 指标端点，只有健康检查与日志 |
-| 拆分 | `asr.py`（约 1100 行）与任务执行器较大；它们的主路径缺少自动化测试，建议先补测试再拆分 |
+| 指标 | `/metrics` 只含请求数与耗时、任务分布与完成/失败数、模型驻留；没有 LLM 调用次数、ASR 耗时等更细的指标，也没有鉴权（默认只在本机回环可达） |
+| 拆分 | `TaskStore` 仍同时承担调度、历史管理与合成任务记录，可继续按职责拆分 |

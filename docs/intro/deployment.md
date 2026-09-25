@@ -141,6 +141,7 @@
 |---|---|
 | 查看状态与日志 | `systemctl status copernicus-backend`；`journalctl -u copernicus-backend -f`（日志每行带 request_id，可按它检索一次请求的全部日志） |
 | 健康检查 | `curl http://127.0.0.1:8000/api/v1/health/live`（进程存活）；`…/health`（各组件状态、任务统计、显存）；或浏览器打开 `/health` 页面 |
+| 监控指标 | `curl http://127.0.0.1:8000/metrics`（Prometheus 文本格式）。Nginx 不转发该路径，抓取器需与后端在同一台机器，或自行在网关上加访问控制后转发 |
 | 升级代码 | 拉取新代码后**再次运行 `deploy/install.sh`**（重复执行是安全的：会更新依赖、重打 FunASR 补丁、重新构建前端并重启） |
 | 升级 FunASR 后 | 必须重打补丁（`install.sh` 会做；单独做用 `backend/scripts/patch_funasr.py`），否则置信度过滤失效，耗时可增加数十倍 |
 | 更新纪要模板 | 修改 `backend/templates/` 后调用 `POST /api/v1/templates/reload`，不用重启 |

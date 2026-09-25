@@ -705,6 +705,8 @@ class TaskStore:
                 for entry in result.transcript
             ],
             processing_time_ms=result.processing_time_ms,
+            correction_total_batches=result.correction_total_batches,
+            correction_failed_batches=result.correction_failed_batches,
         )
         task.result = transcript_response
         self._persistence.save_json(task_id, "transcript.json", transcript_response)

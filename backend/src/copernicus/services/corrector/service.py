@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import dataclass
 
 from copernicus.services.llm import LLMClient
 from copernicus.services.text_corrector import TextCorrectorService
@@ -14,6 +15,15 @@ from .preprocess import preprocess_text
 from .prompts import TRANSCRIPT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CorrectionOutcome:
+    """纠正结果。failed_batches > 0 说明有批次 LLM 调用失败，这些批次只做了规则/词典/MacBERT 处理。"""
+
+    texts: dict[int, str]
+    total_batches: int = 0
+    failed_batches: int = 0
 
 
 class CorrectorService:
@@ -41,7 +51,7 @@ class CorrectorService:
         entries: list[dict],
         batch_size: int = 15,
         on_progress: ProgressCallback | None = None,
-    ) -> dict[int, str]:
+    ) -> CorrectionOutcome:
         """四阶段纠正 transcript entries
 
         阶段 1：规则预处理（噪声过滤、重复词合并、数字规范化）
@@ -49,10 +59,10 @@ class CorrectorService:
         阶段 3：pycorrector/MacBERT 轻量级纠错（同音字/形近字）
         阶段 4：LLM 润色（去口语 + 倒装 + 标点）
 
-        Each entry is {"id": int, "text": str}. Returns a mapping of id -> corrected text.
+        Each entry is {"id": int, "text": str}. 返回 id -> 纠正后文本，以及 LLM 批次的失败统计。
         """
         if not entries:
-            return {}
+            return CorrectionOutcome({})
 
         # ============================================================
         # 阶段 1：规则预处理
@@ -80,7 +90,7 @@ class CorrectorService:
         )
 
         if not preprocessed_entries:
-            return {entry["id"]: "" for entry in entries}
+            return CorrectionOutcome({entry["id"]: "" for entry in entries})
 
         # ============================================================
         # 阶段 2：热词强制替换（可选）
@@ -118,7 +128,7 @@ class CorrectorService:
 
         async def _process_batch(
             index: int, batch: list[dict]
-        ) -> dict[int, str]:
+        ) -> tuple[dict[int, str], bool]:
             nonlocal completed
             async with semaphore:
                 logger.info("Correcting transcript batch %d/%d ...", index + 1, total)
@@ -133,13 +143,17 @@ class CorrectorService:
         batch_results = await asyncio.gather(*tasks)
 
         merged: dict[int, str] = {}
-        for batch_result in batch_results:
-            merged.update(batch_result)
+        failed = 0
+        for texts, ok in batch_results:
+            merged.update(texts)
+            failed += 0 if ok else 1
 
         for entry_id in filtered_ids:
             merged[entry_id] = ""
 
-        return merged
+        if failed:
+            logger.warning("LLM correction degraded: %d/%d batches fell back to unpolished text", failed, total)
+        return CorrectionOutcome(merged, total_batches=total, failed_batches=failed)
 
     @staticmethod
     def _create_transcript_batches(
@@ -179,8 +193,8 @@ class CorrectorService:
 
         return batches
 
-    async def _correct_transcript_batch(self, batch: list[dict]) -> dict[int, str]:
-        """Send a batch of transcript entries to LLM for JSON-to-JSON correction."""
+    async def _correct_transcript_batch(self, batch: list[dict]) -> tuple[dict[int, str], bool]:
+        """把一批 entries 交给 LLM 做 JSON→JSON 纠正。返回 (id→文本, 是否成功)；失败时回退原文。"""
         fallback = {item["id"]: item["text"] for item in batch}
         batch_chars = sum(len(item.get("text", "")) for item in batch)
         batch_ids = [item["id"] for item in batch]
@@ -210,7 +224,7 @@ class CorrectorService:
 
             if not raw:
                 logger.warning("LLM returned empty response for transcript batch, using fallback")
-                return fallback
+                return fallback, False
 
             parsed = json.loads(raw)
 
@@ -220,7 +234,7 @@ class CorrectorService:
                 entries_list = parsed
             else:
                 logger.warning("LLM transcript correction returned unexpected type, using fallback")
-                return fallback
+                return fallback, False
 
             result: dict[int, str] = {}
             for item in entries_list:
@@ -231,12 +245,13 @@ class CorrectorService:
                 if entry_id not in result:
                     result[entry_id] = original_text
 
-            return result
+            return result, True
         except json.JSONDecodeError as e:
             logger.warning(
                 "LLM transcript JSON parse failed, trying regex fallback: %s", e
             )
-            return self._extract_entries_by_regex(raw, fallback)
+            recovered = self._extract_entries_by_regex(raw, fallback)
+            return recovered, recovered is not fallback
         except Exception as e:
             logger.warning(
                 "LLM transcript correction failed for batch (ids=%s, entries=%d, chars=%d): [%s] %s",
@@ -246,7 +261,7 @@ class CorrectorService:
                 type(e).__name__,
                 e or "(no message)",
             )
-            return fallback
+            return fallback, False
 
     @staticmethod
     def _extract_entries_by_regex(

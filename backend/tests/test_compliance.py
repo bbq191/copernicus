@@ -731,3 +731,26 @@ class TestChunkRetrySemantics:
             await service.audit([ComplianceRule(id=1, content="r")], [_entry(1, "内容")])
 
         assert mock_client.chat.await_count == 1
+
+
+class TestSkippedRulesAreReported:
+    @pytest.mark.asyncio
+    async def test_ocr_only_rules_are_listed_when_there_is_no_ocr_data(self, mock_client: MagicMock):
+        from copernicus.services.rule_registry import StructuredRule
+
+        service = ComplianceService(mock_client, Settings(llm_base_url="http://localhost:11434"))
+        service._registry.enrich = lambda rules: [
+            StructuredRule(id=1, title="话术", content="a", category="forbidden_phrase", check_mode="semantic", evidence_sources=["transcript"]),
+            StructuredRule(id=3, title="屏幕文字", content="b", category="visual_check", check_mode="visual", evidence_sources=["ocr"]),
+        ]
+        mock_client.chat = AsyncMock(return_value=ChatResponse(content="[]", model="m"))
+
+        report = await service.audit([ComplianceRule(id=1, content="a")], [_entry(1, "内容")])
+        assert report.skipped_rule_ids == [3]
+
+        with_ocr = await service.audit(
+            [ComplianceRule(id=1, content="a")],
+            [_entry(1, "内容")],
+            ocr_results=[{"timestamp_ms": 0, "text": "屏幕", "confidence": 0.9, "frame_path": "f.jpg"}],
+        )
+        assert with_ocr.skipped_rule_ids == []

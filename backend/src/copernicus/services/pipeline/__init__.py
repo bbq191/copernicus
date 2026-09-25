@@ -193,4 +193,6 @@ class PipelineService:
         return TranscriptResult(
             transcript=ctx.transcript_entries,
             processing_time_ms=round(elapsed_ms, 2),
+            correction_total_batches=ctx.correction_total_batches,
+            correction_failed_batches=ctx.correction_failed_batches,
         )

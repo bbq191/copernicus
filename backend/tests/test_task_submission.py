@@ -142,3 +142,23 @@ class TestParentValidation:
         with pytest.raises(TaskNotFoundError):
             store.submit_compliance_audit([], b"", "rules.csv", parent_task_id="9" * 32)
         assert store._tasks == {}
+
+
+class TestCorrectionDegradationIsExposed:
+    async def test_failed_correction_batches_reach_the_persisted_transcript(self, tmp_path, persistence):
+        store, pipeline = _store(persistence)
+        degraded = _result()
+        degraded.correction_total_batches, degraded.correction_failed_batches = 4, 3
+        pipeline.process_transcript.return_value = degraded
+
+        task_id = await store.submit_transcript(_upload(tmp_path), "a.wav")
+        await store._handles[task_id]
+
+        saved = persistence.load_json(task_id, "transcript.json")
+        assert (saved["correction_total_batches"], saved["correction_failed_batches"]) == (4, 3)
+
+    async def test_old_transcripts_without_the_fields_still_load(self, tmp_path, persistence):
+        from copernicus.schemas.transcription import TranscriptResponse
+
+        old = {"transcript": [], "processing_time_ms": 1.0}
+        assert TranscriptResponse.model_validate(old).correction_failed_batches == 0

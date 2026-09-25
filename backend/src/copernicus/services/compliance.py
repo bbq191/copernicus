@@ -152,13 +152,14 @@ class ComplianceService:
         group_by_source = self._settings.compliance_group_by_source
 
         chunks = self._build_entry_chunks(transcript_entries)
+        skipped_rule_ids: list[int] = []
         if group_by_source:
             groups = RuleRegistry.group_by_source(structured_rules)
             active_groups = {k: v for k, v in groups.items() if v}
             # OCR-only 规则组仅在有 OCR 数据时才审核
             if "ocr" in active_groups and not ocr_results:
                 logger.info("Skipping OCR-only rules group (no OCR data)")
-                del active_groups["ocr"]
+                skipped_rule_ids = [r.id for r in active_groups.pop("ocr")]  # 记入报告：跳过不等于通过
             total_steps = len(chunks) * len(active_groups) + 1  # 每组每块一次调用 + 汇总
         else:
             active_groups = {"all": structured_rules}
@@ -258,6 +259,7 @@ class ComplianceService:
             truncated=truncated,
             total_chunks=len(tasks),
             failed_chunks=failed_chunks,
+            skipped_rule_ids=skipped_rule_ids,
             violations=all_violations,
             summary=summary,
             source_counts=source_counts,

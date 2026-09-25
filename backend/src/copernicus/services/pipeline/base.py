@@ -35,6 +35,8 @@ class TranscriptResult:
 
     transcript: list[TranscriptEntry] = field(default_factory=list)
     processing_time_ms: float = 0.0
+    correction_total_batches: int = 0
+    correction_failed_batches: int = 0
 
 
 @dataclass
@@ -59,6 +61,8 @@ class PipelineContext:
 
     # Correction output (id -> corrected text)
     correction_map: dict[int, str] = field(default_factory=dict)
+    correction_total_batches: int = 0
+    correction_failed_batches: int = 0  # LLM 润色失败的批次数（这些批次的文本未经润色）
 
     # Transcript output
     transcript_entries: list[TranscriptEntry] = field(default_factory=list)

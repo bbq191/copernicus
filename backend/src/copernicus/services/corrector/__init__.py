@@ -1,3 +1,3 @@
-from .service import CorrectorService
+from .service import CorrectionOutcome, CorrectorService
 
-__all__ = ["CorrectorService"]
+__all__ = ["CorrectionOutcome", "CorrectorService"]

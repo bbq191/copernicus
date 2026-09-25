@@ -20,6 +20,6 @@ export function hydrateWorkspace(taskId: string, res: TaskResultsResponse): bool
   if (res.compliance) useComplianceStore.getState().setReport(res.compliance.report, res.compliance.rules);
   if (res.has_video) usePlayerStore.getState().setMediaSrc(getTaskMediaUrl(taskId), "video");
   if (res.has_synthesis) useSynthesisStore.getState().setHasSynthesis(true);
-  useTranscriptStore.getState().setRawEntries(res.transcript.transcript);
+  useTranscriptStore.getState().setTranscript(res.transcript);
   return true;
 }

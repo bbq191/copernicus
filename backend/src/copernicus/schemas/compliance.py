@@ -71,6 +71,7 @@ class ComplianceReport(BaseModel):
     truncated: bool = False
     total_chunks: int = 0
     failed_chunks: int = 0
+    skipped_rule_ids: list[int] = Field(default_factory=list)  # 因缺少证据来源（如无 OCR 数据）而未审核的规则
     violations: list[Violation] = Field(default_factory=list)
     summary: str = ""
     compliance_score: float = 100.0

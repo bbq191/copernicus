@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { TranscriptEntry } from "../types/transcript";
+import type { TranscriptEntry, TranscriptResponse } from "../types/transcript";
 import type { MergedBlock } from "../types/view";
 import { processTranscriptForView } from "../utils/processTranscript";
 
@@ -27,8 +27,12 @@ interface TranscriptState {
   textMode: TextMode;
   searchQuery: string;
   visibleSpeakers: Set<string>;
+  /** LLM 润色的批次统计，用于提示"部分文本未经润色" */
+  correction: CorrectionStats;
 
   setRawEntries: (entries: TranscriptEntry[]) => void;
+  /** 载入服务端返回的完整转写（条目 + 润色统计） */
+  setTranscript: (response: TranscriptResponse) => void;
   /** 本地更新某句的修正文（调用方负责与后端同步/回滚） */
   setSentenceText: (index: number, text: string) => void;
   /** 本地应用说话人重命名/合并，{原名: 新名} */
@@ -38,7 +42,15 @@ interface TranscriptState {
   toggleSpeakerVisibility: (speaker: string) => void;
 }
 
+export interface CorrectionStats {
+  total: number;
+  failed: number;
+}
+
+const NO_CORRECTION: CorrectionStats = { total: 0, failed: 0 };
+
 export const useTranscriptStore = create<TranscriptState>((set) => ({
+  correction: NO_CORRECTION,
   rawEntries: [],
   mergedBlocks: [],
   speakers: [],
@@ -47,7 +59,22 @@ export const useTranscriptStore = create<TranscriptState>((set) => ({
   visibleSpeakers: new Set<string>(),
 
   setRawEntries: (entries) =>
-    set({ ...deriveView(entries), visibleSpeakers: new Set(uniqueSpeakers(entries)) }),
+    set({
+      ...deriveView(entries),
+      visibleSpeakers: new Set(uniqueSpeakers(entries)),
+      // 清空（切换/重置工作区）时同时清掉统计；校对编辑不走这里
+      ...(entries.length === 0 ? { correction: NO_CORRECTION } : {}),
+    }),
+
+  setTranscript: (response) =>
+    set({
+      ...deriveView(response.transcript),
+      visibleSpeakers: new Set(uniqueSpeakers(response.transcript)),
+      correction: {
+        total: response.correction_total_batches ?? 0,
+        failed: response.correction_failed_batches ?? 0,
+      },
+    }),
 
   setSentenceText: (index, text) =>
     set((state) =>

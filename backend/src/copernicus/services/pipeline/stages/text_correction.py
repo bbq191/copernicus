@@ -64,13 +64,9 @@ class TextCorrectionStage:
             len(segments),
         )
 
-        correction_map = await self._corrector.correct_transcript(
-            entries, on_progress=on_progress
-        )
+        outcome = await self._corrector.correct_transcript(entries, on_progress=on_progress)
 
-        result: dict[int, str] = {}
-        for i, seg in enumerate(segments):
-            result[i] = correction_map.get(i, seg.text)
-
-        ctx.correction_map = result
+        ctx.correction_map = {i: outcome.texts.get(i, seg.text) for i, seg in enumerate(segments)}
+        ctx.correction_total_batches = outcome.total_batches
+        ctx.correction_failed_batches = outcome.failed_batches
         return ctx

@@ -46,3 +46,6 @@ class TranscriptEntrySchema(BaseModel):
 class TranscriptResponse(BaseModel):
     transcript: list[TranscriptEntrySchema]
     processing_time_ms: float
+    # LLM 润色的批次统计；failed > 0 时部分文本未经润色（旧数据无此字段，按 0 处理）
+    correction_total_batches: int = 0
+    correction_failed_batches: int = 0

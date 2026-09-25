@@ -23,37 +23,49 @@ def corrector(mock_client: MagicMock) -> CorrectorService:
 class TestCorrectTranscript:
     async def test_empty_input_needs_no_llm_call(self, corrector, mock_client):
         mock_client.chat = AsyncMock()
-        assert await corrector.correct_transcript([]) == {}
+        assert (await corrector.correct_transcript([])).texts == {}
         mock_client.chat.assert_not_awaited()
 
     async def test_noise_only_entries_are_blanked_without_calling_the_llm(self, corrector, mock_client):
         mock_client.chat = AsyncMock()
-        result = await corrector.correct_transcript([{"id": 1, "text": "嗯"}, {"id": 2, "text": "啊。"}])
-        assert result == {1: "", 2: ""}
+        outcome = await corrector.correct_transcript([{"id": 1, "text": "嗯"}, {"id": 2, "text": "啊。"}])
+        assert outcome.texts == {1: "", 2: ""} and outcome.total_batches == 0
         mock_client.chat.assert_not_awaited()
 
     async def test_llm_output_replaces_text_and_noise_ids_are_still_reported(self, corrector, mock_client):
         mock_client.chat = AsyncMock(return_value=_llm_reply([{"id": 2, "text": "今天开会。"}]))
-        result = await corrector.correct_transcript(
+        outcome = await corrector.correct_transcript(
             [{"id": 1, "text": "嗯"}, {"id": 2, "text": "今天开会那个那个"}]
         )
-        assert result == {1: "", 2: "今天开会。"}
+        assert outcome.texts == {1: "", 2: "今天开会。"}
+        assert (outcome.total_batches, outcome.failed_batches) == (1, 0)
 
     async def test_llm_failure_falls_back_to_the_preprocessed_text(self, corrector, mock_client):
         mock_client.chat = AsyncMock(side_effect=RuntimeError("LLM 不可用"))
-        result = await corrector.correct_transcript([{"id": 1, "text": "这个这个方案不错"}])
-        assert result == {1: "这个方案不错"}  # 规则预处理的结果保留，只是没有 LLM 润色
+        outcome = await corrector.correct_transcript([{"id": 1, "text": "这个这个方案不错"}])
+        assert outcome.texts == {1: "这个方案不错"}  # 规则预处理的结果保留，只是没有 LLM 润色
+        assert (outcome.total_batches, outcome.failed_batches) == (1, 1)  # 且明确标记为降级
 
     async def test_entries_missing_from_the_llm_reply_keep_their_text(self, corrector, mock_client):
         mock_client.chat = AsyncMock(return_value=_llm_reply([{"id": 1, "text": "第一句。"}]))
-        result = await corrector.correct_transcript([{"id": 1, "text": "第一句"}, {"id": 2, "text": "第二句"}])
-        assert result == {1: "第一句。", 2: "第二句"}
+        outcome = await corrector.correct_transcript([{"id": 1, "text": "第一句"}, {"id": 2, "text": "第二句"}])
+        assert outcome.texts == {1: "第一句。", 2: "第二句"} and outcome.failed_batches == 0
 
     async def test_truncated_json_is_salvaged_by_regex(self, corrector, mock_client):
         broken = '{"entries": [{"id": 1, "text": "修好了。"}, {"id": 2, "te'
         mock_client.chat = AsyncMock(return_value=ChatResponse(content=broken, model="m"))
-        result = await corrector.correct_transcript([{"id": 1, "text": "修好了"}, {"id": 2, "text": "原文二"}])
-        assert result == {1: "修好了。", 2: "原文二"}
+        outcome = await corrector.correct_transcript([{"id": 1, "text": "修好了"}, {"id": 2, "text": "原文二"}])
+        assert outcome.texts == {1: "修好了。", 2: "原文二"}
+        assert outcome.failed_batches == 0  # 抢救出了部分结果，不算整批失败
+
+    async def test_unusable_output_counts_as_a_failed_batch(self, corrector, mock_client):
+        mock_client.chat = AsyncMock(return_value=ChatResponse(content="完全不是 JSON", model="m"))
+        outcome = await corrector.correct_transcript([{"id": 1, "text": "原文"}])
+        assert outcome.texts == {1: "原文"} and outcome.failed_batches == 1
+
+    async def test_empty_reply_counts_as_a_failed_batch(self, corrector, mock_client):
+        mock_client.chat = AsyncMock(return_value=ChatResponse(content="  ", model="m"))
+        assert (await corrector.correct_transcript([{"id": 1, "text": "原文"}])).failed_batches == 1
 
     async def test_progress_reports_each_batch(self, corrector, mock_client):
         mock_client.chat = AsyncMock(side_effect=lambda **kw: _llm_reply([]))

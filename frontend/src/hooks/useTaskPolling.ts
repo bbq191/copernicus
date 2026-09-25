@@ -21,7 +21,7 @@ async function applyCompleted(taskId: string, res: TaskStatusResponse, signal: A
   if (!restored) {
     const transcript = res.result as TranscriptResponse | undefined;
     if (transcript && "transcript" in transcript) {
-      useTranscriptStore.getState().setRawEntries(transcript.transcript);
+      useTranscriptStore.getState().setTranscript(transcript);
     }
   }
   useTaskStore.getState().updateStatus("completed", res.progress);

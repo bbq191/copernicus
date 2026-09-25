@@ -49,6 +49,8 @@ export interface ComplianceReport {
   truncated?: boolean;
   total_chunks?: number;
   failed_chunks?: number;
+  /** 因缺少证据来源（如无 OCR 数据）而未审核的规则 id */
+  skipped_rule_ids?: number[];
   violations: Violation[];
   summary: string;
   compliance_score: number;

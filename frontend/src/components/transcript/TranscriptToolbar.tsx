@@ -7,6 +7,8 @@ import { useExport } from "../../hooks/useExport";
 import { useToastStore } from "../../stores/toastStore";
 import { rerunTranscript } from "../../api/task";
 import { errorMessage } from "../../api/errors";
+import { IncompleteNotice } from "../shared/IncompleteNotice";
+import { transcriptIncompleteness } from "../../utils/completeness";
 
 interface Props {
   onOpenRename: () => void;
@@ -20,6 +22,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
   const speakers = useTranscriptStore((s) => s.speakers);
   const visibleSpeakers = useTranscriptStore((s) => s.visibleSpeakers);
   const toggleSpeakerVisibility = useTranscriptStore((s) => s.toggleSpeakerVisibility);
+  const correction = useTranscriptStore((s) => s.correction);
   const taskId = useTaskStore((s) => s.taskId);
   const { isExporting, exportAs } = useExport();
 
@@ -44,6 +47,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
 
   return (
     <div className="flex flex-col gap-2 p-3 bg-base-200 rounded-lg">
+      <IncompleteNotice notes={transcriptIncompleteness(correction)} />
       <div className="flex items-center gap-2">
         {/* Text display controls group */}
         <div className="join">

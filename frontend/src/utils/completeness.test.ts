@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluationIncompleteness, reportIncompleteness } from "./completeness";
+import { evaluationIncompleteness, reportIncompleteness, transcriptIncompleteness } from "./completeness";
 import type { ComplianceReport } from "../types/compliance";
 
 const report = (over: Partial<ComplianceReport> = {}): ComplianceReport => ({
@@ -49,5 +49,25 @@ describe("evaluationIncompleteness", () => {
     });
     expect(notes).toHaveLength(2);
     expect(notes[1]).toContain("3");
+  });
+});
+
+describe("transcriptIncompleteness", () => {
+  it("is empty when every LLM batch succeeded or the data predates the statistics", () => {
+    expect(transcriptIncompleteness({ total: 0, failed: 0 })).toEqual([]);
+    expect(transcriptIncompleteness({ total: 8, failed: 0 })).toEqual([]);
+  });
+
+  it("states how many batches were left unpolished", () => {
+    expect(transcriptIncompleteness({ total: 8, failed: 3 })[0]).toContain("3 / 8");
+  });
+});
+
+describe("skipped compliance rules", () => {
+  it("lists the rules that could not be checked", () => {
+    const notes = reportIncompleteness(report({ skipped_rule_ids: [3, 7] }));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("2 条规则");
+    expect(notes[0]).toContain("3、7");
   });
 });

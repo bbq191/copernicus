@@ -1,7 +1,7 @@
 """分片上传接口：GET 查询/创建会话 → PATCH 分块上传 → 自动触发标准纪要任务。"""
 
+import asyncio
 import hashlib
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -45,6 +45,9 @@ async def query_upload(
     existing_id = store.lookup_by_hash(file_hash)
     if existing_id:
         return UploadQueryResponse(offset=total_size, complete=True, task_id=existing_id)
+
+    if upload_sessions.get_session(file_hash) is None:
+        store.ensure_capacity()  # 队列已满时不再开启新的上传会话，已有会话仍可续传
 
     offset = upload_sessions.get_or_create(
         file_hash=file_hash,
@@ -91,6 +94,18 @@ async def upload_chunk(
     if not chunk:
         raise HTTPException(status_code=400, detail="Empty chunk body")
 
+    # 同一文件的分块串行处理：客户端重试/重复请求并发到达时避免交错写入
+    async with upload_sessions.lock(file_hash):
+        return await _handle_chunk(file_hash, offset, chunk, store, upload_sessions)
+
+
+async def _handle_chunk(
+    file_hash: str,
+    offset: int,
+    chunk: bytes,
+    store: TaskStore,
+    upload_sessions: UploadSessionService,
+) -> UploadChunkResponse:
     session = upload_sessions.get_session(file_hash)
     if session is None:
         raise HTTPException(
@@ -99,17 +114,17 @@ async def upload_chunk(
         )
 
     try:
-        new_offset, complete = upload_sessions.append_chunk(file_hash, offset, chunk)
+        new_offset, complete = await asyncio.to_thread(
+            upload_sessions.append_chunk, file_hash, offset, chunk
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
     if not complete:
         return UploadChunkResponse(received=new_offset, complete=False)
 
-    # --- 最后一块：组装、校验、提交任务 ---
-    assembled = upload_sessions.read_assembled(file_hash)
-
-    actual_hash = hashlib.sha256(assembled).hexdigest()
+    # --- 最后一块：组装、校验、提交任务（大文件读写与哈希放入线程，避免阻塞事件循环）---
+    assembled, actual_hash = await asyncio.to_thread(_assemble_and_hash, upload_sessions, file_hash)
     if actual_hash != session["hash"]:
         upload_sessions.delete_session(file_hash)
         raise HTTPException(
@@ -118,9 +133,6 @@ async def upload_chunk(
         )
 
     filename: str = session["filename"]
-    hotwords: list[str] | None = session["hotwords"] or None
-    visual_scan: bool = session["visual_scan"]
-    generate_summary: bool = session.get("generate_summary", True)
 
     # 竞态保护：两次并发上传同一文件只处理一次
     existing_id = store.lookup_by_hash(file_hash)
@@ -129,30 +141,17 @@ async def upload_chunk(
         return UploadChunkResponse(received=new_offset, complete=True, task_id=existing_id)
 
     task_id = store.submit_standard_minutes(
-        assembled, filename, hotwords,
+        assembled, filename, session["hotwords"] or None,
         file_hash=file_hash,
-        visual_scan=visual_scan,
-        generate_summary=generate_summary,
+        visual_scan=session["visual_scan"],
+        generate_summary=session.get("generate_summary", True),
     )
-
-    persistence = store.persistence
-    suffix = Path(filename).suffix or ".bin"
-    is_video = suffix.lower() in settings.video_extensions_set
-    if is_video:
-        video_path = persistence.save_video(task_id, assembled, suffix)
-        persistence.save_meta(
-            task_id, filename=filename, file_hash=file_hash,
-            audio_suffix=suffix, media_type="video", video_suffix=suffix,
-        )
-        task = store.get(task_id)
-        if task:
-            task.audio_path = str(video_path)
-    else:
-        audio_path = persistence.save_audio(task_id, assembled, suffix)
-        persistence.save_meta(task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix)
-        task = store.get(task_id)
-        if task:
-            task.audio_path = str(audio_path)
+    await asyncio.to_thread(store.attach_media, task_id, filename, file_hash, assembled)
 
     upload_sessions.delete_session(file_hash)
     return UploadChunkResponse(received=new_offset, complete=True, task_id=task_id)
+
+
+def _assemble_and_hash(upload_sessions: UploadSessionService, file_hash: str) -> tuple[bytes, str]:
+    assembled = upload_sessions.read_assembled(file_hash)
+    return assembled, hashlib.sha256(assembled).hexdigest()

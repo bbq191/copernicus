@@ -1,5 +1,6 @@
 """分片上传会话管理：以文件 SHA-256 为 key，负责会话创建、断点续传、数据组装。"""
 
+import asyncio
 import json
 import logging
 import re
@@ -20,6 +21,12 @@ class UploadSessionService:
     def __init__(self, upload_dir: Path) -> None:
         self._sessions_dir = upload_dir / _SESSIONS_DIR
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def lock(self, file_hash: str) -> asyncio.Lock:
+        """同一文件的分块处理必须串行：重试或重复请求并发到达时，避免交错写入。"""
+        self._session_dir(file_hash)  # 顺带校验哈希格式
+        return self._locks.setdefault(file_hash, asyncio.Lock())
 
     def _session_dir(self, file_hash: str) -> Path:
         if not _SAFE_FILE_HASH.fullmatch(file_hash):
@@ -95,10 +102,15 @@ class UploadSessionService:
         if offset != current:
             raise ValueError(f"Offset mismatch: expected {current}, got {offset}")
 
+        new_offset = current + len(chunk)
+        if new_offset > session["total_size"]:
+            raise ValueError(
+                f"Chunk exceeds declared size: {new_offset} > {session['total_size']}"
+            )
+
         with self._data_path(file_hash).open("ab") as f:
             f.write(chunk)
 
-        new_offset = current + len(chunk)
         complete = new_offset >= session["total_size"]
         logger.info(
             "Session %.8s: %d/%d bytes complete=%s",
@@ -114,3 +126,4 @@ class UploadSessionService:
         if d.exists():
             shutil.rmtree(d)
             logger.info("Deleted session %.8s", file_hash)
+        self._locks.pop(file_hash, None)

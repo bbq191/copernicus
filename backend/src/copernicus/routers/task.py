@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import mimetypes
 import re
@@ -49,7 +50,7 @@ async def _read_upload(
     audio_bytes = await file.read()
     if len(audio_bytes) > settings.max_upload_size_bytes:
         raise HTTPException(status_code=413, detail="File too large")
-    file_hash = hashlib.sha256(audio_bytes).hexdigest()
+    file_hash = await asyncio.to_thread(lambda: hashlib.sha256(audio_bytes).hexdigest())
     existing_id = store.lookup_by_hash(file_hash)
     if existing_id:
         existing_task = store.get(existing_id)
@@ -61,22 +62,6 @@ async def _read_upload(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return _UploadResult(audio_bytes, file_hash, hw, file.filename or "upload.bin", None)
-
-
-def _persist_task_media(
-    store: TaskStore,
-    task_id: str,
-    audio_bytes: bytes,
-    filename: str,
-    file_hash: str,
-) -> None:
-    """保存上传媒体文件和 meta.json，并更新任务的 audio_path。"""
-    path = store.persistence.persist_media(
-        task_id, filename, file_hash, audio_bytes, settings.video_extensions_set
-    )
-    task = store.get(task_id)
-    if task:
-        task.audio_path = str(path)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +102,9 @@ async def submit_standard_minutes_task(
         generate_summary=generate_summary,
         template_id=template_id,
     )
-    _persist_task_media(store, task_id, upload.audio_bytes, upload.filename, upload.file_hash)
+    await asyncio.to_thread(
+        store.attach_media, task_id, upload.filename, upload.file_hash, upload.audio_bytes
+    )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 
@@ -147,7 +134,9 @@ async def submit_transcript_task(
         file_hash=upload.file_hash,
         visual_scan=visual_scan,
     )
-    _persist_task_media(store, task_id, upload.audio_bytes, upload.filename, upload.file_hash)
+    await asyncio.to_thread(
+        store.attach_media, task_id, upload.filename, upload.file_hash, upload.audio_bytes
+    )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
 
@@ -394,6 +383,24 @@ async def rename_speakers(
     多个原名映射到同一新名即合并说话人。`updated` 为受影响的句段数。
     """
     return TranscriptUpdateResponse(updated=store.rename_speakers(task_id, body.renames))
+
+
+@router.post(
+    "/tasks/{task_id}/cancel",
+    status_code=202,
+    tags=["任务管理"],
+    summary="取消运行中的任务",
+)
+async def cancel_task(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> dict:
+    """取消排队中或处于 LLM 阶段（纠错 / 纪要 / 合规审核）的任务，任务将标记为失败（已取消）。
+
+    ASR 推理与视觉扫描运行在线程中无法安全中断，此阶段返回 409，请等待其完成后再取消。
+    """
+    store.cancel_task(task_id)
+    return {"ok": True}
 
 
 @router.get(

@@ -16,6 +16,18 @@ router = APIRouter(prefix="/api/v1", tags=["系统"])
 
 
 @router.get(
+    "/health/live",
+    summary="存活探针",
+)
+async def liveness() -> dict[str, str]:
+    """仅表示进程在响应请求，不检查任何依赖（ASR / LLM / 显存），用于进程级存活探测。
+
+    组件就绪状态请使用 `GET /api/v1/health`。
+    """
+    return {"status": "alive"}
+
+
+@router.get(
     "/health",
     response_model=HealthResponse,
     summary="服务健康检查",

@@ -3,6 +3,7 @@ import contextlib
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResponse
@@ -15,6 +16,7 @@ from copernicus.config import Settings
 from copernicus.exceptions import (
     AudioNotFoundError,
     InvalidIdentifierError,
+    QueueFullError,
     ServiceNotConfiguredError,
     TaskBusyError,
     TaskNotFoundError,
@@ -44,6 +46,16 @@ TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset({
 
 # 服务重启时仍无结果的任务：进程内状态已丢失，只能标记为失败
 _INTERRUPTED_MESSAGE = "服务重启导致任务中断，请重新转写或重新上传"
+_CANCELLED_MESSAGE = "任务已取消"
+
+# 仅这些阶段可安全取消：其余阶段（ASR、视觉扫描）运行在线程中，无法中断，
+# 取消协程会让线程继续占用 GPU，同时放行下一个任务，造成显存冲突
+_CANCELLABLE_STATUSES: frozenset[TaskStatus] = frozenset({
+    TaskStatus.PENDING,
+    TaskStatus.CORRECTING,
+    TaskStatus.EVALUATING,
+    TaskStatus.AUDITING,
+})
 
 _PIPELINE_STAGE_STATUS: dict[str, "TaskStatus"] = {
     "video_preprocess": "extracting_frames",
@@ -163,6 +175,9 @@ class TaskStore:
         self._template_manager = template_manager
         self._task_timeout = settings.task_timeout_seconds
         self._max_tasks = settings.task_max_in_memory
+        self._max_active = settings.task_max_active
+        self._video_extensions = settings.video_extensions_set
+        self._handles: dict[str, asyncio.Task] = {}
         self._tasks: dict[str, TaskInfo] = {}
         self._invalidated: set[str] = set()  # 已被用户作废，不再从磁盘惰性恢复
         self._hash_index: dict[str, str] = persistence.load_hash_index()
@@ -436,13 +451,12 @@ class TaskStore:
         file_hash: str = "",
         visual_scan: bool = False,
     ) -> str:
+        self.ensure_capacity()
         task_id = uuid.uuid4().hex
         self._register_task(task_id)
-        asyncio.create_task(
-            self._run_with_timeout(
-                task_id,
-                self._run_transcript(task_id, audio_bytes, filename, hotwords, visual_scan=visual_scan),
-            )
+        self._spawn(
+            task_id,
+            self._run_transcript(task_id, audio_bytes, filename, hotwords, visual_scan=visual_scan),
         )
         if file_hash:
             self._register_hash(file_hash, task_id)
@@ -461,18 +475,17 @@ class TaskStore:
         template_id: str = "universal",
     ) -> str:
         """提交标准纪要任务：Pipeline 完成后自动生成摘要。"""
+        self.ensure_capacity()
         task_id = uuid.uuid4().hex
         self._register_task(task_id)
-        asyncio.create_task(
-            self._run_with_timeout(
-                task_id,
-                self._run_standard_minutes(
-                    task_id, audio_bytes, filename, hotwords,
-                    visual_scan=visual_scan,
-                    generate_summary=generate_summary,
-                    template_id=template_id,
-                ),
-            )
+        self._spawn(
+            task_id,
+            self._run_standard_minutes(
+                task_id, audio_bytes, filename, hotwords,
+                visual_scan=visual_scan,
+                generate_summary=generate_summary,
+                template_id=template_id,
+            ),
         )
         if file_hash:
             self._register_hash(file_hash, task_id)
@@ -494,10 +507,9 @@ class TaskStore:
             raise ServiceNotConfiguredError("EvaluatorService not configured")
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
-        asyncio.create_task(
-            self._run_with_timeout(
-                task_id, self._run_text_evaluation(task_id, text, template_id)
-            )
+        self._spawn(
+            task_id,
+            self._run_text_evaluation(task_id, text, template_id),
         )
         logger.info(
             "Task %s submitted (text evaluation, template=%s, parent=%s)",
@@ -518,13 +530,11 @@ class TaskStore:
             raise ServiceNotConfiguredError("ComplianceService not configured")
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
-        asyncio.create_task(
-            self._run_with_timeout(
-                task_id,
-                self._run_compliance_audit(
-                    task_id, transcript_entries, rules_bytes, rules_filename
-                ),
-            )
+        self._spawn(
+            task_id,
+            self._run_compliance_audit(
+                task_id, transcript_entries, rules_bytes, rules_filename
+            ),
         )
         logger.info("Task %s submitted (compliance audit, parent=%s)", task_id, parent_task_id)
         return task_id
@@ -542,6 +552,7 @@ class TaskStore:
             raise TaskNotFoundError(f"Task {task_id} not found")
         if task.status not in TERMINAL_STATUSES:
             raise TaskBusyError(f"Task {task_id} is still running")
+        self.ensure_capacity()
 
         media_path = self._persistence.find_video(task_id) or self._persistence.find_audio(task_id)
         if media_path is None:
@@ -559,18 +570,27 @@ class TaskStore:
 
         # invalidate all prior results
         self._persistence.clear_failure(task_id)
+        # 标记重新处理时间，避免生命周期清理把处理中的旧任务当作过期任务
+        self._persistence.update_meta(task_id, processed_at=datetime.now(timezone.utc).isoformat())
         self._persistence.delete_file(task_id, "transcript.json")
         self._persistence.delete_file(task_id, "evaluation.json")
         self._persistence.delete_file(task_id, "compliance.json")
 
-        asyncio.create_task(
-            self._run_with_timeout(
-                task_id,
-                self._run_transcript(task_id, audio_bytes, f"audio{suffix}", hotwords),
-            )
+        self._spawn(
+            task_id,
+            self._run_transcript(task_id, audio_bytes, f"audio{suffix}", hotwords),
         )
         logger.info("Task %s rerun (transcript)", task_id)
         return task_id
+
+    def attach_media(self, task_id: str, filename: str, file_hash: str, data: bytes) -> None:
+        """保存任务的原始媒体与 meta.json，并记录路径（同步磁盘 IO，异步调用方应放入线程）。"""
+        path = self._persistence.persist_media(
+            task_id, filename, file_hash, data, self._video_extensions
+        )
+        task = self._tasks.get(task_id)
+        if task:
+            task.audio_path = str(path)
 
     # -- get -----------------------------------------------------------------
 
@@ -619,12 +639,63 @@ class TaskStore:
         except Exception:
             logger.warning("Failed to persist failure of task %s", task.task_id, exc_info=True)
 
+    # -- scheduling ----------------------------------------------------------
+
+    def ensure_capacity(self) -> None:
+        """音视频任务排队+运行数已达上限时抛出 QueueFullError（调用方应返回 429）。"""
+        if self._max_active <= 0:
+            return
+        active = sum(
+            1 for t in self._tasks.values()
+            if not t.eval_only and t.status not in TERMINAL_STATUSES
+        )
+        if active >= self._max_active:
+            raise QueueFullError(f"任务队列已满（{active}/{self._max_active}），请稍后重试")
+
+    def _spawn(self, task_id: str, coro) -> None:
+        """在后台运行任务协程（带超时保护），并保存句柄以支持取消。"""
+        handle = asyncio.create_task(self._run_with_timeout(task_id, coro))
+        self._handles[task_id] = handle
+
+        def _forget(done: asyncio.Task) -> None:
+            # 重跑会为同一 task_id 换上新句柄，只清理属于自己的
+            if self._handles.get(task_id) is done:
+                del self._handles[task_id]
+
+        handle.add_done_callback(_forget)
+
+    def cancel_task(self, task_id: str) -> None:
+        """取消排队中或处于 LLM 阶段的任务；ASR 等不可中断的阶段返回 409。"""
+        task = self.get(task_id)
+        if task is None:
+            raise TaskNotFoundError(f"Task {task_id} not found")
+        handle = self._handles.get(task_id)
+        if handle is None or task.status in TERMINAL_STATUSES:
+            raise TaskBusyError(f"Task {task_id} is not running")
+        if task.status not in _CANCELLABLE_STATUSES:
+            raise TaskBusyError(
+                f"当前阶段（{task.status.value}）无法中断，请等待该阶段完成后再取消"
+            )
+        handle.cancel()
+
+    async def cancel_all(self) -> None:
+        """服务关停时取消全部后台任务并等待其退出。"""
+        handles = list(self._handles.values())
+        for handle in handles:
+            handle.cancel()
+        await asyncio.gather(*handles, return_exceptions=True)
+
     # -- timeout wrapper -----------------------------------------------------
 
     async def _run_with_timeout(self, task_id: str, coro) -> None:
         """为任务协程添加超时保护。"""
         try:
             await asyncio.wait_for(coro, timeout=self._task_timeout)
+        except asyncio.CancelledError:
+            task = self._tasks.get(task_id)
+            if task and task.status not in TERMINAL_STATUSES:
+                self._mark_failed(task, _CANCELLED_MESSAGE)
+            raise
         except asyncio.TimeoutError:
             task = self._tasks.get(task_id)
             if task and task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):

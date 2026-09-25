@@ -36,13 +36,18 @@ def _flag_from_env_or_dotenv(key: str) -> bool:
     return str(val).lower() in ("1", "true", "yes") if val else False
 
 
+from copernicus.request_context import install_log_record_factory
+
+install_log_record_factory()  # 必须早于任何日志格式配置：格式串引用 request_id
+
+
 def _apply_file_logging(log_file: Path) -> None:
     logging.config.dictConfig({
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
             "default": {
-                "format": "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+                "format": "%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s: %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             }
         },
@@ -78,7 +83,7 @@ else:
     # 生产环境（systemctl）：stdout/stderr 由 journald 接管，直接输出即可
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        format="%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
@@ -88,6 +93,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 
 from copernicus.config import Settings, settings
 from copernicus.error_handlers import register_error_handlers
+from copernicus.request_context import REQUEST_ID_HEADER, RequestIdMiddleware
 from copernicus.services.audio import AudioService
 from copernicus.services.asr import ASRService
 from copernicus.services.lifecycle import LifecycleService
@@ -177,8 +183,10 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
     )
     app.state.task_store.restore_from_disk()
 
-    # 后台定时清理过期原始媒体文件
-    lifecycle = LifecycleService(settings.upload_dir, settings.media_retention_hours)
+    # 后台定时清理：过期媒体、失败任务、中断上传与存储配额
+    lifecycle = LifecycleService(
+        settings.upload_dir, settings.media_retention_hours, settings.max_storage_gb
+    )
     return asyncio.create_task(lifecycle.run_periodic())
 
 
@@ -194,6 +202,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Shutting down Copernicus service ...")
+        task_store = getattr(app.state, "task_store", None)
+        if task_store is not None:
+            await task_store.cancel_all()
         if lifecycle_task is not None:
             lifecycle_task.cancel()
             await asyncio.gather(lifecycle_task, return_exceptions=True)
@@ -280,7 +291,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[REQUEST_ID_HEADER],
 )
+# 后添加的中间件位于外层：最外层分配 request id，CORS 预检等所有请求都能带上
+app.add_middleware(RequestIdMiddleware)
 
 app.include_router(transcription.router)
 app.include_router(task.router)

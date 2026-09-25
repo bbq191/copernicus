@@ -36,3 +36,7 @@ class InvalidIdentifierError(CopernicusError, ValueError):
 
 class TaskBusyError(CopernicusError):
     """Raised when an operation requires a task that is currently running."""
+
+
+class QueueFullError(CopernicusError):
+    """Raised when too many media tasks are already queued or running."""

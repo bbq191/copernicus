@@ -488,6 +488,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | PATCH | /api/v1/tasks/{task_id}/transcript | 人工修订转写文本 |
 | PATCH | /api/v1/tasks/{task_id}/speakers | 重命名或合并说话人 |
 | POST | /api/v1/tasks/{task_id}/rerun-transcript | 重新转写 |
+| POST | /api/v1/tasks/{task_id}/cancel | 取消排队或 LLM 阶段的任务 |
 | POST | /api/v1/tasks/{task_id}/synthesize | 触发 TTS 多说话人音频合成 |
 | GET | /api/v1/tasks/{task_id}/synthesis/status | 查询合成任务状态 |
 | GET | /api/v1/tasks/{task_id}/synthesis | 下载已合成的 MP3 音频 |
@@ -498,6 +499,7 @@ PENDING → PROCESSING_ASR → EXTRACTING_FRAMES → SCANNING_VISUAL
 | POST | /api/v1/tasks/compliance_audit | 提交合规审核任务 |
 | PATCH | /api/v1/tasks/{task_id}/compliance/violations | 批量更新违规审核状态（含复核备注，返回重算评分）|
 | GET | /api/v1/tasks/{task_id}/compliance/export | 导出合规报告 Excel |
+| GET | /api/v1/health/live | 存活探针（不检查依赖）|
 | GET | /api/v1/health | 服务健康检查（组件状态 + 任务统计 + VRAM 水位，unhealthy 时 503）|
 
 ---

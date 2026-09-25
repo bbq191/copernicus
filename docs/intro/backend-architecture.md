@@ -33,6 +33,7 @@ backend/src/copernicus/
   config.py               # pydantic-settings 配置（含 models_dir 派生路径等计算属性）
   dependencies.py         # FastAPI Depends 提供器（从 app.state 取服务实例）
   exceptions.py           # 自定义异常（CopernicusError 基类 + 子类）
+  request_context.py      # 请求追踪：X-Request-ID 中间件 + 日志记录注入 request_id
   error_handlers.py       # 领域异常 → HTTP 状态码的统一映射（404 / 409 / 422 / 503 / 500）
   routers/                # FastAPI 路由层
     task.py               #   任务管理（列表/重命名/删除/上传/轮询/结果/重跑/媒体/转写校对）
@@ -79,7 +80,7 @@ backend/src/copernicus/
     ocr.py                #   RapidOCR 封装
     face_detector.py      #   YOLO 人脸检测
     upload_session.py     #   分片上传会话管理
-    lifecycle.py          #   媒体文件生命周期清理（定时任务）
+    lifecycle.py          #   磁盘生命周期：过期媒体 / 失败任务 / 中断上传 / 存储配额
     preflight.py          #   启动预检（模型文件、LLM 可达性、funasr 补丁）
   schemas/                # Pydantic 数据模型
     task.py               #   TaskStatus / TaskProgress / TaskResultsResponse
@@ -148,10 +149,10 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
     └── restore_from_disk() 恢复历史任务：有结果的为 COMPLETED，保留媒体但无结果的（失败或被重启打断）为 FAILED；同时修剪失效 hash 索引
 
 11. LifecycleService
-    └── asyncio 定时任务：每小时清理超过 media_retention_hours(24h) 的原始媒体文件（保留 JSON 结果）
+    └── asyncio 定时任务：启动时立即执行一次，之后每小时执行；策略见 6.9 末尾的"磁盘生命周期"
 ```
 
-**关闭时**: 取消 LifecycleService 定时任务，调用 `llm_client.close()` 释放 httpx 连接池。
+**关闭时**: 取消全部后台任务（标记为失败"任务已取消"）、取消 LifecycleService 定时任务，调用 `llm_client.close()` 释放 httpx 连接池。
 
 **CORS**: 默认允许 `http://localhost:3000`。
 
@@ -174,7 +175,8 @@ FastAPI 通过 `@asynccontextmanager` 管理应用生命周期，启动时按依
 | /api/v1/tasks/{task_id}/results | GET | 获取完整持久化结果 |
 | /api/v1/tasks/{task_id}/media | GET | 获取原始媒体文件（视频优先，回退音频）|
 | /api/v1/tasks/{task_id}/frames/{filename} | GET | 获取关键帧 JPEG 图片 |
-| /api/v1/tasks/{task_id}/rerun-transcript | POST | 基于已有音频重新转写 |
+| /api/v1/tasks/{task_id}/rerun-transcript | POST | 基于已有音频重新转写（运行中返回 409，队列已满返回 429）|
+| /api/v1/tasks/{task_id}/cancel | POST | 取消排队或 LLM 阶段的任务；ASR / 视觉扫描阶段返回 409 |
 | /api/v1/tasks/{task_id}/transcript | PATCH | 人工修订句段的修正文（按下标批量）|
 | /api/v1/tasks/{task_id}/speakers | PATCH | 重命名或合并说话人 |
 | /api/v1/tasks/{task_id} | DELETE | 默认仅作废缓存；`purge=true` 彻底删除任务及磁盘文件 |
@@ -227,7 +229,8 @@ synthesize 端点接收可选 `voice_map`（JSON，说话人→音色种子映�
 
 | 端点 | 方法 | 功能 |
 |------|------|------|
-| /api/v1/health | GET | 服务健康检查（unhealthy 时返回 503）|
+| /api/v1/health | GET | 服务健康检查（就绪探针，unhealthy 时返回 503）|
+| /api/v1/health/live | GET | 存活探针，仅表示进程可响应，不检查任何依赖 |
 
 **health 响应结构**: 顶层 `status`（healthy / degraded / unhealthy）+ 三个组件对象 `asr` / `llm` / `tts`（各含 status: ok / degraded / down 与 detail）+ `tasks` 任务统计（active / completed / failed / synthesis_running）+ `vram` 水位（loaded_models / estimated_used_gb / budget_gb）。早期的同步转录调试端点已删除。
 
@@ -299,7 +302,7 @@ PipelineService 是对外暴露的唯一接口，构造时注册 9 个 Stage：
 
 ```
 1. VideoPreprocessStage     -- 视频提取音频（条件注册：settings + persistence）
-2. KeyframeExtractStage     -- 关键帧提取（条件注册：settings + persistence）
+2. KeyframeExtractStage     -- 关键帧提取（条件注册：settings + persistence）；场景切换策略使用 ffmpeg showinfo 报告的真实时间戳，等间隔策略按间隔推算，保证与转写、OCR 的时间对齐
 3. OCRScanStage             -- OCR 扫描（条件注册：ocr_service + persistence）
 4. FaceDetectStage          -- 人脸检测（条件注册：face_detector + persistence + settings）
 5. AudioPreprocessStage     -- 音频格式转换
@@ -575,6 +578,17 @@ uploads/
 | load_hash_index / save_hash_index | SHA-256 去重索引 |
 | scan_completed_tasks | 扫描磁盘恢复内存任务 |
 
+**磁盘生命周期 (lifecycle.py)**: 后台每小时（启动时立即一次）依次执行四项策略：
+
+| 策略 | 说明 |
+|------|------|
+| 过期媒体 | 已完成任务超过 media_retention_hours 后删除原始音视频与合成音频，保留转写/纪要/合规 JSON 与关键帧证据 |
+| 失败任务 | 没有转写结果的任务（失败或被重启打断）超期后整目录删除；等待时间至少 2 小时，避免误删仍在处理的任务 |
+| 中断上传 | 超期未完成的分片上传会话整目录删除 |
+| 存储配额 | max_storage_gb > 0 且占用超限时，按时间从旧到新删除原始媒体直到回落 |
+
+时间以 created_at 与重新转写时写入的 processed_at 中较晚者为准，因此被重跑的旧任务在处理期间不会被当作过期任务清理。
+
 ### 6.10 任务管理 (task_store.py)
 
 **TaskInfo 数据结构**: 轻量级 `__slots__` 对象，字段包括 task_id / status / current_chunk / total_chunks / result / error / eval_only / audio_path / parent_task_id。
@@ -777,11 +791,13 @@ YOLO 模型路径为计算属性，固定为 `models_dir/yolo/yolov8n-face.pt`�
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | task_timeout_seconds | 3600 | 单任务超时 |
+| task_max_active | 5 | 排队+运行中的音视频任务上限，超出返回 429（0 = 不限制）|
 | task_max_in_memory | 500 | 内存任务数上限 |
 | upload_dir | "./uploads" | 持久化根目录 |
 | max_upload_size_mb | 500 | 上传文件大小上限 |
 | vram_budget_gb | 12.0 | ModelManager 热插拔的 VRAM 预算 |
 | media_retention_hours | 24 | 原始媒体文件保留时长（超时由 LifecycleService 清理）|
+| max_storage_gb | 0 | 上传目录磁盘配额（GB），超出时从最旧的任务起删除原始媒体；0 = 不限制 |
 | models_dir | "./models" | 统一模型根目录（funasr / chattts / yolo）|
 | templates_dir | "./templates" | 纪要模板目录 |
 
@@ -850,6 +866,11 @@ FastAPI 事件循环（单进程 asyncio）
 | 任务状态 | 失败原因落盘 | 任务失败时写入 failure.json（仅对有 meta.json 的任务），重启后恢复原始失败原因；无记录则提示"服务重启导致任务中断" |
 | 任务状态 | 惰性恢复 | 内存淘汰后的任务在被查询时从磁盘重建，被用户作废（DELETE）的任务不再恢复 |
 | 任务状态 | 重跑保护 | 运行中的任务不允许重新转写（409） |
+| 任务调度 | 准入控制 | 排队+运行中的音视频任务达到 task_max_active 时返回 429；分片上传只拒绝新会话，已有会话仍可续传 |
+| 任务调度 | 取消 | 保存后台任务句柄；仅排队与 LLM 阶段可取消（ASR 与视觉扫描在线程中无法中断，取消会让线程继续占用 GPU 并放行下一个任务）；关停时统一取消 |
+| 可观测性 | 请求追踪 | 每个请求分配 X-Request-ID（可沿用调用方传入的合法值），写入响应头、错误响应体与所有日志行；请求内启动的后台任务继承该 id |
+| 错误响应 | 统一结构 | 领域异常返回 {detail, code, request_id}；未预期异常只记录日志，返回通用文案与 request_id，不暴露异常内容 |
+| 上传 | 线程卸载与串行 | 分块追加、组装、SHA-256 与落盘放入线程，不阻塞事件循环；同一文件的分块经每会话锁串行处理；超出声明大小的分块被拒绝 |
 | 哈希索引 | stale 清理 | restore_from_disk() 启动时确定性清理并持久化；lookup 时发现 stale 条目惰性移除内存状态 |
 | 分片上传 | 断点续传 | GET 返回已接收字节，客户端续传剩余分块 |
 

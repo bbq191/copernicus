@@ -100,6 +100,7 @@ class Settings(BaseSettings):
 
     # Task execution
     task_timeout_seconds: int = Field(default=3600, ge=60)   # 单任务超时（秒），防止 ASR/LLM 卡住
+    task_max_active: int = Field(default=5, ge=0)            # 排队+运行中的音视频任务上限，超出返回 429；0 = 不限制。ASR 串行，超过约 5 个后末尾任务会因排队而触发超时；每个排队任务还在内存中持有整个文件
     task_max_in_memory: int = Field(default=500, ge=1)       # 内存中最大任务数，超出时淘汰最早的已完成任务
 
     # VRAM budget (ModelManager 热插拔阈值)
@@ -107,6 +108,7 @@ class Settings(BaseSettings):
 
     # Lifecycle (原始媒体文件生命周期)
     media_retention_hours: int = 24
+    max_storage_gb: float = Field(default=0, ge=0)  # 上传目录磁盘配额（GB），超出时淘汰最旧的原始媒体；0 = 不限制
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]

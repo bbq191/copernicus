@@ -1,770 +1,540 @@
 ---
 title: Copernicus 第三方系统接入指南
 author: afu
-version: V1.2
-date: 2026-08-19
+version: V2.0
+date: 2026-09-25
 ---
 
 # Copernicus 第三方系统接入指南
 
-> 面向需要通过 API 将 Copernicus 能力集成到外部系统的开发者，覆盖标准纪要、合规审核、纯文本评估、音频合成四项核心功能的完整调用流程。
+> 作者: afu
+>
+> Copernicus 是音视频听写与合规审核后端，通过 REST API 提供转写、纪要、合规审核和音频重塑能力；所有耗时操作都是异步任务，"提交、轮询、取结果"三步即可接入。
+>
+> **阅读对象**：需要把 Copernicus 接入自有系统的后端或前端集成开发者。本文只讲调用方式、顺序与错误处理，不涉及服务内部实现和部署。文中不含代码示例，请求与响应用字段表格说明；在线的完整接口定义可在服务的 `/docs` 页面查看。
 
----
+## 一、你需要知道的三件事
 
-## 一、概述
+Copernicus 的转写、纪要和审核都要跑几十秒到几十分钟，所以接口不会"等结果再返回"，而是先返回一个任务编号 `task_id`（32 位小写十六进制字符串），你拿着它去查进度、取结果。这种模式叫**异步任务**，反复查询进度的动作叫**轮询**。
 
-Copernicus 提供标准 REST API，基于四层架构将任务按复杂度分层处理：
+**最小可用集成只有三步：**
 
-| 层级 | 主入口 | 适用场景 |
+1. **提交**：向 `POST /api/v1/tasks/standard_minutes` 以 multipart 表单上传一个音频或视频文件（字段名 `file`）。服务返回 HTTP 202 和 `task_id`。
+2. **轮询**：每 2 到 5 秒请求一次 `GET /api/v1/tasks/{task_id}`，读取 `status`。当 `status` 变为 `completed` 或 `failed` 时停止；`failed` 时原因在 `error` 字段。
+3. **取结果**：`status` 为 `completed` 后请求 `GET /api/v1/tasks/{task_id}/results`，得到转写文本（含说话人和时间戳）和会议纪要。
+
+只要转写文本、不要纪要时，第 1 步改用 `POST /api/v1/tasks/transcript`，其余不变。
+
+![典型调用顺序](../assets/integration-sequence.svg)
+
+图中的步骤 1 到 3 就是最小集成；步骤 4 到 7 是可选能力（合规审核、人工复核、导出、音频重塑），在第三章和第五章展开。上手前还有三点要先知道：
+
+- **相同文件不会重复处理**。服务按文件内容的 SHA-256 哈希识别文件（SHA-256 是把文件内容压缩成 64 位十六进制指纹的算法），同一文件再次提交时直接返回已有任务，响应里 `existing` 为 `true`。
+- **服务可能拒绝新任务**。音视频任务排队加运行的数量有上限（默认 5），超出时返回 429，需要稍后重试。
+- **系统没有鉴权**。请只在内网或受控网关后面使用，详见第二章。
+
+## 二、约定
+
+### 2.1 基址与数据格式
+
+- 基址为 `http://<host>:<port>`（端口以部署为准），所有接口路径以 `/api/v1` 开头。
+- 文件与表单类接口使用 `multipart/form-data`；分片上传的数据块使用 `application/octet-stream`；复核、重命名、校对、合成等接口使用 JSON 请求体；`/evaluate/transcript/async` 使用 `text/plain` 请求体。
+- 响应均为 JSON，例外是下载类接口（媒体、关键帧、合成音频、Excel 报告）。布尔类表单字段传 `true` 或 `false`。
+- 任务编号 `task_id` 与分片上传的文件哈希有固定格式：`task_id` 为 32 位小写十六进制，哈希为 64 位小写十六进制。格式非法时多数接口返回 422，个别查询接口返回 404。
+
+### 2.2 认证
+
+**系统目前没有任何鉴权机制**：不校验 API Key、令牌或来源身份，任何能访问到端口的调用方都能提交任务、读取和删除结果。因此建议：
+
+- 部署在内网，或放在带鉴权、限流的网关或反向代理之后，由网关负责身份校验。
+- 跨域限制（CORS）只约束浏览器，白名单由部署方通过 `CORS_ORIGINS` 配置；服务端到服务端的调用不受其影响。
+
+### 2.3 错误响应格式
+
+所有错误响应的响应头都带 `X-Request-ID`，用于把一次请求与服务端日志对应起来。你可以在请求头中自带该值（1 到 64 位字母、数字或 `._-`），不合法或缺失时服务端自动生成。报障时请提供这个值。
+
+错误响应体有两种形态，集成时需要都能解析：
+
+| 形态 | 字段 | 出现的场景 |
 |---|---|---|
-| 存储层 | `PATCH /api/v1/uploads/{hash}` | 大文件分片上传（> 50 MB 推荐） |
-| 基础 AI | `POST /api/v1/tasks/standard_minutes` | 转写 + 纠错 + 纪要（90% 场景） |
-| 高阶 AI | `POST /api/v1/tasks/compliance_audit` | 多模态合规推理（10% 场景） |
-| 音频重塑 | `POST /api/v1/tasks/{task_id}/synthesize` | 多说话人对话音频合成（可选） |
+| 带机器可读代码 | `detail`（文字说明）、`code`（错误代码）、`request_id` | 任务不存在、任务忙、队列已满、标识格式非法、服务未就绪、内部错误 |
+| 仅说明 | `detail` | 其余由接口直接判定的错误，如文件过大、分片偏移不符、哈希不一致、参数校验失败 |
 
-**调用模型**：全部接口采用异步任务模式——提交请求后立即返回 `task_id`，调用方通过轮询接口获取进度和结果。
+参数校验失败时（如缺少必填字段），`detail` 是一个数组，每项描述一个出错字段，而不是字符串。
 
-**服务地址**：默认运行在 `http://<host>:8000`。
+`code` 取值如下：
 
-**V1.1 主要变化**：
-- `standard_minutes` 将转写与纪要合并为一次提交，无需再单独触发评估；
-- 合规审核入口统一为 `POST /api/v1/tasks/compliance_audit`；
-- 新增分片上传流程，支持断点续传；
-- `/health` 新增 VRAM 水位字段；
-- **新增纪要模板系统**：`standard_minutes` 支持 `template_id` 参数，可按夕会、周例会、公文等不同格式生成纪要；
-- **`evaluation` 结果结构变更**：废弃原有评分字段（`scores`、`analysis`、`meta`），改为 `formatted_content`（按模板排版的 Markdown 正文）和 `title`（会议标题）；
-- 新增 `GET /api/v1/templates`（查询可用模板）和 `POST /api/v1/templates/reload`（热重载模板）。
-
-**V1.2 主要变化**：
-- **新增音频重塑 API**：通过 `POST /api/v1/tasks/{task_id}/synthesize` 将转写结果合成为多说话人对话音频，配套状态查询和下载端点（见 4.16–4.18）；
-- **`/health` 响应结构升级**：`asr_loaded`/`llm_reachable` 布尔字段改为 `asr`/`llm`/`tts` 组件对象，新增整体 `status` 字段和 `tasks` 任务统计（见 4.12）；
-- **新增 `DELETE /api/v1/tasks/{task_id}`**：作废任务内存缓存并重置哈希索引，用于强制重新处理同一文件；`purge=true` 可彻底删除（见 4.10）；
-- **分片上传不支持 `template_id`**：分片上传流程（4.3–4.4）始终使用默认模板，如需指定模板请改用普通上传（4.1）；
-- **删除 `rerun-evaluation` 端点**：重新生成纪要请改用 `POST /api/v1/evaluate/text/async`（见 4.13）；
-- `results` 响应新增 `has_synthesis` 字段，标识该任务是否已有合成音频。
-
----
-
-## 二、完整调用链路
-
-### 2.1 全链路（标准纪要 + 合规审核）
-
-```
-1. POST /api/v1/tasks/standard_minutes
-        上传音视频，返回 task_id
-        服务端自动执行：ASR 转写 → 文字纠错 → 纪要生成（按指定模板）
-        （相同文件自动去重，existing=true 时直接跳至步骤 4）
-        |
-        v
-2. 轮询 GET /api/v1/tasks/{task_id}
-        等待 status 变为 completed
-        |
-        v
-3. POST /api/v1/tasks/compliance_audit  （可选）
-        传入转写条目 + 规则文件，返回 compliance_task_id
-        |
-        v
-4. 轮询 GET /api/v1/tasks/{compliance_task_id}
-        等待 status 变为 completed
-        |
-        v
-5. GET /api/v1/tasks/{task_id}/results
-        一次性获取转写、纪要、合规三项结果
-```
-
-与 V1.0 相比，评估（纪要）已内置于 `standard_minutes`，调用链路从 7 步缩短为 4 步。
-
-### 2.2 仅获取标准纪要（转写 + 纪要）
-
-```
-1. POST /api/v1/tasks/standard_minutes → task_id
-2. 轮询 GET /api/v1/tasks/{task_id}，等待 completed
-3. GET /api/v1/tasks/{task_id}/results
-```
-
-### 2.3 仅获取转写（不含纪要，更快）
-
-适用于只需要转写文本、不需要纪要的场景，省去纪要生成阶段，处理速度提升约 30%。
-
-```
-1. POST /api/v1/tasks/transcript → task_id
-2. 轮询 GET /api/v1/tasks/{task_id}，等待 completed
-3. GET /api/v1/tasks/{task_id}/results
-```
-
-### 2.4 大文件分片上传
-
-文件大于 50 MB 时推荐使用分片上传，支持断点续传。注意：分片上传流程不支持指定 `template_id`，将使用默认通用模板；如需指定模板，请使用普通上传（2.2）。
-
-```
-1. GET /api/v1/uploads/{sha256}?filename=xxx&total_size=yyy
-        检查是否已有会话：
-          complete=true  → 文件已处理，直接使用返回的 task_id
-          offset=n       → 从第 n 字节续传（断点续传）
-          offset=0       → 新会话，从头上传
-        |
-        v
-2. 循环 PATCH /api/v1/uploads/{sha256}
-        请求头：Content-Range: bytes {start}-{end}/{total}
-        请求体：原始二进制（每片建议 5–10 MB）
-        |
-        v
-3. 最后一片响应：complete=true，返回 task_id（已自动提交标准纪要任务）
-        |
-        v
-4. 轮询 GET /api/v1/tasks/{task_id}，等待 completed
-5. GET /api/v1/tasks/{task_id}/results
-```
-
-### 2.5 纯文本评估（已有转写文本）
-
-适合第三方系统已有转写结果、只需要生成纪要的场景。支持指定纪要模板（见 4.13）。
-
-```
-1. （可选）GET /api/v1/templates  查询可用模板，获取合法的 template_id
-2. POST /api/v1/evaluate/text/async → task_id（传入文本和 template_id）
-3. 轮询 GET /api/v1/tasks/{task_id}，等待 completed
-   （result 字段中直接包含纪要结果）
-```
-
-### 2.6 音频重塑（合成多说话人对话音频）
-
-适合需要将转写结果重新合成为可播放对话音频的场景。前置条件：任务必须已有 `transcript.json`（即已完成转写）。
-
-```
-1. POST /api/v1/tasks/{task_id}/synthesize → 202（可选：传入 voice_map 覆盖音色）
-        合成期间 ASR/LLM 模型自动卸载，独占 VRAM；如有正在运行的 LLM 任务则返回 503
-        |
-        v
-2. 轮询 GET /api/v1/tasks/{task_id}/synthesis/status
-        等待 status 变为 completed
-        |
-        v
-3. GET /api/v1/tasks/{task_id}/synthesis
-        下载合成的 MP3 文件（24 小时内有效）
-```
-
----
-
-## 三、去重与幂等
-
-服务端在接收文件时自动计算 SHA-256，相同文件重复上传不会触发重复处理，响应中 `existing: true` 标识命中去重。
-
-**可选优化——上传前预检**：对于大文件，可在上传前先查询是否已有处理记录，命中则完全跳过文件传输：
-
-```
-GET /api/v1/tasks/lookup?hash={sha256_hex}
-    200 existing=true → 直接使用已有 task_id，跳至结果查询
-    404              → 继续上传
-```
-
-hash 值计算规则：对文件原始二进制内容做 SHA-256，输出 64 位小写十六进制字符串。
-
-**常见错误**
-
-| 错误做法 | 后果 |
-|---|---|
-| 用文本模式读文件 | Windows 上换行符转换导致 hash 不匹配 |
-| 对 base64 内容做 hash | 永远不匹配 |
-| 输出大写十六进制 | lookup 始终返回 404 |
-
----
-
-## 四、接口参考
-
-### 4.1 提交标准纪要任务（主入口）
-
-```
-POST /api/v1/tasks/standard_minutes
-Content-Type: multipart/form-data
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| file | 二进制 | 是 | 音频或视频文件，上限 500 MB，支持 mp3/wav/m4a/mp4/mov/mkv 等 |
-| hotwords | string | 否 | 热词列表，JSON 数组字符串，如 `["产说会","理财师"]` |
-| visual_scan | bool | 否 | 是否提取关键帧并执行 OCR + 人脸检测，仅视频有效，默认 false |
-| generate_summary | bool | 否 | 是否在转写完成后自动生成纪要，默认 true |
-| template_id | string | 否 | 纪要模板 ID，默认 `universal`（通用模版）。可通过 `GET /api/v1/templates` 查询可用列表 |
-
-响应字段：`task_id`、`status`（初始为 `pending`）、`existing`（`true` 表示去重命中）。
-
-### 4.2 提交转写任务（轻量，不含纪要）
-
-```
-POST /api/v1/tasks/transcript
-Content-Type: multipart/form-data
-```
-
-参数与 `standard_minutes` 相同，但无 `generate_summary` 和 `template_id` 字段。
-完成后仅有 `transcript` 结果，无 `evaluation`。
-
-### 4.3 分片上传——查询或创建会话
-
-```
-GET /api/v1/uploads/{sha256}?filename={filename}&total_size={bytes}
-```
-
-| 查询参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| filename | string | 是 | 原始文件名（含扩展名） |
-| total_size | int | 是 | 文件总字节数 |
-| hotwords | string[] | 否 | 热词列表（Query 数组参数） |
-| visual_scan | bool | 否 | 是否执行视觉扫描，默认 false |
-| generate_summary | bool | 否 | 是否生成纪要，默认 true |
-| template_id | string | 否 | 纪要模板 ID，默认 `universal` |
-
-| 响应字段 | 说明 |
-|---|---|
-| offset | 当前已接收字节数，客户端从此处续传 |
-| complete | true 表示文件已处理完毕 |
-| task_id | 仅 complete=true 时存在 |
-
-### 4.4 分片上传——上传数据块
-
-```
-PATCH /api/v1/uploads/{sha256}
-Content-Range: bytes {start}-{end}/{total}
-Content-Type: application/octet-stream
-```
-
-每次请求体为一个原始二进制数据块（建议 5–10 MB）。
-最后一块校验 SHA-256 通过后自动提交标准纪要任务，响应中包含 `task_id`。
-
-### 4.5 任务状态轮询
-
-```
-GET /api/v1/tasks/{task_id}
-```
-
-**status 枚举**
-
-| 状态值 | 说明 |
-|---|---|
-| pending | 已提交，等待处理 |
-| processing_asr | ASR 语音识别中 |
-| extracting_frames | 提取视频关键帧（视频任务） |
-| scanning_visual | 视觉扫描（OCR + 人脸检测） |
-| correcting | 文字纠错中，`progress.percent` 有效 |
-| evaluating | 纪要生成中，`progress.percent` 有效 |
-| auditing | 合规审核中，`progress.percent` 有效 |
-| completed | 处理完成 |
-| failed | 处理失败，见 `error` 字段 |
-
-轮询间隔建议 2–5 秒，`correcting` / `evaluating` / `auditing` 阶段可用 `progress.percent` 展示进度条。
-
-### 4.6 提交合规审核
-
-```
-POST /api/v1/tasks/compliance_audit
-Content-Type: multipart/form-data
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| rules_file | 二进制 | 是 | 规则文件，支持 CSV 或 XLSX，上限 2 MB |
-| transcript | string | 是 | 转写条目 JSON 数组字符串（从 results 端点的 `transcript.transcript` 获取） |
-| parent_task_id | string | 否 | 关联父任务 ID，结果将持久化到该任务目录，并自动加载对应的 OCR/视觉数据 |
-
-规则文件格式：A 列为规则内容，B–G 列为历史违规案例（Few-Shot），首行为表头。
-
-### 4.7 获取完整结果
-
-```
-GET /api/v1/tasks/{task_id}/results
-```
-
-| 字段 | 说明 |
-|---|---|
-| transcript | 完整转写结果，含所有条目和处理耗时 |
-| evaluation | 纪要结果（`standard_minutes` 自动生成；`transcript` 任务需另行触发）。包含 `formatted_content`（按模板排版的 Markdown 正文）和 `title`（会议标题） |
-| compliance | 合规审核结果（需主动提交 `compliance_audit` 后才有值） |
-| has_audio | 是否有音频文件 |
-| has_video | 是否为视频任务 |
-| has_synthesis | 是否已有合成音频（服务端实时检测 synthesis.mp3 是否存在） |
-| keyframe_count | 提取的关键帧数量 |
-| ocr_text_count | OCR 识别的文本区块数量 |
-| visual_event_count | 视觉事件数量（人脸检测结果） |
-
-### 4.8 更新违规审核状态
-
-人工复核后可批量更新违规条目状态：
-
-```
-PATCH /api/v1/tasks/{task_id}/compliance/violations
-Content-Type: application/json
-```
-
-请求体：`{"updates": [{"violation_id": "v0001", "status": "confirmed", "note": "已核实原文"}, {"violation_id": "v0002", "status": "rejected", "note": "误报"}]}`
-
-`violation_id` 取自报告中每条违规的 `id` 字段，在同一份报告内稳定唯一。旧的按列表下标更新（`index`）仍兼容但已废弃。`note` 为可选的复核备注（最长 500 字）。确认/驳回会记录复核时间 `reviewed_at`，改回 `pending` 会清空留痕。合规评分随复核重算（已驳回的条目不再扣分）。响应为 `{"ok": true, "updated": 更新条数, "missing": [未匹配的目标], "compliance_score": 最新评分}`，未匹配的目标不会中断其余更新。
-
-**导出报告**：`GET /api/v1/tasks/{task_id}/compliance/export` 返回 Excel（概览 + 违规明细，含复核状态、时间与备注）；合规结果不存在时返回 404。
-
-`status` 取值：`pending`（待审）/ `confirmed`（已确认）/ `rejected`（已驳回）。
-更新立即持久化，页面刷新后状态保留。
-
-### 4.9 重新执行转写
-
-```
-POST /api/v1/tasks/{task_id}/rerun-transcript
-Content-Type: multipart/form-data
-```
-
-对已保存的媒体文件重新执行 ASR + 纠错（视频优先，回退音频，视频任务同样支持重跑）。原始媒体文件须仍存在（未被 24 小时生命周期清理）。
-执行后会清除旧的 `evaluation.json` 和 `compliance.json`，需重新提交相应任务。
-
-### 4.10 作废或删除任务
-
-```
-DELETE /api/v1/tasks/{task_id}
-DELETE /api/v1/tasks/{task_id}?purge=true
-```
-
-无需请求体，成功返回 204。
-
-- 默认（`purge=false`）：作废该任务的内存缓存并重置哈希索引，**不删除磁盘上的持久化文件**。用于强制重新处理同一文件（作废后再次上传同一文件不会命中去重）。
-- `purge=true`：彻底删除任务——原始媒体、转写、纪要、合规报告与关键帧全部移除，**不可恢复**。任务或合成仍在运行时返回 409。
-
-### 4.10.1 历史任务与重命名
-
-```
-GET   /api/v1/tasks?limit=100
-PATCH /api/v1/tasks/{task_id}      {"name": "季度复盘会"}
-```
-
-列表按创建时间倒序，每项含 `task_id / name / filename / created_at / status / error / has_video / has_evaluation / has_compliance`，`total` 为任务总数。`name` 的优先级为：用户重命名 > 纪要标题 > 原始文件名。重命名成功返回 204。
-
-### 4.10.2 人工校对转写
-
-```
-PATCH /api/v1/tasks/{task_id}/transcript   {"edits": [{"index": 3, "text_corrected": "修订后的文本"}]}
-PATCH /api/v1/tasks/{task_id}/speakers     {"renames": {"Speaker 1": "张三", "Speaker 2": "张三"}}
-```
-
-仅已完成的任务可用（否则 409）。文本修订只改 `text_corrected`，原始 `text` 不变，越界下标与无变化的句段被忽略；说话人多对一映射即合并。两者均返回 `{"updated": 变更条数}`，并已持久化，此后 `results` 与导出都基于校对后的内容。已生成的纪要和合规报告**不会自动重算**，如需更新请重新提交。
-
-> 原 `rerun-evaluation` 端点已在 V1.2 删除。重新生成纪要请改用 `POST /api/v1/evaluate/text/async`（见 4.13），将转写文本和目标 `template_id` 一并传入。
-
-### 4.11 媒体文件访问
-
-| 端点 | 说明 |
-|---|---|
-| `GET /api/v1/tasks/{task_id}/media` | 获取原始媒体文件（视频优先，自动回退到音频） |
-| `GET /api/v1/tasks/{task_id}/frames/{filename}` | 获取指定关键帧图片，`filename` 来自违规记录的 `evidence_url` |
-
-注意：原始媒体文件在任务完成 24 小时后由系统自动清理，转写/合规 JSON 结果不受影响。
-
-### 4.12 服务健康检查
-
-```
-GET /api/v1/health
-```
-
-| 响应字段 | 说明 |
-|---|---|
-| status | 整体状态：`healthy` / `degraded` / `unhealthy`（unhealthy 时 HTTP 状态码为 503） |
-| asr | 组件对象 `{status, detail}`，status 取值 `ok` / `degraded` / `down`（合规审核执行期间权重被卸载会短暂降级） |
-| llm | 组件对象，LLM 服务可达性 |
-| tts | 组件对象（可能为 null，TTS 未配置时） |
-| tasks | 任务统计：`active` / `completed` / `failed` / `synthesis_running` |
-| vram.loaded_models | 当前 ModelManager 管理的已加载模型列表 |
-| vram.estimated_used_gb | 已加载模型的估算 VRAM 占用（GB） |
-| vram.budget_gb | 配置的 VRAM 预算上限（默认 12.0 GB） |
-
-建议接入前调用确认服务就绪（`status=healthy`，即 `asr.status=ok` 且 `llm.status=ok`）。
-
-### 4.13 纯文本评估（含模板选择）
-
-已有转写文本时，可直接提交文本并指定纪要模板，跳过 ASR 阶段：
-
-```
-POST /api/v1/evaluate/text/async
-Content-Type: multipart/form-data
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| text | string | 是 | 待生成纪要的转写文本 |
-| template_id | string | 否 | 纪要模板 ID，默认 `universal`。传入非法 ID 时自动 fallback 到通用模版 |
-| parent_task_id | string | 否 | 关联父任务 ID，结果将持久化到该任务的 `evaluation.json` |
-
-返回 `task_id`，通过 `GET /api/v1/tasks/{task_id}` 轮询，结果结构与 4.7 中的 `evaluation` 字段一致。
-
-第三方 ASR 系统可通过 `POST /api/v1/evaluate/transcript/async` 直推原始文本（`text/plain` 请求体），格式支持 `[时间戳]{JSON}` 或纯文本，使用默认通用模版，不支持 `template_id`。
-
-### 4.14 查询可用纪要模板
-
-```
-GET /api/v1/templates
-```
-
-返回所有已加载模板的元数据列表，无需鉴权：
-
-```json
-[
-  { "id": "universal",     "name": "通用模版", "description": "适用于一般会议..." },
-  { "id": "official",      "name": "公文模版", "description": "适用于正式公文类会议..." },
-  { "id": "weekly",        "name": "周例会",   "description": "适用于周例会..." },
-  { "id": "daily_evening", "name": "夕会",     "description": "适用于每日复盘夕会..." },
-  { "id": "brief_summary", "name": "简报摘要", "description": "提炼核心议题与关键结论，输出约100字简明摘要..." }
-]
-```
-
-建议在提交 `standard_minutes` 或 `evaluate/text/async` 前调用一次，获取当前服务支持的合法 `template_id`。
-
-### 4.15 热重载纪要模板
-
-```
-POST /api/v1/templates/reload
-```
-
-无需请求体。重新扫描服务器 `templates/` 目录，将最新模板内容加载到内存，无需重启服务。正在运行的推理任务不受影响。
-
-响应示例：
-
-```json
-{
-  "reloaded": 4,
-  "templates": [
-    { "id": "universal", "name": "通用模版", "description": "..." },
-    ...
-  ]
-}
-```
-
-### 4.16 触发 TTS 合成
-
-```
-POST /api/v1/tasks/{task_id}/synthesize
-Content-Type: application/json（可选）
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| voice_map | object | 否 | 说话人 → 音色种子映射，如 `{"spk_0": "42", "spk_1": "7"}`，未指定时自动分配 |
-
-前置条件：目标任务必须已完成转写（`transcript.json` 存在）。若当前有 LLM 任务正在执行则返回 503，稍后重试；若该任务已有合成正在进行中则返回 409，直接轮询状态即可。
-
-响应（202）：
-
-```json
-{ "status": "running" }
-```
-
-合成在后台异步执行，通过 4.17 轮询状态。
-
-### 4.17 查询合成状态
-
-```
-GET /api/v1/tasks/{task_id}/synthesis/status
-```
-
-| 响应字段 | 说明 |
-|---|---|
-| status | `running` / `completed` / `failed` |
-| audio_url | 仅 completed 时存在，MP3 下载路径 |
-| duration_ms | 合成音频时长（毫秒），仅 completed 时存在 |
-| synthesis_time_ms | 合成耗时（毫秒），仅 completed 时存在 |
-| error | 错误描述，仅 failed 时存在 |
-
-服务重启后若内存 job 丢失，会自动从磁盘 `synthesis_result.json` 恢复状态，轮询结果不受重启影响。
-
-### 4.18 下载合成音频
-
-```
-GET /api/v1/tasks/{task_id}/synthesis
-```
-
-返回 `synthesis.mp3` 文件（`audio/mpeg`），仅在合成完成后可访问，否则返回 404。文件生命周期与原始媒体相同（任务完成 24 小时后自动清理）。
-
----
-
-## 五、错误处理
-
-| HTTP 状态码 | 含义 | 处理建议 |
+| code | HTTP 状态码 | 含义 |
 |---|---|---|
-| 202 | 任务提交成功 | 正常，开始轮询 |
-| 400 | 请求格式错误 | 检查 Content-Range 头或请求体是否为空 |
-| 404 | 任务 ID 不存在 | 检查 task_id 是否正确；服务重启后，有结果的任务会从磁盘恢复，保留媒体但无结果的任务会恢复为 `failed`（提示服务重启导致中断），可调用重新转写 |
-| 409 | 冲突 | 重新转写：任务仍在运行，待其结束后再试；分片上传：偏移量冲突，重新调用 GET /uploads/{hash} 获取最新 offset 后续传；synthesize：该任务已有合成在进行中，轮询状态即可 |
-| 413 | 文件过大 | 音视频上限 500 MB，规则文件上限 2 MB |
-| 422 | 参数校验失败 | 检查必填字段和格式，`transcript` 必须为合法 JSON 数组；task_id / 文件哈希格式非法同样返回 422 |
-| 429 | 任务队列已满 | 排队+运行中的音视频任务达到上限（默认 5），稍后重试；已建立的分片上传会话仍可续传 |
-| 500 | 服务内部错误 | 响应体含 `request_id`，凭它检索服务端日志；任务类错误查看任务的 `error` 字段，常见原因：ASR 模型未加载、LLM 不可达 |
-| 503 | 服务暂时不可用 | 仅出现在 synthesize 端点：LLM 任务正在运行，稍后重试即可 |
+| `task_not_found` | 404 | 任务不存在（含关联的父任务不存在） |
+| `media_not_found` | 404 | 任务的原始媒体已不存在，无法重新转写 |
+| `task_busy` | 409 | 任务正在运行，或当前阶段不允许该操作 |
+| `invalid_identifier` | 422 | `task_id` 或文件哈希格式非法 |
+| `queue_full` | 429 | 音视频任务队列已满 |
+| `service_not_configured` | 503 | 依赖的服务未初始化 |
+| `internal_error` | 500 | 服务内部错误；`detail` 不含内部细节，请用 `request_id` 排查 |
 
-**错误响应结构**：领域错误返回 `{"detail": 描述, "code": 机器可读代码, "request_id": 请求标识}`（如 `task_not_found`、`task_busy`、`queue_full`、`invalid_identifier`）；框架层错误（如参数校验）仍为 `{"detail": ...}`。所有响应都带 `X-Request-ID` 头，调用方可自行传入（1–64 位字母数字或 `._-`）以便与自身日志关联。
+不要只依赖 `detail` 的文字做逻辑判断，文字可能调整；优先使用 HTTP 状态码，有 `code` 时再结合 `code`。
 
-**取消任务**：`POST /api/v1/tasks/{task_id}/cancel`（202）可取消排队或处于纠错 / 纪要 / 合规审核阶段的任务，任务变为 `failed`（"任务已取消"）；ASR 与视觉扫描阶段无法安全中断，返回 409。
+### 2.4 幂等与去重
 
-**存活探针**：`GET /api/v1/health/live` 仅表示进程可响应；就绪状态请用 `GET /api/v1/health`。
+- **同文件去重**：表单上传和分片上传都会计算整个文件的 SHA-256。哈希命中已有任务时，不再创建新任务，返回已有 `task_id`，`existing` 为 `true`，`status` 是该任务当前的真实状态（可能还在处理中，也可能已完成）。
+- **失败任务不复用**：命中的任务如果已经失败，哈希索引会被清除，同一文件重新提交会创建新任务。
+- **上传前预检**：`GET /api/v1/tasks/lookup?hash=...` 可以在不传文件的情况下查询哈希是否已有任务，命中返回 200，未命中返回 404，适合大文件先查后传。
+- **哈希必须正确**：对文件原始二进制内容计算 SHA-256，输出 64 位小写十六进制。用文本模式读文件、对 base64 后的内容计算、输出大写，都会导致查不到或校验失败。
+- **强制重新处理**：先调用 `DELETE /api/v1/tasks/{task_id}` 作废缓存，见 3.3。
 
-**上传失败重试**：网络断开无响应时，先调 `GET /tasks/lookup?hash={sha256}` 检查是否已到达服务端；命中则直接轮询，未命中则重传（最多 3 次，间隔 2/4/8 秒）。
+### 2.5 限流与排队
 
-**分片上传中断恢复**：中断后直接重新调用 `GET /uploads/{hash}?...`，响应的 `offset` 即为断点位置，从该偏移量继续 PATCH 即可，已传数据不会重复写入。
+- 只对音视频任务（表单上传、分片上传和 `rerun-transcript` 触发的转写）计数，"排队中加运行中"的数量达到 `TASK_MAX_ACTIVE`（默认 5）后，新的提交返回 **429**。该值设为 0 表示不限制。合规审核和文本评估任务不占这个名额。
+- 语音识别在同一时刻只处理一个任务，其余任务排队，因此排队任务越多，后面的任务越慢。任务从提交起有超时时间（默认 3600 秒），排队时间也算在内。
+- 表单上传是"先收完整个文件，再检查队列"，队列已满时大文件会白传一遍。大文件建议走分片上传：新建会话时就会检查队列，已满直接返回 429。
 
----
+## 三、端点参考
 
-## 六、调用示例
+### 3.1 提交任务
 
-### 6.1 提交标准纪要任务
+| 方法与路径 | 作用 | 成功状态码 |
+|---|---|---|
+| `POST /api/v1/tasks/standard_minutes` | 提交音视频，转写、纠错，并自动生成纪要（主入口） | 202 |
+| `POST /api/v1/tasks/transcript` | 提交音视频，只转写与纠错，不生成纪要 | 202 |
+| `GET /api/v1/tasks/lookup` | 按文件哈希预检是否已有任务 | 200 |
+| `GET /api/v1/uploads/{file_hash}` | 分片上传：查询或创建上传会话，取得断点偏移 | 200 |
+| `PATCH /api/v1/uploads/{file_hash}` | 分片上传：追加一个数据块，末块自动提交任务 | 200 |
 
-```
-POST /api/v1/tasks/standard_minutes
-Content-Type: multipart/form-data
+**表单上传的请求字段**（`standard_minutes` 与 `transcript` 共用，`multipart/form-data`）：
 
-file:        <二进制文件内容>
-hotwords:    ["产说会", "理财师"]
-template_id: daily_evening
-```
+| 字段 | 类型 | 是否必填 | 说明 |
+|---|---|---|---|
+| `file` | 文件 | 是 | 音频或视频文件，大小上限由 `MAX_UPLOAD_SIZE_MB` 决定，默认 500 MB |
+| `hotwords` | 字符串 | 否 | 热词表，内容是 JSON 字符串数组（如包含公司名、产品名），最多 200 个，每个不超过 100 字符；用于提升专有名词识别 |
+| `visual_scan` | 布尔 | 否 | 是否对视频做视觉扫描（提取关键帧、OCR 文字识别、人脸检测），默认 `false`；对音频文件无效 |
+| `generate_summary` | 布尔 | 否 | 仅 `standard_minutes`：转写后是否生成纪要，默认 `true` |
+| `template_id` | 字符串 | 否 | 仅 `standard_minutes`：纪要模板 ID，默认 `universal`；不存在的 ID 会自动回退到通用模板，不报错 |
 
-响应（首次提交，202）：
+**提交响应**（两个提交端点、评估、合规提交和重新转写共用）：
 
-```json
-{
-  "task_id": "a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d",
-  "status": "pending",
-  "existing": false
-}
-```
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `task_id` | 字符串 | 任务编号 |
+| `status` | 字符串 | 新任务为 `pending`；`existing` 为 `true` 时是已有任务的当前状态 |
+| `existing` | 布尔 | `true` 表示哈希命中了已有任务，没有创建新任务 |
 
-响应（重复上传，202）：
+**关键注意事项：**
 
-```json
-{
-  "task_id": "a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d",
-  "status": "completed",
-  "existing": true
-}
-```
+- 上传体积超过上限返回 413。服务边收边写盘，不会把整个文件读进内存，但超限会在收到超出部分时立即中断。
+- 服务只按扩展名区分视频，默认视频扩展名为 `.mp4`、`.avi`、`.mov`、`.mkv`、`.flv`、`.wmv`，其余按音频处理；不做格式白名单校验，能否解码取决于服务端 ffmpeg，无法解码的文件会使任务变为 `failed`。
+- 提交成功返回时文件已保存到服务端，此后客户端断开也不影响任务运行。
+- `hotwords` 不是合法 JSON 数组、数量或长度超限时返回 422。
+- 命中去重时，`existing` 为 `true`，此时 `hotwords`、`template_id` 等参数不会生效（沿用已有任务）。若想换模板重新生成纪要，见 3.5。
 
-### 6.2 轮询任务进度
+**分片上传**适合大文件（前端在超过 20 MB 时切换到分片），支持断点续传。表单上传与分片上传的差别、以及各状态码出现的位置见下图：
 
-```
-GET /api/v1/tasks/a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d
-```
+![文件上传流程](../assets/upload-flow.svg)
 
-纠错阶段响应：
+分片上传的流程是：先用 `GET` 建立会话并得到偏移量，再按偏移量循环 `PATCH` 发送数据块，服务端收到最后一块后校验整体哈希并自动提交标准纪要任务。
 
-```json
-{
-  "task_id": "a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d",
-  "status": "correcting",
-  "progress": { "current_chunk": 4, "total_chunks": 10, "percent": 48.0 },
-  "result": null,
-  "error": null
-}
-```
+`GET /api/v1/uploads/{file_hash}` 的参数（`file_hash` 是文件的 SHA-256）：
 
-完成响应：
+| 字段 | 位置 | 类型 | 是否必填 | 说明 |
+|---|---|---|---|---|
+| `file_hash` | 路径 | 字符串 | 是 | 文件 SHA-256，64 位小写十六进制 |
+| `filename` | 查询 | 字符串 | 是 | 原始文件名，必须带扩展名（用于区分音视频） |
+| `total_size` | 查询 | 整数 | 是 | 文件总字节数，不得超过上传上限 |
+| `hotwords` | 查询 | 字符串，可重复 | 否 | 每个热词一个 `hotwords` 参数，限制同上 |
+| `visual_scan` | 查询 | 布尔 | 否 | 默认 `false` |
+| `generate_summary` | 查询 | 布尔 | 否 | 默认 `true` |
+| `template_id` | 查询 | 字符串 | 否 | 纪要模板 ID，默认 `universal`；会话会记住它，末块完成后用于生成纪要 |
 
-```json
-{
-  "task_id": "a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d",
-  "status": "completed",
-  "progress": { "current_chunk": 10, "total_chunks": 10, "percent": 100.0 },
-  "result": { ... },
-  "error": null
-}
-```
+`GET /api/v1/uploads/{file_hash}` 的响应：
 
-失败响应：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `offset` | 整数 | 服务端已收到的字节数，客户端从这里继续发送；新会话为 0 |
+| `complete` | 布尔 | `true` 表示服务端已有这个文件对应的任务，不必再上传，此时 `offset` 等于 `total_size` |
+| `task_id` | 字符串 | 仅 `complete` 为 `true` 时有值；该任务可能仍在处理中，需要继续轮询 |
 
-```json
-{
-  "task_id": "a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d",
-  "status": "failed",
-  "progress": { "current_chunk": 0, "total_chunks": 0, "percent": 0.0 },
-  "result": null,
-  "error": "ASR 推理超时，请检查 GPU 显存是否充足"
-}
-```
+`PATCH /api/v1/uploads/{file_hash}` 的请求与响应：
 
-### 6.3 获取标准纪要结果
-
-```
-GET /api/v1/tasks/a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d/results
-```
-
-响应（200）：
-
-```json
-{
-  "task_id": "a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d",
-  "transcript": {
-    "transcript": [
-      {
-        "timestamp":      "00:00:01",
-        "timestamp_ms":   1200,
-        "end_ms":         4800,
-        "speaker":        "SPEAKER_00",
-        "text":           "各位来宾大家下午好我是本次产说会的主持人",
-        "text_corrected": "各位来宾大家下午好，我是本次产说会的主持人"
-      }
-    ],
-    "processing_time_ms": 18400
-  },
-  "evaluation": {
-    "title": "保险产品说明会",
-    "truncated": false,
-    "degraded_chunks": 0,
-    "formatted_content": "【会议主题】\n保险产品说明会\n\n【会议概述】\n本次会议围绕某款终身寿险产品展开，介绍了产品保障责任和投保注意事项。\n\n【会议内容】\n- 介绍年化收益 3.5%、保障期 20 年的核心产品条款\n- 说明投保适合人群及健康告知要求\n\n【会议结论】\n1. 产品整体符合客户保障需求\n2. 建议客户结合自身情况选择缴费期\n\n【待办事项】\n- 向客户发送完整产品说明书"
-  },
-  "compliance": null,
-  "has_audio": true,
-  "has_video": false,
-  "keyframe_count": 0,
-  "ocr_text_count": 0,
-  "visual_event_count": 0
-}
-```
-
-### 6.4 提交合规审核
-
-```
-POST /api/v1/tasks/compliance_audit
-Content-Type: multipart/form-data
-
-rules_file:     <CSV 或 XLSX 文件二进制>
-transcript:     [{"timestamp":"00:00:01","timestamp_ms":1200,"end_ms":4800,
-                  "speaker":"SPEAKER_00","text":"...","text_corrected":"..."}]
-parent_task_id: a3f8c1d2e5b04f9c8a7d6e3b2c1f0a9d
-```
-
-响应（202）：
-
-```json
-{
-  "task_id": "d7e2b1f9c4a083e6b5d2c8f1a3e7b904",
-  "status": "pending",
-  "existing": false
-}
-```
-
-### 6.5 合规审核结果（从父任务 results 读取）
-
-再次调用 `GET /api/v1/tasks/{parent_task_id}/results`，`compliance` 字段包含：
-
-```json
-{
-  "rules": [
-    { "id": 1, "content": "禁止承诺保证收益" }
-  ],
-  "report": {
-    "total_rules": 1,
-    "total_segments_checked": 24,
-    "total_segments": 24,
-    "truncated": false,
-    "total_chunks": 2,
-    "failed_chunks": 0,
-    "compliance_score": 72,
-    "summary": "发现 1 处高风险违规，主要集中在收益承诺表述...",
-    "source_counts": { "transcript": 1, "ocr": 0, "vision": 0 },
-    "violations": [
-      {
-        "id": "v0001",
-        "rule_id": 1,
-        "rule_content": "禁止承诺保证收益",
-        "timestamp_ms": 18300,
-        "end_ms": 21500,
-        "speaker": "SPEAKER_01",
-        "original_text": "这款产品每年保证给您 3.5% 的收益",
-        "reason": "使用「保证」承诺固定收益，违反监管规定",
-        "reasoning": "步骤 1：原文含「保证」...\n步骤 2：对照规则 1...\n结论：高风险违规",
-        "severity": "high",
-        "confidence": 0.94,
-        "source": "transcript",
-        "evidence_url": null,
-        "evidence_text": null,
-        "rule_ref": "规则 1",
-        "status": "pending"
-      }
-    ]
-  },
-  "processing_time_ms": 34200
-}
-```
-
-### 6.6 完整调用时序
-
-**标准纪要（首次上传）**
-
-```
-第三方系统                               Copernicus API
-    |                                         |
-    |-- POST /tasks/standard_minutes -------->|
-    |   (file + template_id=daily_evening)    |
-    |<-- 202 {task_id: "abc"} ---------------|
-    |                                         |
-    |-- GET /tasks/abc ---------------------->| (correcting, 45%)
-    |<-- 200 {status: "correcting"} ---------|
-    |                                         |
-    |-- GET /tasks/abc ---------------------->| (evaluating, 90%)
-    |<-- 200 {status: "evaluating"} ---------|
-    |                                         |
-    |-- GET /tasks/abc ---------------------->| (completed)
-    |<-- 200 {status: "completed"} ----------|
-    |                                         |
-    |-- GET /tasks/abc/results ------------->|
-    |<-- 200 {transcript, evaluation} -------|
-    |   evaluation.formatted_content = "..."  |
-```
-
-**全链路（含合规审核）**
-
-```
-第三方系统                               Copernicus API
-    |                                         |
-    |-- POST /tasks/standard_minutes -------->|
-    |<-- 202 {task_id: "abc"} ---------------|
-    |                                         |
-    |-- GET /tasks/abc ---------------------->| (completed)
-    |<-- 200 {status: "completed"} ----------|
-    |                                         |
-    |-- POST /tasks/compliance_audit -------->|
-    |   (transcript + rules_file)             |
-    |<-- 202 {task_id: "def"} ---------------|
-    |                                         |
-    |-- GET /tasks/def ---------------------->| (auditing)
-    |<-- 200 {status: "auditing"} -----------|
-    |                                         |
-    |-- GET /tasks/def ---------------------->| (completed)
-    |<-- 200 {status: "completed"} ----------|
-    |                                         |
-    |-- GET /tasks/abc/results ------------->|
-    |<-- 200 {transcript,                    |
-    |         evaluation, compliance} -------|
-```
-
-**重复上传（自动去重）**
-
-```
-第三方系统                               Copernicus API
-    |                                         |
-    |-- POST /tasks/standard_minutes -------->|
-    |<-- 202 {task_id: "abc",                |
-    |         existing: true} ---------------| (已有结果，跳过处理)
-    |                                         |
-    |-- GET /tasks/abc/results ------------->|
-    |<-- 200 {transcript, evaluation} -------|
-```
-
----
-
-## 七、注意事项
-
-| 事项 | 说明 |
+| 项目 | 说明 |
 |---|---|
-| 服务就绪等待 | ASR 模型首次启动加载需数十秒，建议接入前调 `/health` 确认 `status=healthy` |
-| asr 组件短暂降级 | 合规审核执行期间系统主动卸载 ASR 权重以释放 VRAM，下一次转写任务自动重载，无需干预 |
-| GPU 串行机制 | ASR 推理串行执行，多任务并发提交时后续任务排队等待前一任务 ASR 阶段完成 |
-| 纪要自动生成 | `standard_minutes` 默认 `generate_summary=true`，纪要与转写在同一任务内完成，无需额外调用 |
-| template_id 容错 | 传入不存在的 `template_id` 时，系统自动 fallback 到通用模版（`universal`）并写入警告日志，不返回错误 |
-| evaluation 结构变更 | V1.1 废弃原有 `scores`/`analysis`/`meta` 字段，改为 `formatted_content`（Markdown 正文）和 `title`（标题）。接入方需同步更新对 `evaluation` 字段的解析逻辑 |
-| 文件去重 | 直接重传相同文件不会触发重复处理，`existing=true` 时直接查询已有结果即可 |
-| 媒体文件生命周期 | 原始音视频文件在任务完成 24 小时后自动清理，转写/纪要/合规 JSON 结果永久保留；失败或被中断且超期的任务整目录清理；部署方可配置磁盘配额（`MAX_STORAGE_GB`）|
-| 任务持久化 | 结果持久化在服务器 `uploads/{task_id}/` 目录，服务重启后仍可通过 results 端点访问 |
-| 任务内存上限 | 内存中最多保留 500 个任务，超出后已完成任务淘汰，但磁盘结果仍可访问 |
-| 规则文件编码 | CSV 自动尝试 utf-8-sig / gbk / gb18030 三种编码，XLSX 无需特别处理 |
-| 合规 transcript 参数 | 需将 results 端点返回的 `transcript.transcript` 数组序列化为 JSON 字符串传入 |
+| 请求头 `Content-Range` | 必填，格式 `bytes 起始-结束/总长`。服务端只使用"起始"，它必须等于服务端已收到的字节数 |
+| 请求体 | 该数据块的原始二进制，不能为空 |
+| 响应 `received` | 服务端累计收到的字节数 |
+| 响应 `complete` | 是否已收完；最后一块处理成功时为 `true` |
+| 响应 `task_id` | 仅最后一块成功时有值 |
+
+分片上传的要点：
+
+- **块大小**：建议每块 5 MB；服务端允许的单块上限为 64 MB，超过返回 413。
+- **断点续传**：网络中断或不确定某块是否成功时，重新调用 `GET` 取得最新 `offset`，从该位置继续。同一文件的分块在服务端是串行处理的。
+- **热词与开关**：`hotwords`、`visual_scan`、`generate_summary` 以最近一次 `GET` 的值为准，续传时请保持一致。
+- **偏移不符返回 409**：起始位置不等于服务端已收字节数，或块超出声明的总大小。处理方式是重新 `GET` 取偏移量再发送。
+- **末块前先检查队列**：队列已满时返回 429，且该数据块尚未写入，稍后**原样重传**同一块即可。
+- **整体哈希不一致返回 422**：服务端会丢弃整个会话，需要从 `GET` 重新开始，并检查哈希计算方式。
+- **会话不存在返回 404**：没有先调用 `GET`，或会话已被清理，请重新 `GET`。
+- 请求头缺失或格式错误、请求体为空返回 400；会话无活动超过 `MEDIA_RETENTION_HOURS`（默认 24 小时）后被清理。
+
+### 3.2 查询状态与结果
+
+| 方法与路径 | 作用 | 成功状态码 |
+|---|---|---|
+| `GET /api/v1/tasks/{task_id}` | 查询任务状态与进度（轮询用） | 200 |
+| `GET /api/v1/tasks/{task_id}/results` | 一次取回该任务已保存的全部结果 | 200 |
+| `GET /api/v1/tasks/{task_id}/media` | 下载原始媒体（有视频返回视频，否则返回音频） | 200 |
+| `GET /api/v1/tasks/{task_id}/frames/{filename}` | 下载一张关键帧图片（JPEG） | 200 |
+
+**状态查询的响应字段：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `task_id` | 字符串 | 任务编号 |
+| `status` | 字符串 | 取值见第四章 |
+| `progress.percent` | 浮点数 | 0 到 100 的进度百分比，换算规则见第四章 |
+| `progress.current_chunk` / `progress.total_chunks` | 整数 | 当前阶段已完成批次与总批次，未知时为 0 |
+| `result` | 对象或空 | 任务完成后的结果，类型随任务种类而不同，见下 |
+| `error` | 字符串或空 | 仅 `failed` 时有值，是失败或取消原因 |
+
+`result` 的内容：转写任务与标准纪要任务，`result` 是**转写结果**（纪要不在这里，要从 `results` 读取）；文本评估任务是纪要结果；合规审核任务是合规报告。对音视频任务，建议一律用 `results` 取最终内容。
+
+**`results` 的响应字段：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `task_id` | 字符串 | 任务编号 |
+| `transcript` | 对象或空 | 转写结果，未完成时为空 |
+| `evaluation` | 对象或空 | 纪要结果；未生成或生成失败时为空 |
+| `compliance` | 对象或空 | 合规审核结果；未提交审核时为空 |
+| `has_audio` / `has_video` | 布尔 | 原始音频、视频是否仍在服务端 |
+| `has_synthesis` | 布尔 | 是否已有合成音频 |
+| `keyframe_count` | 整数 | 提取的关键帧数量 |
+| `ocr_text_count` | 整数 | OCR 识别出的文字记录数 |
+| `visual_event_count` | 整数 | 视觉事件数（人脸出现、人脸缺失、场景切换） |
+
+`transcript` 对象的字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `transcript` | 数组 | 句段列表，每项含 `timestamp`（形如 05:20，分:秒）、`timestamp_ms`、`end_ms`、`speaker`（说话人标签）、`text`（原始识别文本）、`text_corrected`（纠错后文本） |
+| `processing_time_ms` | 浮点数 | 处理耗时 |
+| `correction_total_batches` | 整数 | 文本纠错被分成的批次数 |
+| `correction_failed_batches` | 整数 | 纠错失败的批次数；大于 0 表示有部分句段没有经过润色，`text_corrected` 沿用原始识别文本，属于降级结果 |
+
+`evaluation` 对象的字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `title` | 字符串 | 会议标题 |
+| `formatted_content` | 字符串 | 按模板排版的 Markdown 纪要正文 |
+| `truncated` | 布尔 | `true` 表示文本过长被截断，纪要只基于前部内容 |
+| `degraded_chunks` | 整数 | 分段提炼失败、改用原文片段兜底的段数；大于 0 表示纪要质量有所下降 |
+
+**关键注意事项：**
+
+- **任务不存在返回 404**。已完成任务在内存中被淘汰后会自动从磁盘恢复，不受影响；但**合规审核和文本评估任务没有独立的磁盘目录**，其 `task_id` 只在服务内存中有效，服务重启后查询会得到 404。所以提交这两类任务时应带上 `parent_task_id`，让结果写入父任务，再通过父任务的 `results` 读取。
+- `results` 对没有磁盘目录的任务返回 404；对刚提交、尚无结果的任务，各结果字段为空而不是报错。
+- 任务已 `completed` 但 `evaluation` 为空，通常是纪要阶段失败（纪要失败不会让任务失败，转写仍可用）或提交时关闭了 `generate_summary`，可按 3.5 单独重新生成。
+- 关键帧文件名形如 `frame_0001.jpg`（只允许字母、数字、`_`、`.`、`-`，否则 422，不存在 404），合规报告违规条目的 `evidence_url` 就是这个文件名。
+- 原始媒体超过保留期会被清理，`media` 此时返回 404；关键帧与 JSON 结果不受影响。
+
+### 3.3 任务管理
+
+| 方法与路径 | 作用 | 成功状态码 |
+|---|---|---|
+| `GET /api/v1/tasks` | 历史任务列表，按创建时间倒序 | 200 |
+| `PATCH /api/v1/tasks/{task_id}` | 重命名任务 | 204 |
+| `DELETE /api/v1/tasks/{task_id}` | 作废缓存，或彻底删除任务 | 204 |
+| `POST /api/v1/tasks/{task_id}/cancel` | 取消尚可中断的任务 | 202 |
+| `POST /api/v1/tasks/{task_id}/rerun-transcript` | 对已保存的媒体重新转写 | 200 |
+| `PATCH /api/v1/tasks/{task_id}/transcript` | 人工修订转写文本 | 200 |
+| `PATCH /api/v1/tasks/{task_id}/speakers` | 重命名或合并说话人 | 200 |
+
+各端点参数：
+
+| 端点 | 参数 | 类型 | 是否必填 | 说明 |
+|---|---|---|---|---|
+| `GET /tasks` | `limit`（查询） | 整数 | 否 | 返回条数，1 到 500，默认 100 |
+| `PATCH /tasks/{id}` | `name`（JSON） | 字符串 | 是 | 新名称，1 到 100 字符，首尾空白会被去掉 |
+| `DELETE /tasks/{id}` | `purge`（查询） | 布尔 | 否 | 默认 `false`；`true` 为彻底删除 |
+| `POST /tasks/{id}/rerun-transcript` | `hotwords`（表单） | 字符串 | 否 | 同 3.1 的热词格式 |
+| `PATCH /tasks/{id}/transcript` | `edits`（JSON） | 数组 | 是 | 1 到 2000 项，每项含 `index`（句段下标，从 0 起）与 `text_corrected`（不超过 5000 字符） |
+| `PATCH /tasks/{id}/speakers` | `renames`（JSON） | 对象 | 是 | 1 到 50 项，键为原说话人标签，值为新名称（不能为空，不超过 50 字符） |
+
+`GET /tasks` 的响应含 `tasks` 数组与 `total`（磁盘上的任务总数，大于返回条数说明被 `limit` 截断）。每个条目含 `task_id`、`name`、`filename`、`created_at`、`status`、`error`、`has_video`、`has_evaluation`、`has_compliance`。`name` 的优先级为：用户重命名，其次纪要标题，最后原始文件名。
+
+**关键注意事项：**
+- **DELETE 有两种语义**：
+  - 默认（`purge` 为 `false`）：只作废服务内存中的任务缓存和哈希索引，**磁盘文件保留**。作废后同一文件再次提交不会命中去重，会重新走完整流水线。作废是内存状态，服务重启后任务会从磁盘恢复。
+  - `purge` 为 `true`：彻底删除，原始媒体、转写、纪要、合规报告与关键帧全部移除，**不可恢复**。
+  - 两种方式在任务仍在运行时都返回 **409**；`purge` 为 `true` 时若该任务的音频合成正在进行也返回 409。任务不存在返回 404。
+- **取消（cancel）只在部分阶段可用**：允许在排队（`pending`）、文本纠正（`correcting`）、生成纪要（`evaluating`）和合规审核（`auditing`）阶段取消；语音识别、抽帧、视觉扫描阶段跑在线程里无法中断，返回 409，请等待该阶段结束后再取消。已结束的任务取消同样返回 409。取消成功后任务变为 `failed`，`error` 为"任务已取消"。若在纪要阶段取消，转写结果已经保存，仍可通过 `results` 读取，但任务状态是 `failed`。
+- **重新转写**成功返回 200 与 `pending` 状态（响应结构同 3.1 的提交响应，`task_id` 不变）。要求任务已结束（否则 409）且原始媒体仍在（否则 404，`media_not_found`），队列已满返回 429。重新转写会**清除旧的纪要与合规报告**，且不会自动重新生成纪要，也不会重新做视觉扫描（已有的关键帧与 OCR 数据保留）。
+- **校对接口**只允许已完成的任务（否则 409）。文本修订只改 `text_corrected`，原始 `text` 不变；越界下标和内容未变化的句段被忽略。两个接口都返回 `updated`（实际变更的条数），且立即持久化。已生成的纪要与合规报告**不会自动重算**，需要重新生成。
+
+### 3.4 合规审核
+
+合规审核是对**已有转写文本**按一份规则文件逐条检查，找出可能违规的片段。它是独立的任务，可对任何有转写结果的任务发起。
+
+| 方法与路径 | 作用 | 成功状态码 |
+|---|---|---|
+| `POST /api/v1/tasks/compliance_audit` | 提交合规审核任务 | 202 |
+| `PATCH /api/v1/tasks/{task_id}/compliance/violations` | 批量更新违规条目的人工复核状态 | 200 |
+| `GET /api/v1/tasks/{task_id}/compliance/export` | 导出 Excel 报告 | 200 |
+
+![合规审核流程](../assets/compliance-flow.svg)
+
+提交合规审核的请求字段（`multipart/form-data`）：
+
+| 字段 | 类型 | 是否必填 | 说明 |
+|---|---|---|---|
+| `rules_file` | 文件 | 是 | 规则文件，CSV 或 XLSX，不超过 2 MB |
+| `transcript` | 字符串 | 是 | 转写条目的 JSON 数组字符串，UTF-8 编码后不超过 500 KB，且不能为空数组 |
+| `parent_task_id` | 字符串 | 否 | 关联的转写任务 ID；填写后审核结果写入该任务，并自动读取它的 OCR 数据参与审核 |
+
+**关键注意事项：**
+
+- **规则文件**：第一列是规则，形如"编号加内容"（例如 `4全程双录：……` 这种以数字开头的写法），没有编号时按行序编号；同一行第二列起的文字被当作历史检查结果，作为示例提供给审核模型；表头行（含"序号""标准""检查"等字样）会被跳过。CSV 会依次尝试 UTF-8、GBK、GB18030 解码，XLSX 读取第一个工作表。规则文件解析在后台进行，格式有问题时不会同步报错，而是任务变为 `failed`，原因在 `error`。
+- **`transcript`**：取 `results` 中 `transcript.transcript` 数组原样序列化传入。服务端按每项的 `text_corrected` 读取正文，因此该字段必须存在；`timestamp`、`timestamp_ms`、`end_ms`、`speaker` 用于违规定位，建议一并保留。第三方自有转写请按这个条目结构组织。
+- **`parent_task_id` 不存在返回 404**（`task_not_found`），在开始审核之前就会拒绝，不会浪费算力。
+- **视觉证据**：只有对视频提交时勾选了 `visual_scan`，并在合规提交时填写 `parent_task_id`，审核才会用到 OCR 屏幕文字。没有 OCR 数据时，依赖屏幕文字的规则会被跳过（见下面的 `skipped_rule_ids`）。人脸检测事件会被保存，但目前不参与合规判定。
+- 文本超过 5 万字时会被截断并在报告中标记；所有分块都审核失败时任务变为 `failed`。
+- 提交后按 `task_id` 轮询，状态为 `auditing`，完成后 `result` 就是合规报告；带了 `parent_task_id` 时也可通过父任务的 `results` 读取。审核任务的 `task_id` 在服务重启后会失效（见 3.2），所以带上 `parent_task_id` 更稳妥。
+
+**合规报告结构**（`compliance`，即轮询时的 `result`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `rules` | 数组 | 解析出的规则，每项含 `id`、`content` |
+| `report.total_rules` | 整数 | 规则数 |
+| `report.total_segments` / `report.total_segments_checked` | 整数 | 转写句段总数与实际审核句段数；两者不等说明被截断 |
+| `report.truncated` | 布尔 | 文本是否被截断 |
+| `report.total_chunks` / `report.failed_chunks` | 整数 | 审核分块数与失败数；`failed_chunks` 大于 0 表示只完成了部分审核，不能把"没有违规"当作"合规" |
+| `report.skipped_rule_ids` | 整数数组 | 因缺少证据来源（如没有 OCR 数据）而**未审核**的规则编号；这些规则不代表已通过 |
+| `report.violations` | 数组 | 违规条目，字段见下 |
+| `report.summary` | 字符串 | 文字总结 |
+| `report.compliance_score` | 浮点数 | 合规评分，100 分起扣：高危 15、中危 8、低危 3，人工驳回的条目不扣分 |
+| `report.source_counts` | 对象 | 各证据来源的违规条数 |
+| `processing_time_ms` | 浮点数 | 审核耗时 |
+
+违规条目的主要字段：`id`（报告内稳定唯一，形如 `v0001`）、`rule_id`、`rule_content`、`reason`、`reasoning`（推理过程）、`severity`（`high`、`medium`、`low`）、`confidence`（置信度）、`status`（`pending` 待审、`confirmed` 已确认、`rejected` 已驳回）、`timestamp`、`timestamp_ms`、`end_ms`、`speaker`、`original_text`、`source`（`transcript`、`ocr`、`vision`）、`evidence_url`（关键帧文件名，可用 3.2 的 `frames` 下载）、`evidence_text`（相关的屏幕文字）、`reviewed_at`（复核时间）、`review_note`（复核备注）。
+
+**人工复核**（`PATCH .../compliance/violations`）的请求与响应：
+
+| 字段 | 类型 | 是否必填 | 说明 |
+|---|---|---|---|
+| `updates` | 数组 | 是 | 批量更新列表 |
+| `updates[].violation_id` | 字符串 | 与 `index` 二选一 | 违规条目的 `id`，推荐使用 |
+| `updates[].index` | 整数 | 与 `violation_id` 二选一 | 列表下标，已废弃，仅为兼容旧客户端保留 |
+| `updates[].status` | 字符串 | 是 | `pending`、`confirmed`、`rejected` 之一 |
+| `updates[].note` | 字符串 | 否 | 复核备注，最长 500 字符 |
+| 响应 `ok` | 布尔 | - | 恒为 `true` |
+| 响应 `updated` | 整数 | - | 成功更新的条数 |
+| 响应 `missing` | 字符串数组 | - | 没有匹配到的条目标识，不影响其余条目的更新 |
+| 响应 `compliance_score` | 浮点数 | - | 复核后重新计算的评分 |
+
+复核说明：确认或驳回会记录 `reviewed_at`，改回 `pending` 会清空复核留痕；更新立即写入服务端，刷新页面后仍保留。任务没有合规报告时返回 404，两个标识都没提供返回 422。
+
+**导出**返回 Excel 文件，含"概览"和"违规明细"两个工作表，包含复核状态、时间与备注；没有合规报告时返回 404。
+
+### 3.5 文本评估与纪要模板
+
+已经有转写文本时，可以不经过语音识别，直接生成纪要。纪要长文本按"分段提炼、再汇总"的方式生成：
+
+![纪要生成流程](../assets/summary-mapreduce.svg)
+
+| 方法与路径 | 作用 | 成功状态码 |
+|---|---|---|
+| `POST /api/v1/evaluate/text/async` | 对一段文本生成纪要，可指定模板 | 202 |
+| `POST /api/v1/evaluate/transcript/async` | 接收第三方转写原文，用通用模板生成纪要 | 202 |
+| `GET /api/v1/templates` | 查询可用纪要模板 | 200 |
+| `POST /api/v1/templates/reload` | 重新加载模板目录，无需重启服务 | 200 |
+
+`POST /evaluate/text/async` 的请求字段（`multipart/form-data`）：
+
+| 字段 | 类型 | 是否必填 | 说明 |
+|---|---|---|---|
+| `text` | 字符串 | 是 | 待生成纪要的文本，不能为空白，UTF-8 编码后不超过 500 KB |
+| `template_id` | 字符串 | 否 | 默认 `universal`；不存在的 ID 会自动回退到通用模板，不报错 |
+| `parent_task_id` | 字符串 | 否 | 填写后纪要写入该任务，可通过它的 `results` 读取；该任务不存在返回 404 |
+
+`POST /evaluate/transcript/async` 的请求体是 `text/plain` 原文（UTF-8），不带表单字段，不支持模板和父任务。支持两种内容：第三方格式，即方括号时间戳后接 JSON，例如以 `[2026-04-17 14:29:37]` 开头，后面紧跟一个含 `content` 字段的 JSON 对象，服务端取出 `content` 作为正文；或者直接是纯文本。空文本返回 422，超过 500 KB 返回 413。
+
+两个评估端点都返回标准提交响应；轮询时 `status` 依次为 `pending`、`evaluating`、`completed`，`result` 含 `raw_text`、`corrected_text`、`evaluation`（同 3.2 的纪要对象）与 `processing_time_ms`。文本超过 5 万字时会截断并置 `truncated` 为 `true`。
+
+`GET /templates` 返回数组，每项含 `id`、`name`、`description`，提交前调用一次即可得到合法的 `template_id`。`POST /templates/reload` 返回 `reloaded`（加载的模板数）和 `templates`（同上的元数据列表）；正在运行的任务不受影响。模板由部署方在服务器的 `templates/` 目录维护。
+
+### 3.6 音频重塑
+
+音频重塑把已有转写按说话人合成为一段多人对话的 MP3。它是独立的异步任务，有自己的状态接口。
+
+| 方法与路径 | 作用 | 成功状态码 |
+|---|---|---|
+| `POST /api/v1/tasks/{task_id}/synthesize` | 提交合成任务 | 202 |
+| `GET /api/v1/tasks/{task_id}/synthesis/status` | 查询合成状态 | 200 |
+| `GET /api/v1/tasks/{task_id}/synthesis` | 下载合成后的 MP3 | 200 |
+
+提交合成的请求体是可选的：可以不带请求体，也可以带一个 JSON 对象，只写需要的字段：
+
+| 字段 | 类型 | 是否必填 | 说明 |
+|---|---|---|---|
+| `voice_map` | 对象 | 否 | 说话人标签到音色标识（字符串）的映射；未指定的说话人自动分配音色 |
+
+响应字段（提交与状态查询共用）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `status` | 字符串 | `running`、`completed`、`failed` |
+| `audio_url` | 字符串 | 仅 `completed`：下载路径 |
+| `duration_ms` | 浮点数 | 仅 `completed`：音频时长（毫秒） |
+| `synthesis_time_ms` | 浮点数 | 仅 `completed`：合成耗时（毫秒） |
+| `error` | 字符串 | 仅 `failed`：失败原因 |
+
+**关键注意事项：**
+
+- 前置条件是目标任务已有转写结果：没有则返回 404，转写为空返回 422。
+- 合成需要独占显存：若当前有任务处于纪要、文本纠正或合规审核阶段，返回 **503**，稍后重试；同一任务已有合成在进行返回 **409**，直接轮询状态即可；合成服务未就绪也返回 503。
+- 合成失败后可再次提交；服务重启后会从磁盘恢复"已完成"状态；从未合成过的任务，查询状态与下载都返回 404。合成音频的保留时间与原始媒体相同。
+
+### 3.7 系统与健康
+
+| 方法与路径 | 作用 | 成功状态码 |
+|---|---|---|
+| `GET /api/v1/health/live` | 存活探针：只表示进程在响应，不检查依赖 | 200 |
+| `GET /api/v1/health` | 就绪与组件状态、任务统计、显存水位 | 200 |
+
+存活探针的响应只有一个 `status` 字段，值为 `alive`。
+`/health` 的响应字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `status` | 字符串 | 整体状态：`healthy` 或 `degraded`。`unhealthy` 是保留值，当前不会返回 |
+| `asr` | 对象 | 语音识别组件，含 `status`（`ok`、`degraded`、`down`）与可选的 `detail` |
+| `llm` | 对象 | 大语言模型是否可达，`ok` 或 `down` |
+| `tts` | 对象或空 | 语音合成组件，未启用时为空 |
+| `tasks` | 对象 | 任务统计：`active`、`completed`、`failed`、`synthesis_running` |
+| `vram` | 对象或空 | 显存水位：`loaded_models`、`estimated_used_gb`、`budget_gb` |
+
+**关键注意事项：**
+
+- **健康检查不再返回 503**，即使有组件异常，HTTP 状态码也是 200，需要读取 `status` 与各组件状态判断。
+- `asr` 为 `degraded` 通常只表示识别模型权重暂时被卸载（例如给合成腾显存），下一次转写会自动重新加载，并不影响提交任务，只是第一个任务会慢一些。
+- `llm` 为 `down` 时，纪要、合规审核和文本纠错会受影响：纠错会降级为沿用原始识别文本，纪要可能缺失，合规审核会失败。
+- `tasks.active` 含合规审核和文本评估任务，不等于 429 所针对的音视频任务数，只能粗略参考；`vram.estimated_used_gb` 只统计服务自己管理的模型。
+
+## 四、任务状态与进度的含义
+
+任务的 `status` 取值与含义：
+
+| status | 含义 | 出现在 |
+|---|---|---|
+| `pending` | 已提交，排队中 | 所有任务 |
+| `extracting_frames` | 视频预处理：提取音轨、抽取关键帧 | 视频任务 |
+| `scanning_visual` | 视觉扫描：OCR 与人脸检测 | 勾选 `visual_scan` 的视频任务 |
+| `processing_asr` | 语音识别与说话人区分 | 音视频任务 |
+| `correcting` | 文本纠错 | 音视频任务 |
+| `evaluating` | 生成纪要 | 标准纪要任务与文本评估任务 |
+| `auditing` | 合规审核 | 合规审核任务 |
+| `completed` | 已完成 | 所有任务 |
+| `failed` | 已失败或被取消，原因见 `error` | 所有任务 |
+
+![任务状态流转](../assets/task-states.svg)
+
+上图中，音频文件会跳过抽帧与视觉扫描，只转写的任务在纠正后直接完成，合规审核和文本评估是独立任务，只经过自己的阶段。服务重启后，磁盘上已有转写结果的任务恢复为 `completed`，只剩媒体、没有结果的任务恢复为 `failed`（提示服务重启导致中断），可通过重新转写恢复。
+
+**终止条件与轮询建议：**
+- 只有 `completed` 和 `failed` 是终止状态，其余状态都应继续轮询；不要用进度百分比是否到 100 判断结束。
+- 建议间隔 2 到 5 秒；任务长时可逐步拉长到 10 秒左右。任务从提交起有超时时间（默认 3600 秒，含排队），超时后变为 `failed`，`error` 说明超时。
+
+音视频任务处理经过的阶段如下：
+
+![音视频处理流水线](../assets/pipeline-stages.svg)
+
+进度百分比由服务端按状态和批次换算：
+
+![进度百分比与状态的对应](../assets/progress-bands.svg)
+
+图中只标了各状态的大致区间，有几点需要补充：
+
+- 换算是分段的：视频的抽帧与视觉扫描占前 20%，语音识别固定为 20%，文本纠正按批次从 20% 推进到 90%，生成纪要占最后 10%。音频任务没有前两段，从 20% 起步。文本评估与合规审核任务的百分比则按各自批次从 0 推进到 100。
+- **百分比可能短暂回落**：每次进入新阶段，批次计数会重置，进度可能先回到 0 或阶段起点，再随批次前进；`failed` 时百分比为 0。请把它当作进度条参考，不要用它做逻辑判断，判断以 `status` 为准。
+
+## 五、常见集成场景
+
+以下场景用文字步骤描述，字段说明见第三章。
+
+### 5.1 只要转写文本
+
+1. 调用 `POST /tasks/transcript` 上传文件；文件较大时改用分片上传（但分片上传总会生成纪要，若不需要可在 `GET` 时把 `generate_summary` 设为 `false`）。
+2. 轮询 `GET /tasks/{task_id}` 直到 `completed`。
+3. 读取 `GET /tasks/{task_id}/results` 的 `transcript.transcript`。若 `correction_failed_batches` 大于 0，说明有句段没有润色，可按需提示用户。
+
+### 5.2 要会议纪要
+
+1. 可先调用 `GET /templates` 选定 `template_id`。
+2. 调用 `POST /tasks/standard_minutes`，带上 `template_id`。
+3. 轮询直到 `completed`，用 `results` 读取 `evaluation.title` 与 `evaluation.formatted_content`。同时检查 `evaluation.truncated` 与 `degraded_chunks`，为真或大于 0 时向用户标注纪要不完整。
+4. `evaluation` 为空时，用转写全文（把各句段的 `text_corrected` 依次拼接）调用 `POST /evaluate/text/async`，并填写 `parent_task_id`，完成后再从父任务的 `results` 读取。换模板重新生成纪要也用同样的方法。
+
+### 5.3 要合规审核
+
+1. 按 5.1 或 5.2 得到转写结果（任务 `completed`）。
+2. 准备规则文件，把 `results` 里的 `transcript.transcript` 序列化为 JSON 字符串，调用 `POST /tasks/compliance_audit`，`parent_task_id` 填转写任务的编号。
+3. 轮询返回的审核 `task_id`，`completed` 后从父任务的 `results` 读取 `compliance`。检查 `failed_chunks`、`truncated`、`skipped_rule_ids`，它们非零或非空时，报告只覆盖了一部分。
+4. 人工复核时，用 `PATCH .../compliance/violations` 提交确认或驳回，按返回的 `compliance_score` 更新展示；需要归档时调用导出接口取得 Excel。
+
+### 5.4 视频加视觉扫描
+
+1. 提交视频时把 `visual_scan` 设为 `true`（表单或分片上传均可）。状态会额外经过 `extracting_frames` 与 `scanning_visual`。
+2. `completed` 后从 `results` 读取 `keyframe_count`、`ocr_text_count`、`visual_event_count`，确认视觉扫描有产出。
+3. 提交合规审核时填写 `parent_task_id`，屏幕文字类规则才会参与；违规条目里的 `evidence_url` 可交给 `frames` 端点下载关键帧作为证据。
+
+### 5.5 重新转写
+
+适用于换热词、修正识别效果的场景。
+
+1. 确认任务已结束，且原始媒体仍在保留期内（`results` 的 `has_audio` 或 `has_video` 为真）。
+2. 调用 `POST /tasks/{task_id}/rerun-transcript`，可传新的 `hotwords`，任务编号不变。
+3. 重新轮询直到 `completed`。之前的纪要与合规报告已被清除，需要按 5.2 第 4 步和 5.3 重新生成。
+4. 若媒体已被清理，改为先 `DELETE` 作废缓存，再重新上传同一文件。
+
+### 5.6 接入第三方已有转写
+
+- 只要纪要：调用 `POST /evaluate/text/async`（可选模板），或把第三方转写原文直接推给 `POST /evaluate/transcript/async`（通用模板）。
+- 要合规审核：把第三方转写整理成条目数组（至少含 `text_corrected`，建议同时带 `timestamp`、`timestamp_ms`、`end_ms`、`speaker`），直接调用 `POST /tasks/compliance_audit`，不填 `parent_task_id`。此时结果只能通过轮询该审核任务读取，且服务重启后会丢失，请在完成后立即取走。
+
+## 六、错误处理与重试建议
+
+| 状态码 | 常见原因 | 建议动作 |
+|---|---|---|
+| 400 | 分片上传缺少或写错 `Content-Range`，或数据块为空 | 修正请求后重发，不要盲目重试 |
+| 404 | 任务、会话、合规报告、媒体或关键帧不存在；父任务不存在；服务重启后审核和评估任务的编号失效 | 核对编号；需要保留结果时提交时带上 `parent_task_id`；分片上传会话丢失则重新 `GET` 建立 |
+| 409 | 任务正在运行（删除、重新转写、校对）；取消所处阶段不可中断；分片偏移不符；同一任务已有合成在进行 | 等待任务结束后重试；分片上传重新 `GET` 取偏移量；合成则直接轮询状态 |
+| 413 | 文件超过上限，或分片块过大，或规则文件、文本超过限额 | 缩小内容，不要重试同一请求；限额见第七章 |
+| 422 | 参数不合法：热词格式或数量、转写 JSON、空文本、编号格式、整体哈希不一致、必填字段缺失 | 按 `detail` 修正；哈希不一致时从头重新上传并检查哈希算法 |
+| 429 | 音视频任务队列已满 | 等待后重试，建议带随机抖动的退避（如 10 秒起步逐步加倍）；分片上传的末块可原样重传 |
+| 500 | 服务内部错误 | 记录 `X-Request-ID` 与 `request_id` 后有限次重试，仍失败联系服务方 |
+| 503 | 合成时有任务占用 LLM，或服务未就绪 | 稍后重试；先检查 `/health` |
+
+补充建议：
+- **网络中断的重试**：不确定提交是否已到达服务端时，先用 `GET /tasks/lookup` 按哈希查询：命中则直接轮询，未命中再重传。因为服务按哈希去重，重复提交同一文件是安全的。
+- **只重试可重试的错误**：429、503、网络超时可退避重试；400、413、422 是请求本身有问题，重试无效。
+- **任务级失败**：`failed` 的原因写在 `error` 里，常见的有媒体无法解码、任务超时、被取消、服务重启中断；可重新提交同一文件（失败任务不复用）或重新转写。
+- **部分降级要显式处理**：`correction_failed_batches`、`evaluation.degraded_chunks`、`evaluation.truncated`、`report.failed_chunks`、`report.truncated`、`report.skipped_rule_ids` 都是"任务成功但结果不完整"的信号，任务状态仍是 `completed`，需要自行判断是否接受。
+
+## 七、限制与注意事项
+
+| 项目 | 限制或说明 |
+|---|---|
+| 音视频文件大小 | 默认 500 MB，由 `MAX_UPLOAD_SIZE_MB` 决定，表单与分片上传共用；部署方可能调高，超限返回 413 |
+| 分片单块大小 | 服务端上限 64 MB，建议 5 MB |
+| 规则文件 | 不超过 2 MB，CSV 或 XLSX |
+| 合规 `transcript` 与文本评估的文本 | 各不超过 500 KB（UTF-8 字节数） |
+| 纪要与审核的处理长度 | 超过 5 万字的文本会被截断，并分别用 `truncated` 标记 |
+| 媒体格式与时长 | 不做格式白名单，能否处理取决于服务端 ffmpeg，视频扩展名见 3.1；没有单独的时长限制，实际受任务超时（默认 3600 秒，含排队）约束 |
+| 排队上限 | `TASK_MAX_ACTIVE`，默认 5，仅统计音视频任务 |
+| 原始媒体保留 | 已完成任务的原始媒体与合成音频保留 `MEDIA_RETENTION_HOURS`（默认 24 小时）后清理；转写、纪要、合规 JSON 与关键帧保留；清理每小时检查一次；失败或被中断且超期的任务整目录清理（至少保留 2 小时） |
+| 存储配额 | 部署方可设置 `MAX_STORAGE_GB`，超出时会提前清理最旧的原始媒体，不受保留时间限制 |
+| 内存中的任务数 | 最多 500 个；超出后淘汰已结束的任务，有磁盘结果的任务仍可查询 |
+| 并发与频率 | 语音识别串行，合规与纪要生成共享有限的大模型并发；建议同一调用方并行提交的音视频任务不超过队列上限，轮询间隔不低于 2 秒 |
+
+- **task_id 即凭据**：由于没有鉴权，`DELETE` 与 `results` 只凭 `task_id`，请不要向不可信方暴露它。

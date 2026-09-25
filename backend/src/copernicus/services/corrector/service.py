@@ -8,11 +8,10 @@ from copernicus.services.text_corrector import TextCorrectorService
 from copernicus.services.hotword_replacer import HotwordReplacerService
 from copernicus.config import Settings
 from copernicus.utils.llm_parse import strip_think_tags
-from copernicus.utils.text import chunk_text, merge_chunks
 from copernicus.utils.types import ProgressCallback
 
 from .preprocess import preprocess_text
-from .prompts import SYSTEM_PROMPT, TRANSCRIPT_SYSTEM_PROMPT
+from .prompts import TRANSCRIPT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,6 @@ class CorrectorService:
         self._model = settings.llm_model_name
         self._temperature = settings.llm_temperature
         self._chunk_size = settings.correction_chunk_size
-        self._overlap = settings.correction_overlap
         self._max_concurrency = settings.correction_max_concurrency
         self._num_ctx = settings.ollama_num_ctx_correction
         self._text_corrector = text_corrector
@@ -37,63 +35,6 @@ class CorrectorService:
 
     async def is_reachable(self) -> bool:
         return await self._client.is_reachable()
-
-    async def correct(
-        self, raw_text: str, on_progress: ProgressCallback | None = None
-    ) -> str:
-        """Correct ASR text using LLM with concurrent chunk processing."""
-        if not raw_text.strip():
-            return raw_text
-
-        chunks = chunk_text(raw_text, self._chunk_size, self._overlap)
-        total = len(chunks)
-        semaphore = asyncio.Semaphore(self._max_concurrency)
-        completed = 0
-        lock = asyncio.Lock()
-
-        async def _process(index: int, chunk: str) -> str:
-            nonlocal completed
-            async with semaphore:
-                logger.info("Correcting chunk %d/%d ...", index + 1, total)
-                result = await self._correct_chunk(chunk)
-                async with lock:
-                    completed += 1
-                    if on_progress:
-                        on_progress(completed, total)
-                return result
-
-        tasks = [_process(i, chunk) for i, chunk in enumerate(chunks)]
-        corrected_chunks = await asyncio.gather(*tasks)
-
-        return merge_chunks(list(corrected_chunks), self._overlap)
-
-    async def correct_segments(
-        self,
-        segments_text: list[str],
-        on_progress: ProgressCallback | None = None,
-    ) -> list[str]:
-        """Correct a list of segment texts concurrently (no overlap merging)."""
-        if not segments_text:
-            return []
-
-        total = len(segments_text)
-        semaphore = asyncio.Semaphore(self._max_concurrency)
-        completed = 0
-        lock = asyncio.Lock()
-
-        async def _process(index: int, text: str) -> str:
-            nonlocal completed
-            async with semaphore:
-                logger.info("Correcting segment %d/%d ...", index + 1, total)
-                result = await self._correct_chunk(text)
-                async with lock:
-                    completed += 1
-                    if on_progress:
-                        on_progress(completed, total)
-                return result
-
-        tasks = [_process(i, text) for i, text in enumerate(segments_text)]
-        return list(await asyncio.gather(*tasks))
 
     async def correct_transcript(
         self,
@@ -330,23 +271,3 @@ class CorrectorService:
 
         logger.warning("Regex fallback also failed, using original text")
         return fallback
-
-    async def _correct_chunk(self, text: str) -> str:
-        """Send a single chunk to the LLM for correction."""
-        try:
-            response = await self._client.chat(
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"待修正文本：\n{text}"},
-                ],
-                num_ctx=self._num_ctx,
-            )
-            content = response.content
-            return strip_think_tags(content).strip() or text
-        except Exception as e:
-            logger.warning(
-                "LLM correction failed for chunk, using raw text: [%s] %s",
-                type(e).__name__,
-                e or "(no message)",
-            )
-            return text

@@ -40,27 +40,6 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 50) -> list[str]
     return chunks
 
 
-def merge_chunks(chunks: list[str], overlap: int = 50) -> str:
-    """重新拼接纠正后的分块，去重重叠区域。
-
-    由于 LLM 纠正可能改变重叠内容，采用简单策略：
-    第一个分块完整保留，后续分块跳过开头 overlap 个字符
-    （这些字符已出现在上一分块末尾）。
-    """
-    if not chunks:
-        return ""
-    if len(chunks) == 1:
-        return chunks[0]
-
-    parts = [chunks[0]]
-    for chunk in chunks[1:]:
-        # Skip the overlap portion from the beginning of each subsequent chunk
-        skip = min(overlap, len(chunk))
-        parts.append(chunk[skip:])
-
-    return "".join(parts)
-
-
 def split_sentences(text: str) -> list[str]:
     """按标点边界将文本切分为句子列表。"""
     if not text:
@@ -166,38 +145,6 @@ def smooth_speakers(
     return segments
 
 
-def merge_transcript_entries(
-    entries: list[dict],
-    gap_threshold_ms: int = 2000,
-) -> list[dict]:
-    """合并同一说话人的相邻转写条目。
-
-    每条条目格式为 {"timestamp": str, "timestamp_ms": int, "speaker": str,
-    "text": str, "text_corrected": str}。
-
-    当说话人相同且当前条目与前一条目的起始时间差在阈值内时合并。
-    """
-    if not entries:
-        return []
-
-    merged: list[dict] = []
-    current = dict(entries[0])
-
-    for entry in entries[1:]:
-        same_speaker = entry["speaker"] == current["speaker"]
-        within_gap = (entry["timestamp_ms"] - current["timestamp_ms"]) < gap_threshold_ms
-
-        if same_speaker and within_gap:
-            current["text"] += entry["text"]
-            current["text_corrected"] += entry["text_corrected"]
-        else:
-            merged.append(current)
-            current = dict(entry)
-
-    merged.append(current)
-    return merged
-
-
 def split_corrected_by_sub_sentences(
     corrected_text: str,
     sub_sentences: list[SubSentence],
@@ -285,28 +232,3 @@ def split_original_by_sub_sentences(
     return result
 
 
-def group_segments(segments: list[Segment], chunk_size: int = 800) -> list[list[Segment]]:
-    """将 ASR 分段贪心地分组为不超过 chunk_size 字符的批次。
-
-    每组持续累积分段，直到加入下一个分段会超过 chunk_size 时开启新组。
-    """
-    if not segments:
-        return []
-
-    groups: list[list[Segment]] = []
-    current_group: list[Segment] = []
-    current_length = 0
-
-    for seg in segments:
-        seg_len = len(seg.text)
-        if current_group and current_length + seg_len > chunk_size:
-            groups.append(current_group)
-            current_group = []
-            current_length = 0
-        current_group.append(seg)
-        current_length += seg_len
-
-    if current_group:
-        groups.append(current_group)
-
-    return groups

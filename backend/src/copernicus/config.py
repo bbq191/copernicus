@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     # Text correction chunking
     correction_chunk_size: int = 800
-    correction_overlap: int = 50
+    correction_overlap: int = 50  # 已废弃：不再生效，仅为兼容旧 .env 保留
     correction_max_concurrency: int = 3
 
     # 热词后处理替换（阶段 2）
@@ -208,6 +208,13 @@ class Settings(BaseSettings):
         else:
             ids = [self.asr_model_dir, self.vad_model_dir, self.punc_model_dir, self.spk_model_dir]
         return [mid for mid in ids if mid]
+
+    @property
+    def required_hf_model_ids(self) -> list[str]:
+        """需要预先缓存的 HuggingFace 模型（生产环境 HF_HUB_OFFLINE=1，缺失时无法自动下载）。"""
+        if self.pycorrector_enabled and self.pycorrector_model == "macbert":
+            return ["shibing624/macbert4csc-base-chinese"]  # pycorrector.MacBertCorrector 的默认模型
+        return []
 
     def resolve_asr_device(self) -> str:
         import logging

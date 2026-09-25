@@ -233,3 +233,17 @@ class TestReadPathsDoNotCreateDirectories:
         assert persistence.has_file(unknown, "meta.json") is False
         assert persistence.find_audio(unknown) is None
         assert not (tmp_path / unknown).exists()
+
+
+class TestRunningTasksAreProtected:
+    @pytest.mark.parametrize("suffix", ["", "?purge=true"])
+    def test_delete_is_rejected_while_the_task_runs(self, api, persistence, store, suffix):
+        _seed(persistence, TID_A, created_at="2026-01-01T00:00:00+00:00", done=False)
+        running = TaskInfo(TID_A)
+        running.status = TaskStatus.PROCESSING_ASR
+        store._tasks[TID_A] = running
+
+        r = api.delete(f"/api/v1/tasks/{TID_A}{suffix}")
+
+        assert r.status_code == 409
+        assert store.get(TID_A) is running and (persistence._upload_dir / TID_A).exists()

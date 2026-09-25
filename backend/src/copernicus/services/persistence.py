@@ -242,7 +242,7 @@ class PersistenceService:
             for d in self._upload_dir.iterdir()
             if d.is_dir() and (entry := self._scan_entry(d)) is not None
         ]
-        logger.info("Scanned %d persisted tasks from disk", len(results))
+        logger.debug("Scanned %d persisted tasks from disk", len(results))
         return results
 
     def scan_task(self, task_id: str) -> dict | None:

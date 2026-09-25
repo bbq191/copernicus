@@ -37,6 +37,17 @@ class TestRequiredModelIds:
         ]
 
 
+class TestRequiredHfModels:
+    def test_macbert_is_listed_when_enabled(self):
+        assert Settings(pycorrector_enabled=True, pycorrector_model="macbert").required_hf_model_ids == [
+            "shibing624/macbert4csc-base-chinese"
+        ]
+
+    def test_nothing_to_cache_when_disabled_or_other_model(self):
+        assert Settings(pycorrector_enabled=False).required_hf_model_ids == []
+        assert Settings(pycorrector_enabled=True, pycorrector_model="kenlm").required_hf_model_ids == []
+
+
 class TestBuildPackage:
     @pytest.fixture(scope="class")
     def mod(self):

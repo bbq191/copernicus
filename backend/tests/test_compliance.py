@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from copernicus.config import Settings
+from copernicus.exceptions import ComplianceError
 from copernicus.schemas.compliance import ComplianceRule, Violation
 from copernicus.services.compliance import ComplianceService, _align_ocr_to_chunk, _parse_violations
 from copernicus.services.compliance_filters import (
@@ -690,10 +691,9 @@ class TestReportCompleteness:
         )
         service = ComplianceService(mock_client, settings)
 
-        # 两个 chunk：第一个 chunk 两次尝试都失败，第二个成功
+        # 两个 chunk：第一个 chunk 的调用失败（LLMClient 已重试过，这里不再叠加重试），第二个成功
         mock_client.chat = AsyncMock(
             side_effect=[
-                RuntimeError("boom"),
                 RuntimeError("boom"),
                 ChatResponse(content="[]", model="m"),
             ]
@@ -704,3 +704,30 @@ class TestReportCompleteness:
 
         assert report.total_chunks == 2
         assert report.failed_chunks == 1
+
+
+class TestChunkRetrySemantics:
+    @pytest.mark.asyncio
+    async def test_unparseable_output_is_reprompted_once(self, mock_client: MagicMock):
+        service = ComplianceService(mock_client, Settings(llm_base_url="http://localhost:11434"))
+        mock_client.chat = AsyncMock(
+            side_effect=[
+                ChatResponse(content="这不是 JSON", model="m"),
+                ChatResponse(content="[]", model="m"),
+            ]
+        )
+
+        report = await service.audit([ComplianceRule(id=1, content="r")], [_entry(1, "内容")])
+
+        assert mock_client.chat.await_count == 2
+        assert report.failed_chunks == 0
+
+    @pytest.mark.asyncio
+    async def test_transport_failure_is_not_retried_again_at_this_layer(self, mock_client: MagicMock):
+        service = ComplianceService(mock_client, Settings(llm_base_url="http://localhost:11434"))
+        mock_client.chat = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+        with pytest.raises(ComplianceError):  # 只有一个分块且失败：整体失败
+            await service.audit([ComplianceRule(id=1, content="r")], [_entry(1, "内容")])
+
+        assert mock_client.chat.await_count == 1

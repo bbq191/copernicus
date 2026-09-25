@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 from copernicus.schemas.visual import OCRRecord
@@ -23,6 +24,9 @@ class OCRService:
         self._confidence_threshold = settings.ocr_confidence_threshold
         self._min_text_length = settings.ocr_min_text_length
         self._engine = None
+        # scan_frame 在工作线程里被多个任务并发调用：加载只能发生一次；
+        # ONNX 推理本身已并行使用多核，多个任务同时推理只会互相抢核，串行执行更省电
+        self._lock = threading.Lock()
 
     def _ensure_engine(self) -> None:
         if self._engine is not None:
@@ -36,10 +40,10 @@ class OCRService:
 
     def scan_frame(self, image_path: str, timestamp_ms: int) -> list[OCRRecord]:
         """对单张关键帧图像执行 OCR 识别。同步方法，需通过 to_thread 调用。"""
-        self._ensure_engine()
-        assert self._engine is not None
-
-        result = self._engine(image_path)
+        with self._lock:
+            self._ensure_engine()
+            assert self._engine is not None
+            result = self._engine(image_path)
         if result is None or result.txts is None:
             return []
 

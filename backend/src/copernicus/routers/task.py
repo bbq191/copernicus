@@ -208,7 +208,8 @@ async def list_tasks(
 
     `total` 为磁盘上的任务总数，大于返回条数时表示被 `limit` 截断。
     """
-    tasks, total = store.list_tasks(limit)
+    # 需要遍历任务目录并逐个读取 meta.json，放入线程避免任务多时阻塞事件循环
+    tasks, total = await asyncio.to_thread(store.list_tasks, limit)
     return TaskListResponse(tasks=tasks, total=total)
 
 

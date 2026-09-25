@@ -5,10 +5,11 @@ import numpy as np
 from copernicus.schemas.transcription import TranscriptEntrySchema
 from copernicus.services.tts import (
     SAMPLE_RATE,
-    _merge_by_speaker,
+    SynthesisParams,
+    _synthesize_chunks,
     _voice_to_seed,
     build_voice_map,
-    synthesize_dialogue,
+    merge_by_speaker,
 )
 
 
@@ -24,7 +25,7 @@ def _entry(speaker: str, text: str, corrected: str = "") -> TranscriptEntrySchem
 
 
 # ---------------------------------------------------------------------------
-# _merge_by_speaker
+# merge_by_speaker
 # ---------------------------------------------------------------------------
 
 class TestMergeBySpeaker:
@@ -34,7 +35,7 @@ class TestMergeBySpeaker:
             _entry("A", "今天天气不错"),
             _entry("B", "是的"),
         ]
-        result = _merge_by_speaker(entries)
+        result = merge_by_speaker(entries)
         assert len(result) == 2
         assert result[0] == ("A", "你好。今天天气不错")
         assert result[1] == ("B", "是的")
@@ -45,7 +46,7 @@ class TestMergeBySpeaker:
             _entry("B", "回应"),
             _entry("A", "第三句"),
         ]
-        result = _merge_by_speaker(entries)
+        result = merge_by_speaker(entries)
         assert len(result) == 3
 
     def test_empty_text_skipped(self):
@@ -54,22 +55,22 @@ class TestMergeBySpeaker:
             _entry("A", ""),
             _entry("B", "继续"),
         ]
-        result = _merge_by_speaker(entries)
+        result = merge_by_speaker(entries)
         assert len(result) == 2
         assert result[0][1] == "有内容"
 
     def test_prefers_text_corrected(self):
         entry = _entry("A", "原始", corrected="纠正后")
-        result = _merge_by_speaker([entry])
+        result = merge_by_speaker([entry])
         assert result[0][1] == "纠正后"
 
     def test_empty_transcript(self):
-        assert _merge_by_speaker([]) == []
+        assert merge_by_speaker([]) == []
 
     def test_long_chunk_forces_new_segment(self):
         long_text = "这是一段很长的文字" * 8  # > 60 字
         entries = [_entry("A", long_text), _entry("A", "短句")]
-        result = _merge_by_speaker(entries)
+        result = merge_by_speaker(entries)
         assert len(result) == 2
 
 
@@ -124,22 +125,23 @@ class TestVoiceToSeed:
 # synthesize_dialogue（用 mock model 验证拼接逻辑）
 # ---------------------------------------------------------------------------
 
-class _MockChat:
-    """模拟 ChatTTS.Chat，每次 infer 返回 0.1 秒静音数组。"""
-
-    def infer(self, texts, params_infer_code=None, params_refine_text=None, use_decoder=True):
-        audio_data = np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32)
-        return [audio_data]
-
-
 class MockChatTTS:
-    """模拟 _ChatTTSHandle。"""
+    """模拟 _ChatTTSHandle：每次合成返回 0.1 秒静音。"""
 
     def __init__(self):
-        self.chat = _MockChat()
+        self.calls: list[tuple[str, int]] = []
 
-    def get_speaker(self, seed: int):
-        return None  # spk_emb 在 mock 中不使用
+    def synthesize(self, sentence, seed, params):
+        self.calls.append((sentence, seed))
+        return np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32)
+
+
+def synthesize_dialogue(entries, model, voice_map, pause_switch_ms):
+    """测试辅助：合并说话人后单批合成。"""
+    chunks = merge_by_speaker(entries)
+    if not chunks:
+        return np.array([], dtype=np.float32)
+    return _synthesize_chunks(chunks, model, voice_map, SynthesisParams(pause_switch_ms=pause_switch_ms))
 
 
 class TestSynthesizeDialogue:
@@ -183,3 +185,18 @@ class TestSynthesizeDialogue:
         voice_map = {}
         audio = synthesize_dialogue(entries, model, voice_map, pause_switch_ms=800)
         assert len(audio) > 0
+
+
+class TestSynthesisParams:
+    def test_speed_is_capped_for_high_energy(self):
+        assert SynthesisParams(energy_level=9).speed == 7
+        assert SynthesisParams(energy_level=8).speed == 7
+
+    def test_speed_follows_energy_below_the_cap(self):
+        assert SynthesisParams(energy_level=0).speed == 1
+        assert 1 < SynthesisParams(energy_level=5).speed <= 6
+
+    def test_voice_seed_is_used_per_speaker(self):
+        model = MockChatTTS()
+        synthesize_dialogue([_entry("A", "甲"), _entry("B", "乙")], model, {"A": "1111", "B": "3333"}, 100)
+        assert [seed for _, seed in model.calls] == [1111, 3333]

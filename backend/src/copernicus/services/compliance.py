@@ -26,6 +26,7 @@ from copernicus.services.compliance_filters import run_filters
 from copernicus.services.llm import LLMClient
 from copernicus.services.rule_registry import RuleRegistry, StructuredRule
 from copernicus.utils.llm_parse import extract_json_array, strip_think_tags
+from copernicus.utils.text import format_timestamp
 from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
@@ -136,13 +137,10 @@ class ComplianceService:
         few_shot_examples: list[str] | None = None,
         on_progress: ProgressCallback | None = None,
         ocr_results: list[dict] | None = None,
-        visual_events: list[dict] | None = None,
     ) -> ComplianceReport:
         """执行合规审核，长文本自动 Map-Reduce。
 
-        新增参数（向后兼容，默认 None）：
-        - ocr_results: OCR 识别结果列表
-        - visual_events: 视觉事件列表
+        证据来源为转写文本，以及可选的 OCR 识别结果（ocr_results）。
         """
         total_segments = len(transcript_entries)
         transcript_entries, truncated = self._truncate_entries(transcript_entries)
@@ -154,7 +152,6 @@ class ComplianceService:
         group_by_source = self._settings.compliance_group_by_source
 
         chunks = self._build_entry_chunks(transcript_entries)
-        total_steps = len(chunks) + 1  # map chunks + summary（分组模式下步数倍增由内部处理）
         if group_by_source:
             groups = RuleRegistry.group_by_source(structured_rules)
             active_groups = {k: v for k, v in groups.items() if v}
@@ -162,7 +159,7 @@ class ComplianceService:
             if "ocr" in active_groups and not ocr_results:
                 logger.info("Skipping OCR-only rules group (no OCR data)")
                 del active_groups["ocr"]
-            total_steps = len(chunks) * len(active_groups) + 1
+            total_steps = len(chunks) * len(active_groups) + 1  # 每组每块一次调用 + 汇总
         else:
             active_groups = {"all": structured_rules}
             total_steps = len(chunks) + 1
@@ -372,7 +369,7 @@ class ComplianceService:
         # OCR 数据注入（如果有）
         if ocr_records:
             ocr_lines = [
-                f"[{_ms_to_timestamp(r.get('timestamp_ms', 0))}] "
+                f"[{format_timestamp(r.get('timestamp_ms', 0))}] "
                 f"\"{r.get('text', '')}\""
                 for r in ocr_records
             ]
@@ -395,7 +392,8 @@ class ComplianceService:
 
         user_prompt = "\n\n".join(user_parts)
 
-        logger.info(
+        # 提示词包含被审核的对话内容，属于敏感信息：只在 DEBUG 级别记录
+        logger.debug(
             "Audit chunk %d/%d group=%s user prompt (first 1000 chars):\n%s",
             chunk_index + 1,
             total_chunks,
@@ -406,23 +404,25 @@ class ComplianceService:
         # 构建 ComplianceRule 列表用于 _parse_violations
         cr_rules = [ComplianceRule(id=r.id, content=r.content) for r in rules]
 
-        for attempt in range(1, 3):
-            try:
-                messages: list[dict[str, str]] = [
-                    {"role": "system", "content": _AUDIT_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ]
-                if attempt > 1:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "你上次的回答不是合法 JSON 数组。"
-                                "请严格只输出 JSON 数组，不要输出任何其他内容。"
-                            ),
-                        }
-                    )
+        # 第二次尝试只用于"模型输出不是合法 JSON"时的重问；网络/服务错误已由 LLMClient 重试过，
+        # 这里再重试只会把最坏请求数从 3 次放大到 6 次
+        for attempt in (1, 2):
+            messages: list[dict[str, str]] = [
+                {"role": "system", "content": _AUDIT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+            if attempt > 1:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你上次的回答不是合法 JSON 数组。"
+                            "请严格只输出 JSON 数组，不要输出任何其他内容。"
+                        ),
+                    }
+                )
 
+            try:
                 response = await self._client.chat(
                     messages=messages,
                     json_format=True,
@@ -430,32 +430,31 @@ class ComplianceService:
                     num_predict=4096,
                     think=False,
                 )
-                raw = strip_think_tags(response.content)
-                logger.info(
-                    "Audit chunk %d/%d group=%s raw LLM output:\n%s",
-                    chunk_index + 1,
-                    total_chunks,
-                    group_name,
-                    raw[:2000],
-                )
-                violations = _parse_violations(raw, cr_rules, ts_to_ms, ts_to_end_ms)
-                logger.info(
-                    "Audit chunk %d/%d group=%s done: %d violations found",
-                    chunk_index + 1,
-                    total_chunks,
-                    group_name,
-                    len(violations),
-                )
-                return violations
             except Exception as e:
                 logger.warning(
-                    "Audit chunk %d/%d group=%s attempt %d failed: %s",
-                    chunk_index + 1,
-                    total_chunks,
-                    group_name,
-                    attempt,
-                    e,
+                    "Audit chunk %d/%d group=%s LLM call failed: %s",
+                    chunk_index + 1, total_chunks, group_name, e,
                 )
+                return None
+
+            raw = strip_think_tags(response.content)
+            logger.debug(
+                "Audit chunk %d/%d group=%s raw LLM output:\n%s",
+                chunk_index + 1, total_chunks, group_name, raw[:2000],
+            )
+            try:
+                violations = _parse_violations(raw, cr_rules, ts_to_ms, ts_to_end_ms)
+            except Exception as e:
+                logger.warning(
+                    "Audit chunk %d/%d group=%s attempt %d: unparseable output: %s",
+                    chunk_index + 1, total_chunks, group_name, attempt, e,
+                )
+                continue
+            logger.info(
+                "Audit chunk %d/%d group=%s done: %d violations found",
+                chunk_index + 1, total_chunks, group_name, len(violations),
+            )
+            return violations
 
         logger.error(
             "Audit chunk %d/%d group=%s all attempts failed",
@@ -554,14 +553,6 @@ def _align_ocr_to_chunk(
 # ------------------------------------------------------------------ #
 #  辅助函数
 # ------------------------------------------------------------------ #
-
-
-def _ms_to_timestamp(ms: int) -> str:
-    """将毫秒转换为 MM:SS 格式。"""
-    total_s = ms // 1000
-    minutes = total_s // 60
-    seconds = total_s % 60
-    return f"{minutes:02d}:{seconds:02d}"
 
 
 def _parse_timestamp_to_ms(ts: str) -> int:

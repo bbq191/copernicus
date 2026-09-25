@@ -1,15 +1,5 @@
 """Copernicus schemas."""
 
-from copernicus.schemas.visual import (
-    KeyFrame,
-    OCRRecord,
-    VisualAnalysisResult,
-    VisualEvent,
-)
+from copernicus.schemas.visual import OCRRecord, VisualEvent
 
-__all__ = [
-    "KeyFrame",
-    "OCRRecord",
-    "VisualAnalysisResult",
-    "VisualEvent",
-]
+__all__ = ["OCRRecord", "VisualEvent"]

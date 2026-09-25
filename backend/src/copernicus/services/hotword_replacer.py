@@ -102,26 +102,6 @@ class HotwordReplacerService:
             )
             return False
 
-    def replace(self, text: str) -> str:
-        """替换单条文本中的热词
-
-        Args:
-            text: 输入文本
-
-        Returns:
-            替换后的文本，如果服务未启用则返回原文
-        """
-        if not text or not text.strip():
-            return text
-
-        if not self._lazy_init():
-            return text
-
-        replaced = self._processor.replace_keywords(text)
-        if replaced != text:
-            logger.debug("HotwordReplacer: '%s' -> '%s'", text[:80], replaced[:80])
-        return replaced
-
     def replace_entries(self, entries: list[dict]) -> list[dict]:
         """批量替换 transcript entries 中的热词
 

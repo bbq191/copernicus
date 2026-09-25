@@ -1,12 +1,11 @@
 """LLM 客户端包：按 ``LLM_PROVIDER`` 选择 Ollama 原生或 OpenAI 兼容协议。"""
 
 from copernicus.config import Settings
-from copernicus.services.llm.base import ChatMessage, ChatResponse, LLMClient
+from copernicus.services.llm.base import ChatResponse, LLMClient
 from copernicus.services.llm.ollama import OllamaClient
 from copernicus.services.llm.openai_compat import OpenAICompatClient
 
 __all__ = [
-    "ChatMessage",
     "ChatResponse",
     "LLMClient",
     "OllamaClient",

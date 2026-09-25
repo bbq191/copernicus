@@ -123,6 +123,14 @@ class PipelineService:
         )
         self._transcript_pipeline.register(TranscriptBuildStage())
 
+    @property
+    def asr(self) -> ASRService:
+        return self._asr
+
+    async def llm_reachable(self) -> bool:
+        """LLM 服务是否可达（健康检查用）。"""
+        return await self._corrector.is_reachable()
+
     def _merge_hotwords(self, request_hotwords: list[str] | None) -> list[str] | None:
         """合并全局热词（来自 HotwordReplacerService）与请求级热词。"""
         global_hw = (

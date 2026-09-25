@@ -4,7 +4,7 @@
     pip install ChatTTS soundfile
 
 VRAM 预估：~4 GB
-推理时需通过 ModelManager.acquire("tts") 独占显存，ASR/LLM 模型将被自动卸载。
+推理时需通过 ModelManager.use("tts", exclusive=True) 独占显存，ASR 模型将被自动卸载。
 每次推理文本不超过 tts_max_sentence_chars 字，防止 Attention 矩阵爆炸导致 OOM 和幻读。
 """
 
@@ -13,6 +13,7 @@ import hashlib
 import logging
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from copernicus.utils.ffmpeg import run as ffmpeg_run
@@ -34,6 +35,7 @@ def _normalize_inline_tokens(text: str) -> str:
 import numpy as np
 import soundfile as sf
 
+from copernicus.config import Settings
 from copernicus.schemas.transcription import TranscriptEntrySchema
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,34 @@ class _ChatTTSHandle:
             torch.manual_seed(seed)
             self._speaker_cache[seed] = self.chat.sample_random_speaker()
         return self._speaker_cache[seed]
+
+    def synthesize(self, sentence: str, seed: int, params: "SynthesisParams") -> np.ndarray:
+        """合成一句话，返回 float32 音频。依赖 ChatTTS 的部分都收在这里，便于测试时替换整个 handle。"""
+        import ChatTTS
+        import torch
+
+        infer_params = ChatTTS.Chat.InferCodeParams(
+            spk_emb=self.get_speaker(seed),
+            prompt=f"[speed_{params.speed}]",
+            temperature=params.temperature,
+            top_P=params.top_p,
+            top_K=params.top_k,
+            max_new_token=params.max_new_token,
+        )
+        refine_params = ChatTTS.Chat.RefineTextParams(
+            prompt=f"[oral_{params.oral_level}][laugh_{params.laugh_level}][break_{params.break_level}]"
+        )
+        # 每句推理前锁定同一随机种子，保持音色前后一致
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+        wavs = self.chat.infer(
+            [sentence],
+            params_infer_code=infer_params,
+            params_refine_text=refine_params,
+            use_decoder=True,
+        )
+        return wavs[0].astype(np.float32)
 
 
 def load_chattts(model_dir: Path | None = None) -> _ChatTTSHandle:
@@ -109,7 +139,7 @@ def build_voice_map(
     return result
 
 
-def _merge_by_speaker(
+def merge_by_speaker(
     transcript: list[TranscriptEntrySchema],
 ) -> list[tuple[str, str]]:
     """将连续相同 speaker 的段落合并为一个文本块（保留出场顺序）。
@@ -169,28 +199,6 @@ def _sanitize_for_chattts(text: str) -> str:
     return "".join(result).strip()
 
 
-def _split_by_uv_break(text: str, max_actual_chars: int) -> list[str]:
-    """将含 [uv_break] 的文本按换气点分组，每组实际文字（去除 token）不超过 max_actual_chars。
-
-    防止整段过长触发 ChatTTS 的 'hit max_new_token: 384' 截断；
-    每组保留自己的控制 token，ChatTTS 仍能处理换气和笑声效果。
-    """
-    parts = re.split(r'(?=\[uv_break\])', text)
-    groups: list[str] = []
-    current = ""
-    for part in parts:
-        candidate = current + part
-        actual_len = len(_CHATTTS_TOKEN_RE.sub("", candidate))
-        if current and actual_len > max_actual_chars:
-            groups.append(current.strip())
-            current = part
-        else:
-            current = candidate
-    if current.strip():
-        groups.append(current.strip())
-    return groups or [text]
-
-
 def _slice_sentences(text: str, max_chars: int) -> list[str]:
     """按标点切分文本，每段不超过 max_chars 字。
 
@@ -227,71 +235,86 @@ def _apply_fade(wav: np.ndarray, fade_ms: float = 8.0) -> np.ndarray:
     return result
 
 
+@dataclass(frozen=True)
+class SynthesisParams:
+    """一次合成的全部可调参数。合成链路各层只传这一个对象，不再逐层转发十几个参数。"""
+
+    pause_switch_ms: int = 800        # 换说话人间隔（ms）
+    batch_chars: int = 1000           # 每批最大字符数，批间清空 VRAM 缓存
+    max_sentence_chars: int = 40      # 单次推理最大字符数，防 OOM 和幻读
+    oral_level: int = 2
+    break_level: int = 4
+    laugh_level: int = 0
+    energy_level: int = 5
+    temperature: float = 0.1
+    top_p: float = 0.7
+    top_k: int = 20
+    max_new_token: int = 2048
+
+    @property
+    def speed(self) -> int:
+        """ChatTTS speed token（1-9）。energy >= 8 时上限为 7：[speed_8/9] 配合高温会触发幻读，
+        [speed_6/7] + 逗号驱动文本在听感上已经足够紧凑。"""
+        speed = _energy_to_speed(self.energy_level)
+        return min(7, speed) if self.energy_level >= 8 else speed
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "SynthesisParams":
+        return cls(
+            pause_switch_ms=settings.tts_pause_switch_speaker_ms,
+            batch_chars=settings.tts_synthesis_batch_chars,
+            max_sentence_chars=settings.tts_max_sentence_chars,
+            oral_level=settings.tts_oral_level,
+            break_level=settings.tts_break_level,
+            laugh_level=settings.tts_laugh_level,
+            energy_level=settings.tts_energy_level,
+            temperature=settings.tts_temperature,
+            top_p=settings.tts_top_p,
+            top_k=settings.tts_top_k,
+            max_new_token=settings.tts_max_new_token,
+        )
+
+
+def _free_gpu_cache() -> None:
+    """释放 PyTorch 缓存的显存；无 GPU（CPU 模式）时什么也不做。"""
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
 def _synthesize_chunks(
     chunks: list[tuple[str, str]],
     model: _ChatTTSHandle,
     voice_map: dict[str, str],
-    pause_switch_ms: int,
-    max_sentence_chars: int,
-    oral_level: int,
-    break_level: int,
-    laugh_level: int = 0,
-    energy_level: int = 5,
-    temperature: float = 0.1,
-    top_p: float = 0.7,
-    top_k: int = 20,
-    max_new_token: int = 2048,
+    params: SynthesisParams,
 ) -> np.ndarray:
     """合成一批预处理的 (speaker, text) 块，返回拼接后的 float32 音频数组。"""
-    import ChatTTS
     import torch
 
-    pause = np.zeros(int(SAMPLE_RATE * pause_switch_ms / 1000), dtype=np.float32)
+    pause = np.zeros(int(SAMPLE_RATE * params.pause_switch_ms / 1000), dtype=np.float32)
     sentence_gap = np.zeros(int(SAMPLE_RATE * 0.08), dtype=np.float32)  # 80ms，过长静音会加重拼接感
     segments: list[np.ndarray] = []
     prev_speaker: str | None = None
 
     for speaker, text in chunks:
-        voice_id = voice_map.get(speaker, "2222")
-        seed = _voice_to_seed(voice_id)
-        spk_emb = model.get_speaker(seed)
-        # energy >= 8 时速度上限为 7：[speed_8/9] 配合高温会触发幻读，
-        # [speed_6/7] + 逗号驱动文本在听感上已经足够紧凑。
-        speed = min(7, _energy_to_speed(energy_level)) if energy_level >= 8 else _energy_to_speed(energy_level)
-        params_infer = ChatTTS.Chat.InferCodeParams(
-            spk_emb=spk_emb,
-            prompt=f"[speed_{speed}]",
-            temperature=temperature,
-            top_P=top_p,
-            top_K=top_k,
-            max_new_token=max_new_token,
-        )
-        params_refine = ChatTTS.Chat.RefineTextParams(
-            prompt=f"[oral_{oral_level}][laugh_{laugh_level}][break_{break_level}]"
-        )
+        seed = _voice_to_seed(voice_map.get(speaker, "2222"))
 
         # 先清除 LLM 可能残留的 inline token（[uv_break] 等），逗号和句号已足够驱动节奏
-        sentences = [_sanitize_for_chattts(s) for s in _slice_sentences(_normalize_inline_tokens(text), max_sentence_chars)]
-        sentences = [s for s in sentences if s.strip()]
-        for i, sentence in enumerate(sentences):
+        sentences = [
+            _sanitize_for_chattts(s)
+            for s in _slice_sentences(_normalize_inline_tokens(text), params.max_sentence_chars)
+        ]
+        for i, sentence in enumerate(s for s in sentences if s.strip()):
             logger.debug("[%s] seed=%d synthesizing: %s", speaker, seed, sentence)
             try:
-                # 每句推理前锁定同一随机种子，保持音色前后一致
-                torch.manual_seed(seed)
-                if torch.cuda.is_available():
-                    torch.cuda.manual_seed(seed)
-                wavs = model.chat.infer(
-                    [sentence],
-                    params_infer_code=params_infer,
-                    params_refine_text=params_refine,
-                    use_decoder=True,
-                )
+                wav = _apply_fade(model.synthesize(sentence, seed, params))
             except (torch.cuda.OutOfMemoryError, MemoryError):
                 logger.warning("OOM on sentence (skipped): %s", sentence)
-                torch.cuda.empty_cache()
+                _free_gpu_cache()
                 continue
-
-            wav = _apply_fade(wavs[0].astype(np.float32))
 
             if i == 0:
                 if prev_speaker is not None:
@@ -299,103 +322,51 @@ def _synthesize_chunks(
                 prev_speaker = speaker
             else:
                 segments.append(sentence_gap.copy())
-
             segments.append(wav)
-            torch.cuda.empty_cache()
+        # 显存缓存在批结束时统一释放：逐句 empty_cache 会让分配器反复归还再申请，反而更慢
 
     return np.concatenate(segments) if segments else np.array([], dtype=np.float32)
 
 
-def synthesize_dialogue(
-    transcript: list[TranscriptEntrySchema],
-    model: _ChatTTSHandle,
-    voice_map: dict[str, str],
-    pause_switch_ms: int,
-) -> np.ndarray:
-    """单批合成全部转写段落，返回 float32 numpy 数组（采样率 SAMPLE_RATE = 24000）。"""
-    chunks = _merge_by_speaker(transcript)
-    if not chunks:
-        return np.array([], dtype=np.float32)
-    return _synthesize_chunks(chunks, model, voice_map, pause_switch_ms, 40, 2, 4, 0)
+def _split_into_batches(chunks: list[tuple[str, str]], batch_chars: int) -> list[list[tuple[str, str]]]:
+    """按字符数把 chunks 分成若干批：批与批之间清空显存缓存，防止长文本累积碎片。"""
+    batches: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    current_chars = 0
+    for chunk in chunks:
+        chunk_len = len(chunk[1])
+        if current and current_chars + chunk_len > batch_chars:
+            batches.append(current)
+            current, current_chars = [chunk], chunk_len
+        else:
+            current.append(chunk)
+            current_chars += chunk_len
+    if current:
+        batches.append(current)
+    return batches
 
 
 def synthesize_chunks_batched(
     chunks: list[tuple[str, str]],
     model: _ChatTTSHandle,
     voice_map: dict[str, str],
-    pause_switch_ms: int,
-    batch_chars: int,
+    params: SynthesisParams,
     work_dir: Path,
-    max_sentence_chars: int = 40,
-    oral_level: int = 2,
-    break_level: int = 4,
-    laugh_level: int = 0,
-    energy_level: int = 5,
-    temperature: float = 0.1,
-    top_p: float = 0.7,
-    top_k: int = 20,
-    max_new_token: int = 2048,
 ) -> list[Path]:
-    """直接接受预处理的 chunks 分批合成（供口语改写后的调用路径使用）。"""
-    return _batched_from_chunks(
-        chunks, model, voice_map, pause_switch_ms, batch_chars, work_dir,
-        max_sentence_chars, oral_level, break_level, laugh_level, energy_level,
-        temperature, top_p, top_k, max_new_token,
-    )
-
-
-def _batched_from_chunks(
-    chunks: list[tuple[str, str]],
-    model: _ChatTTSHandle,
-    voice_map: dict[str, str],
-    pause_switch_ms: int,
-    batch_chars: int,
-    work_dir: Path,
-    max_sentence_chars: int,
-    oral_level: int,
-    break_level: int,
-    laugh_level: int,
-    energy_level: int = 5,
-    temperature: float = 0.1,
-    top_p: float = 0.7,
-    top_k: int = 20,
-    max_new_token: int = 2048,
-) -> list[Path]:
-    """将 chunks 分批合成为 WAV 文件，返回所有临时路径。"""
+    """把 chunks 分批合成为 WAV 文件，返回各批的临时路径。"""
     import torch
 
-    if not chunks:
-        return []
-
-    batches: list[list[tuple[str, str]]] = []
-    current_batch: list[tuple[str, str]] = []
-    current_chars = 0
-    for chunk in chunks:
-        chunk_len = len(chunk[1])
-        if current_batch and current_chars + chunk_len > batch_chars:
-            batches.append(current_batch)
-            current_batch = [chunk]
-            current_chars = chunk_len
-        else:
-            current_batch.append(chunk)
-            current_chars += chunk_len
-    if current_batch:
-        batches.append(current_batch)
-
-    total_batches = len(batches)
+    batches = _split_into_batches(chunks, params.batch_chars)
     parts: list[Path] = []
 
     for idx, batch in enumerate(batches):
-        batch_text_chars = sum(len(c[1]) for c in batch)
-        logger.info("Batch %d/%d (%d chars, %d chunks)", idx + 1, total_batches, batch_text_chars, len(batch))
-
-        audio = _synthesize_chunks(
-            batch, model, voice_map, pause_switch_ms,
-            max_sentence_chars, oral_level, break_level, laugh_level, energy_level,
-            temperature, top_p, top_k, max_new_token,
+        logger.info(
+            "Batch %d/%d (%d chars, %d chunks)",
+            idx + 1, len(batches), sum(len(c[1]) for c in batch), len(batch),
         )
+        audio = _synthesize_chunks(batch, model, voice_map, params)
         if len(audio) == 0:
-            logger.warning("Batch %d/%d produced no audio, skipping", idx + 1, total_batches)
+            logger.warning("Batch %d/%d produced no audio, skipping", idx + 1, len(batches))
             continue
 
         part_path = work_dir / f"synthesis_part_{len(parts)}.wav"
@@ -403,68 +374,34 @@ def _batched_from_chunks(
         parts.append(part_path)
 
         del audio
-        torch.cuda.synchronize()
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        logger.info(
-            "Batch %d/%d done → %s | VRAM alloc=%.2fGB reserved=%.2fGB",
-            idx + 1, total_batches, part_path.name,
-            torch.cuda.memory_allocated() / 1024**3,
-            torch.cuda.memory_reserved() / 1024**3,
-        )
+        _free_gpu_cache()
+        if torch.cuda.is_available():
+            logger.info(
+                "Batch %d/%d done → %s | VRAM alloc=%.2fGB reserved=%.2fGB",
+                idx + 1, len(batches), part_path.name,
+                torch.cuda.memory_allocated() / 1024**3,
+                torch.cuda.memory_reserved() / 1024**3,
+            )
 
     return parts
 
 
-def synthesize_dialogue_batched(
-    transcript: list[TranscriptEntrySchema],
-    model: _ChatTTSHandle,
-    voice_map: dict[str, str],
-    pause_switch_ms: int,
-    batch_chars: int,
-    work_dir: Path,
-    max_sentence_chars: int = 40,
-    oral_level: int = 2,
-    break_level: int = 4,
-    laugh_level: int = 0,
-) -> list[Path]:
-    """从转写记录合并 chunks 后分批合成（不经过口语改写的调用路径）。"""
-    chunks = _merge_by_speaker(transcript)
-    return _batched_from_chunks(
-        chunks, model, voice_map, pause_switch_ms, batch_chars, work_dir,
-        max_sentence_chars, oral_level, break_level, laugh_level,
-    )
-
-
 async def concat_parts_to_mp3(parts: list[Path], dest: Path) -> None:
-    """将多个 WAV 片段用 ffmpeg concat 拼接为 192k MP3。"""
+    """将多个 WAV 片段用 ffmpeg 拼接并编码为 192k MP3。"""
+    concat_list: Path | None = None
     if len(parts) == 1:
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(parts[0]),
-            "-codec:a", "libmp3lame", "-b:a", "192k",
-            str(dest),
-        ]
+        source_args = ["-i", str(parts[0])]
+    else:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            concat_list = Path(f.name)
+            for p in parts:
+                f.write(f"file '{p}'\n")
+        source_args = ["-f", "concat", "-safe", "0", "-i", str(concat_list)]
+    try:
+        cmd = ["ffmpeg", "-y", *source_args, "-codec:a", "libmp3lame", "-b:a", "192k", str(dest)]
         rc, stderr = await ffmpeg_run(cmd, timeout=300)
         if rc != 0:
             raise RuntimeError(f"ffmpeg MP3 encode failed: {stderr}")
-        return
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        concat_list = Path(f.name)
-        for p in parts:
-            f.write(f"file '{p}'\n")
-    try:
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", str(concat_list),
-            "-codec:a", "libmp3lame", "-b:a", "192k",
-            str(dest),
-        ]
-        rc, stderr = await ffmpeg_run(cmd, timeout=300)
-        if rc != 0:
-            raise RuntimeError(f"ffmpeg concat+encode failed: {stderr}")
     finally:
-        concat_list.unlink(missing_ok=True)
+        if concat_list is not None:
+            concat_list.unlink(missing_ok=True)

@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from copernicus.services.corrector import CorrectorService
 from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
 
@@ -26,9 +25,8 @@ def mock_client() -> MagicMock:
 def mock_pipeline() -> MagicMock:
     """Create a mocked PipelineService for router tests."""
     pipeline = MagicMock(spec=PipelineService)
-    pipeline._asr = MagicMock()
-    pipeline._corrector = MagicMock(spec=CorrectorService)
-    pipeline._corrector.is_reachable = AsyncMock(return_value=True)
+    pipeline.asr = MagicMock()
+    pipeline.llm_reachable = AsyncMock(return_value=True)
     return pipeline
 
 

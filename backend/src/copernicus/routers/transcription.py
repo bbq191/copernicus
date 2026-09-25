@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 
 from copernicus.config import settings
 from copernicus.dependencies import get_model_manager, get_pipeline, get_task_store
@@ -33,7 +33,6 @@ async def liveness() -> dict[str, str]:
     summary="服务健康检查",
 )
 async def health(
-    response: Response,
     pipeline: PipelineService = Depends(get_pipeline),
     model_manager: ModelManager | None = Depends(get_model_manager),
     store: TaskStore = Depends(get_task_store),
@@ -42,22 +41,19 @@ async def health(
 
     `status` 取值：
     - `healthy`: ASR 已加载且 LLM 可达
-    - `degraded`: ASR 未在 VRAM（将自动重载）或 LLM 暂不可达
-    - `unhealthy`: ASR 服务未配置，503 响应
+    - `degraded`: ASR 权重已卸载（将自动重载）、LLM 暂不可达或 TTS 模型文件缺失
+    - `unhealthy`: 保留值，当前不会返回
 
     `vram.estimated_used_gb` 仅统计通过 ModelManager 管理的模型，Ollama 进程占用需另行查看。
     """
-    # ASR
-    if pipeline._asr is None:
-        asr = ComponentStatus(status="down", detail="ASR service not configured")
-    elif pipeline._asr.is_loaded():
+    # ASR：权重被卸载（如给 TTS 腾显存）是正常状态，下次转写会自动重载
+    if pipeline.asr.is_loaded():
         asr = ComponentStatus(status="ok")
     else:
         asr = ComponentStatus(status="degraded", detail="weights unloaded, will reload on next transcription")
 
     # LLM
-    llm_ok = await pipeline._corrector.is_reachable()
-    llm = ComponentStatus(status="ok" if llm_ok else "down")
+    llm = ComponentStatus(status="ok" if await pipeline.llm_reachable() else "down")
 
     # TTS
     tts: ComponentStatus | None = None
@@ -70,15 +66,10 @@ async def health(
             tts = ComponentStatus(status="down", detail=f"model directory not found: {settings.chattts_model_dir}")
 
     # Overall status
-    if asr.status == "down":
-        overall = "unhealthy"
-    elif asr.status == "degraded" or llm.status == "down" or (tts is not None and tts.status == "down"):
+    if asr.status == "degraded" or llm.status == "down" or (tts is not None and tts.status == "down"):
         overall = "degraded"
     else:
         overall = "healthy"
-
-    if overall == "unhealthy":
-        response.status_code = 503
 
     # VRAM
     vram: VramStatus | None = None

@@ -40,6 +40,7 @@ from copernicus.services.model_manager import ModelManager
 from copernicus.services.ocr import OCRService
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.synthesis import SynthesisService
 from copernicus.services.task_store import TaskStore
 from copernicus.services.template_manager import TemplateManager
 from copernicus.services.upload_session import UploadSessionService
@@ -115,6 +116,7 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
         template_manager=app.state.template_manager,
     )
     app.state.task_store.restore_from_disk()
+    app.state.synthesis = SynthesisService(app.state.task_store, model_manager, settings)
 
     # 后台定时清理：过期媒体、失败任务、中断上传与存储配额
     lifecycle = LifecycleService(
@@ -138,6 +140,9 @@ async def lifespan(app: FastAPI):
         task_store = getattr(app.state, "task_store", None)
         if task_store is not None:
             await task_store.cancel_all()
+        synthesis = getattr(app.state, "synthesis", None)
+        if synthesis is not None:
+            await synthesis.cancel_all()
         if lifecycle_task is not None:
             lifecycle_task.cancel()
             await asyncio.gather(lifecycle_task, return_exceptions=True)

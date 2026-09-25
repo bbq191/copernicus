@@ -642,7 +642,7 @@ class ASRService:
             return []
 
         try:
-            speech, sample_rate = sf.read(str(audio_path))
+            speech, sample_rate = sf.read(str(audio_path), dtype="float32")  # 默认 float64，长音频内存翻倍
         except Exception as e:
             logger.warning("Failed to read audio for diarization: %s", e)
             return []

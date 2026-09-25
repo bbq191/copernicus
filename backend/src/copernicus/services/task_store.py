@@ -164,9 +164,13 @@ class TaskStore:
     def invalidate_task(self, task_id: str) -> bool:
         """从内存和哈希索引中移除任务，使同一文件可以重新提交处理。
 
-        不删除磁盘上的任何文件，仅清除缓存状态。
+        不删除磁盘上的任何文件，仅清除缓存状态。运行中的任务不允许（协程仍在写结果，
+        移出后它既不受 ensure_capacity 计数、也无法再被取消）。
         返回 True 表示任务存在并已清除，False 表示任务不在内存中。
         """
+        running = self._tasks.get(task_id)
+        if running is not None and running.status not in TERMINAL_STATUSES:
+            raise TaskBusyError(f"Task {task_id} is still running")
         task = self._tasks.pop(task_id, None)
         self._invalidated.add(task_id)
         stale_hashes = [h for h, tid in self._hash_index.items() if tid == task_id]
@@ -308,11 +312,10 @@ class TaskStore:
 
     def purge_task(self, task_id: str) -> bool:
         """彻底删除任务：内存状态、哈希索引与磁盘上的全部文件。运行中的任务不允许删除。"""
-        task = self.get(task_id)
         job = self._synthesis_jobs.get(task_id)
-        if (task and task.status not in TERMINAL_STATUSES) or (job and job.status == "running"):
-            raise TaskBusyError(f"Task {task_id} is still running")
-        invalidated = self.invalidate_task(task_id)
+        if job and job.status == "running":
+            raise TaskBusyError(f"Task {task_id} has a synthesis in progress")
+        invalidated = self.invalidate_task(task_id)  # 运行中的任务在这里被拒绝
         deleted = self._persistence.delete_task(task_id)
         self._synthesis_jobs.pop(task_id, None)
         return invalidated or deleted
@@ -751,7 +754,7 @@ class TaskStore:
         try:
             evaluation = await self._evaluate_text(task, full_text, template_id)
         except Exception as e:
-            logger.warning("Task %s: summary failed, transcript kept: %s", task.task_id, e, exc_info=True)
+            logger.warning("Task %s: summary failed, transcript kept: %s", task.task_id, e)
             return
         self._persistence.save_json(task.task_id, "evaluation.json", evaluation)
         logger.info("Task %s: summary generated (template=%s)", task.task_id, template_id)
@@ -780,7 +783,6 @@ class TaskStore:
 
             # 从持久化层加载 OCR 数据（如果存在）
             ocr_results: list[dict] | None = None
-            visual_events: list[dict] | None = None
             source_task_id = task.parent_task_id or task_id
             ocr_data = self._persistence.load_json(source_task_id, "ocr_results.json")
             if ocr_data and isinstance(ocr_data, list):
@@ -790,9 +792,6 @@ class TaskStore:
                     len(ocr_results),
                     source_task_id,
                 )
-            ve_data = self._persistence.load_json(source_task_id, "visual_events.json")
-            if ve_data and isinstance(ve_data, list):
-                visual_events = ve_data
 
             report = await self._compliance.audit(
                 rules,
@@ -800,7 +799,6 @@ class TaskStore:
                 few_shot_examples=few_shot_examples,
                 on_progress=task.set_progress,
                 ocr_results=ocr_results,
-                visual_events=visual_events,
             )
             elapsed_ms = (time.perf_counter() - start) * 1000
 

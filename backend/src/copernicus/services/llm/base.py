@@ -11,16 +11,11 @@ logger = logging.getLogger(__name__)
 
 _RETRYABLE_TRANSPORT_ERRORS = (
     httpx.ReadTimeout,
+    httpx.ConnectTimeout,  # 不是 ConnectError 的子类，需单独列出
     httpx.ConnectError,
     httpx.RemoteProtocolError,  # 流式响应被对端中断
     httpx.ReadError,
 )
-
-
-@dataclass(frozen=True)
-class ChatMessage:
-    role: str
-    content: str
 
 
 @dataclass(frozen=True)

@@ -8,14 +8,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class KeyFrame(BaseModel):
-    """A single extracted keyframe from video."""
-
-    index: int
-    timestamp_ms: int
-    path: str
-
-
 class OCRRecord(BaseModel):
     """OCR recognition result for a keyframe."""
 
@@ -34,11 +26,3 @@ class VisualEvent(BaseModel):
     end_ms: int
     confidence: float
     frame_path: str | None = None
-
-
-class VisualAnalysisResult(BaseModel):
-    """Aggregated visual analysis output."""
-
-    keyframes: list[KeyFrame] = Field(default_factory=list)
-    ocr_records: list[OCRRecord] = Field(default_factory=list)
-    visual_events: list[VisualEvent] = Field(default_factory=list)

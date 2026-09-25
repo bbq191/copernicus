@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,9 @@ class FaceDetectorService:
         self._confidence = settings.face_detect_confidence
         self._missing_threshold_ms = settings.face_missing_threshold_ms
         self._model = None
+        # detect_frame 在工作线程里被多个任务并发调用：加载只能发生一次；
+        # ultralytics 模型实例不保证线程安全，且 CPU 推理本身已用满多核，串行执行既安全也不吃亏
+        self._lock = threading.Lock()
 
     def _ensure_model(self) -> None:
         if self._model is not None:
@@ -42,12 +46,12 @@ class FaceDetectorService:
 
     def detect_frame(self, image_path: str) -> list[dict]:
         """在单帧图像中检测人脸。同步方法，需通过 to_thread 调用。"""
-        self._ensure_model()
-        assert self._model is not None
-
-        results = self._model.predict(
-            source=image_path, device="cpu", conf=self._confidence, verbose=False
-        )
+        with self._lock:
+            self._ensure_model()
+            assert self._model is not None
+            results = self._model.predict(
+                source=image_path, device="cpu", conf=self._confidence, verbose=False
+            )
         faces: list[dict] = []
         if results and len(results) > 0:
             for box in results[0].boxes:

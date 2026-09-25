@@ -1,5 +1,4 @@
-from copernicus.services.asr import Segment
-from copernicus.utils.text import chunk_text, group_segments, merge_chunks
+from copernicus.utils.text import chunk_text, format_timestamp, split_sentences
 
 
 class TestChunkText:
@@ -26,67 +25,21 @@ class TestChunkText:
         text = "a" * 300
         chunks = chunk_text(text, chunk_size=100, overlap=20)
         assert len(chunks) > 1
-        # Reconstruct should cover the entire text
-        merged = merge_chunks(chunks, overlap=20)
-        assert len(merged) >= len(text) - 20  # allow small variance from overlap
+        # 相邻块重叠 overlap 个字符，保证跨块的句子不被切断
+        assert chunks[0][-20:] == chunks[1][:20]
 
 
-class TestMergeChunks:
-    def test_empty_list(self):
-        assert merge_chunks([]) == ""
+class TestSplitSentences:
+    def test_splits_after_sentence_terminators(self):
+        assert split_sentences("你好。今天开会！好吗？") == ["你好。", "今天开会！", "好吗？"]
 
-    def test_single_chunk(self):
-        assert merge_chunks(["hello"]) == "hello"
-
-    def test_multiple_chunks_skip_overlap(self):
-        chunks = ["ABCDE", "CDE_FG", "E_FGHIJ"]
-        result = merge_chunks(chunks, overlap=3)
-        # First chunk fully kept, subsequent chunks skip first 3 chars
-        assert result == "ABCDE" + "_FG" + "GHIJ"
-
-    def test_overlap_larger_than_chunk(self):
-        chunks = ["AB", "X"]
-        result = merge_chunks(chunks, overlap=5)
-        # overlap > len(chunk), so skip entire second chunk
-        assert result == "AB"
+    def test_empty_and_unpunctuated_text(self):
+        assert split_sentences("") == []
+        assert split_sentences("没有标点") == ["没有标点"]
 
 
-class TestGroupSegments:
-    def test_empty_segments(self):
-        assert group_segments([]) == []
-
-    def test_single_segment(self):
-        segs = [Segment(text="hello", start_ms=0, end_ms=100)]
-        groups = group_segments(segs, chunk_size=800)
-        assert len(groups) == 1
-        assert groups[0] == segs
-
-    def test_groups_within_chunk_size(self):
-        segs = [
-            Segment(text="a" * 400, start_ms=0, end_ms=100),
-            Segment(text="b" * 400, start_ms=100, end_ms=200),
-        ]
-        groups = group_segments(segs, chunk_size=800)
-        assert len(groups) == 1
-
-    def test_splits_when_exceeding_chunk_size(self):
-        segs = [
-            Segment(text="a" * 500, start_ms=0, end_ms=100),
-            Segment(text="b" * 500, start_ms=100, end_ms=200),
-        ]
-        groups = group_segments(segs, chunk_size=800)
-        assert len(groups) == 2
-        assert groups[0] == [segs[0]]
-        assert groups[1] == [segs[1]]
-
-    def test_multiple_groups(self):
-        segs = [
-            Segment(text="a" * 300, start_ms=0, end_ms=100),
-            Segment(text="b" * 300, start_ms=100, end_ms=200),
-            Segment(text="c" * 300, start_ms=200, end_ms=300),
-            Segment(text="d" * 300, start_ms=300, end_ms=400),
-        ]
-        groups = group_segments(segs, chunk_size=800)
-        assert len(groups) == 2
-        assert len(groups[0]) == 2
-        assert len(groups[1]) == 2
+class TestFormatTimestamp:
+    def test_minutes_and_seconds_are_zero_padded(self):
+        assert format_timestamp(0) == "00:00"
+        assert format_timestamp(65_000) == "01:05"
+        assert format_timestamp(3_725_000) == "62:05"

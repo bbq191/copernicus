@@ -196,6 +196,19 @@ class Settings(BaseSettings):
     def video_extensions_set(self) -> frozenset[str]:
         return frozenset(e.strip().lower() for e in self.video_extensions.split(",") if e.strip())
 
+    @property
+    def required_asr_model_ids(self) -> list[str]:
+        """当前 ASR 模式需要的 ModelScope 模型 ID（已剔除未配置项）。
+
+        Paraformer 模式的 spk 模型随主模型一起加载；SenseVoice 模式的 spk 模型单独加载，
+        两种模式都需要它才能做说话人分离，因此清单结构一致。
+        """
+        if self.asr_mode == "sensevoice":
+            ids = [self.sensevoice_model_dir, self.vad_model_dir, self.spk_model_dir]
+        else:
+            ids = [self.asr_model_dir, self.vad_model_dir, self.punc_model_dir, self.spk_model_dir]
+        return [mid for mid in ids if mid]
+
     def resolve_asr_device(self) -> str:
         import logging
         _logger = logging.getLogger(__name__)

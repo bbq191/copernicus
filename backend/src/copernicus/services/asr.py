@@ -172,16 +172,7 @@ class ASRService:
             model_kwargs["spk_model"] = settings.spk_model_dir
             logger.info("  SPK model: %s", settings.spk_model_dir)
 
-        _model_ids = [
-            mid for mid in [
-                settings.asr_model_dir,
-                settings.vad_model_dir if settings.vad_model_dir else None,
-                settings.punc_model_dir if settings.punc_model_dir else None,
-                settings.spk_model_dir if settings.spk_model_dir else None,
-            ]
-            if mid
-        ]
-        _missing = [mid for mid in _model_ids if not _is_modelscope_cached(mid)]
+        _missing = [mid for mid in settings.required_asr_model_ids if not _is_modelscope_cached(mid)]
         if _missing:
             logger.info("=" * 60)
             logger.info("  [DOWNLOAD] Models not in cache — downloading now")

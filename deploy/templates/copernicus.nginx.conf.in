@@ -1,0 +1,73 @@
+# Copernicus 反向代理：前端静态资源 + 后端 API 同源
+# 代理的公共设置写在 server 层，各 location 只保留差异项
+
+server {
+    listen 80;
+    server_name @SERVER_NAME@;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    gzip on;
+    gzip_types application/json text/plain text/css application/javascript image/svg+xml;
+    gzip_min_length 1024;
+    gzip_vary on;
+
+    # 公共代理设置（location 内未再声明 proxy_set_header 时自动继承）
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    root @WEB_ROOT@;
+
+    # 带内容哈希的构建产物：长期缓存，浏览器不再重复请求
+    # （用 expires 而非 add_header：后者会让 server 层的安全响应头在此 location 失效）
+    location /assets/ {
+        expires 1y;
+        try_files $uri =404;
+    }
+
+    # SPA 入口：不缓存，保证发布后立即生效；其余前端路由回退到 index.html
+    location / {
+        expires epoch;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Swagger / ReDoc：仅本机访问，生产环境禁止公网暴露
+    location ~ ^/(docs|redoc|openapi\.json)(/|$) {
+        allow 127.0.0.1;
+        deny all;
+        proxy_pass http://127.0.0.1:@PORT@;
+    }
+
+    # 分片上传：流式转发，不等待完整请求体
+    location /api/v1/uploads/ {
+        proxy_pass http://127.0.0.1:@PORT@;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+        client_max_body_size 15000m;
+    }
+
+    # 媒体/关键帧/合成音频下载与合成提交：响应流式透传
+    # 合成提交在启用 LLM 改写时会等待 5-15 秒才返回 202，超时需覆盖
+    location /api/v1/tasks/ {
+        proxy_pass http://127.0.0.1:@PORT@;
+        proxy_buffering off;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+        client_max_body_size 15000m;
+    }
+
+    # 其余 API：请求体上限 2m（评估请求体在应用层限制为 500KB）；LLM 评估最慢约 2 分钟
+    location /api/ {
+        proxy_pass http://127.0.0.1:@PORT@;
+        proxy_read_timeout 300;
+        proxy_send_timeout 300;
+        client_max_body_size 2m;
+    }
+}

@@ -1,0 +1,40 @@
+[Unit]
+Description=Copernicus Backend (FastAPI)
+After=network.target ollama.service
+Wants=ollama.service
+# 启动失败（如模型缺失）时限制重试次数，避免反复加载模型空耗 CPU/GPU
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@APP_DIR@/backend
+# 应用配置由 pydantic 直接读取 WorkingDirectory 下的 .env（支持行内注释），
+# 因此不使用 EnvironmentFile；下面三项是进程级环境，不属于应用配置字段
+Environment="HF_HUB_OFFLINE=1"
+Environment="MODELSCOPE_CACHE=@APP_DIR@/backend/models/funasr"
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+# 单 worker：GPU 锁与内存 TaskStore 无法跨进程共享
+# 关闭 access log：前端每 2 秒轮询一次，逐条写日志只增加磁盘与 CPU 开销
+ExecStart=@APP_DIR@/backend/.venv/bin/uvicorn copernicus.main:app \
+    --host 127.0.0.1 \
+    --port @PORT@ \
+    --workers 1 \
+    --timeout-keep-alive 120 \
+    --no-access-log
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+# 关停时后端会取消排队/LLM 阶段的任务并落盘，留出时间
+TimeoutStopSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

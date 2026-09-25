@@ -73,6 +73,7 @@ backend/src/copernicus/
     rule_registry.py      #   结构化规则注册表
     llm/                  #   LLM 客户端包：base（重试 + 并发）/ ollama / openai_compat / 工厂
     persistence.py        #   JSON 文件持久化 + 去重
+    task_state.py         #   任务内存态：状态集合、TaskInfo（含进度计算）、合成任务记录
     task_store.py         #   任务生命周期管理
     template_manager.py   #   纪要模板加载与热重载（Markdown + frontmatter）
     model_manager.py      #   GPU 模型生命周期管理（ASR↔TTS 互斥）

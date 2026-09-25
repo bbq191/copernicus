@@ -45,15 +45,16 @@ frontend/src/
     summary/        #   智能摘要（Markdown 渲染 + 模板选择）
     synthesis/      #   TTS 音频合成与播放
     compliance/     #   合规审核与违规管理
-    shared/         #   通用组件（加载、错误、Toast、骨架屏、主题）
-  hooks/            # 自定义 Hooks（轮询、同步、滚动、导出、快捷键）
+    shared/         #   通用组件（加载、错误、错误边界、完整性警示条、Toast、骨架屏、主题）
+  hooks/            # 自定义 Hooks（轮询、同步、滚动、导出、快捷键、转写校对、历史任务）
   stores/           # Zustand 状态仓库（7 个独立 store）
   types/            # TypeScript 类型定义
-  utils/            # 纯函数工具（时间格式化、聚合、搜索、导出生成）
+  utils/            # 纯函数工具（时间格式化、聚合、搜索、导出生成、完整性提示文案）
+                    # 单元测试与源码同目录（*.test.ts，Vitest，node 环境；覆盖工具函数、store、轮询逻辑）
     chunkedUpload.ts#   分片上传协议实现（断点续传）
     fileHash.ts     #   hash-wasm 分块计算 SHA-256（8 MB/块）
   pages/            # 页面级组件（3 个路由页面）
-  App.tsx           # 路由配置入口
+  App.tsx           # 路由配置入口（工作区与健康页按路由懒加载，外层包裹 ErrorBoundary）
   main.tsx          # 应用挂载点
 ```
 
@@ -482,7 +483,7 @@ completed 时执行顺序:
 
 ### 7.5 useExport
 
-返回 isExporting 状态和 exportAs 方法，统一封装 SRT / Word / PDF 三种导出格式，成功或失败通过 Toast 通知用户。
+返回 isExporting 状态和 exportAs 方法，统一封装 SRT / Word / PDF 三种导出格式，成功或失败通过 Toast 通知用户。Word 与 PDF 依赖 docx、jspdf、html2canvas 等大体积库，仅在用户点击导出时动态加载，不计入首屏体积。
 
 ### 7.6 useAuditKeyboard
 

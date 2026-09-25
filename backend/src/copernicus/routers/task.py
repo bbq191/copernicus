@@ -5,8 +5,6 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-_SAFE_FILENAME_RE = re.compile(r'^[A-Za-z0-9_.-]+$')
-
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse
 
@@ -28,6 +26,8 @@ from copernicus.schemas.task import (
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.task_store import TaskStore
 from copernicus.utils.request import parse_hotwords
+
+_SAFE_FILENAME_RE = re.compile(r'^[A-Za-z0-9_.-]+$')
 
 # 不设置 router 级 tags，各路由按逻辑层单独标注
 router = APIRouter(prefix="/api/v1")

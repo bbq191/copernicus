@@ -377,7 +377,7 @@ class ComplianceService:
                 for r in ocr_records
             ]
             user_parts.append(
-                f"【屏幕文字（OCR）】\n" + "\n".join(ocr_lines)
+                "【屏幕文字（OCR）】\n" + "\n".join(ocr_lines)
             )
 
         user_parts.append(

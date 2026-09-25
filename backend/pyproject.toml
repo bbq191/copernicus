@@ -33,6 +33,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
+    "ruff>=0.6",
 ]
 
 [build-system]
@@ -45,3 +46,17 @@ packages = ["src/copernicus"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["models", "uploads"]
+
+[tool.ruff.lint]
+# 只启用能发现真实缺陷的规则：语法错误、未定义/未使用名称、导入位置
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# 这两处必须先设置环境变量/日志，再导入 torch、funasr 等（导入顺序是有意的）
+"src/copernicus/main.py" = ["E402"]
+"src/copernicus/services/tts.py" = ["E402"]

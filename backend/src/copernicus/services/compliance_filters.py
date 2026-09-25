@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from typing import TYPE_CHECKING
 
 from pypinyin import lazy_pinyin

@@ -1,7 +1,6 @@
 """单元测试：tts 服务层的合并逻辑与音频拼接（无需 GPU 或真实 TTS 模型）。"""
 
 import numpy as np
-import pytest
 
 from copernicus.schemas.transcription import TranscriptEntrySchema
 from copernicus.services.tts import (

@@ -14,7 +14,7 @@ from copernicus.schemas.synthesis import SynthesisRequest, SynthesisStatusRespon
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.llm import LLMClient, OllamaClient
 from copernicus.services.model_manager import ModelManager
-from copernicus.services.task_store import LLM_ACTIVE_STATUSES, TaskStore
+from copernicus.services.task_store import TaskStore
 import copernicus.services.tts as tts_service
 
 logger = logging.getLogger(__name__)

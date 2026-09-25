@@ -16,7 +16,8 @@ logs/       开发日志（每 8 小时一个文件）
 ## 快速开始
 
 - **后端**：进入 `backend/`，按 `.env.example` 准备 `.env`（LLM 地址、ASR 模式等），模型放入 `models/`（可用 `scripts/download_models.py` 预下载），运行 `python run_dev.py`（默认 8000 端口）。
-- **前端**：进入 `frontend/`，`pnpm install && pnpm dev`（默认 3000 端口，已配置 API 代理）。
+- **前端**：进入 `frontend/`，`npm install && npm run dev`（默认 3000 端口，已配置 API 代理；仓库同时保留 `package-lock.json` 与 `pnpm-lock.yaml`，使用 pnpm 亦可）。
+- **开发检查**：后端在 `backend/` 下执行 `ruff check src tests` 与 `pytest -q`（测试全部使用 mock，不需要 GPU 或模型）；前端在 `frontend/` 下执行 `npx tsc -b`、`npm run lint`、`npm test`（Vitest，覆盖工具函数、store 与轮询逻辑）。GitHub Actions（`.github/workflows/ci.yml`）在推送与 PR 时运行同样的检查。
 - **生产部署**：见 `docs/prob/deployment-centos.md`（Rocky Linux 从裸机到上线的完整步骤）。
 
 ## 文档导航（docs/）

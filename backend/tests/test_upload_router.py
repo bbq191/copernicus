@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 
 from copernicus.config import Settings
 from copernicus.error_handlers import register_error_handlers
-from copernicus.exceptions import InvalidIdentifierError
 from copernicus.routers.upload import router as upload_router
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.task_store import TaskStore

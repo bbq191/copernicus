@@ -2,7 +2,6 @@ import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from copernicus.config import Settings
 from copernicus.services.pipeline.base import PipelineContext

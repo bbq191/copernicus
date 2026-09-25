@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResponse
-from copernicus.schemas.task import TaskProgress, TaskStatus, TaskSummary
+from copernicus.schemas.task import TaskStatus, TaskSummary
 from copernicus.schemas.transcription import (
     TranscriptEntrySchema,
     TranscriptResponse,
@@ -26,23 +26,16 @@ from copernicus.services.evaluator import EvaluatorService
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.task_state import (
+    LLM_ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
+    SynthesisJob,
+    TaskInfo,
+)
 from copernicus.services.template_manager import TemplateManager
 from copernicus.services.transcript_edit import apply_speaker_renames, apply_text_edits
 
 logger = logging.getLogger(__name__)
-
-# Statuses where the LLM (Ollama) is actively occupying VRAM.
-# Used by the synthesis router to reject concurrent TTS requests.
-LLM_ACTIVE_STATUSES: frozenset[TaskStatus] = frozenset({
-    TaskStatus.CORRECTING,
-    TaskStatus.EVALUATING,
-    TaskStatus.AUDITING,
-})
-
-TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset({
-    TaskStatus.COMPLETED,
-    TaskStatus.FAILED,
-})
 
 # 服务重启时仍无结果的任务：进程内状态已丢失，只能标记为失败
 _INTERRUPTED_MESSAGE = "服务重启导致任务中断，请重新转写或重新上传"
@@ -68,93 +61,6 @@ _PIPELINE_STAGE_STATUS: dict[str, "TaskStatus"] = {
 }
 
 
-class TaskInfo:
-    __slots__ = (
-        "task_id",
-        "status",
-        "current_chunk",
-        "total_chunks",
-        "result",
-        "error",
-        "eval_only",
-        "audio_path",
-        "parent_task_id",
-    )
-
-    def __init__(
-        self,
-        task_id: str,
-        *,
-        eval_only: bool = False,
-        parent_task_id: str | None = None,
-    ) -> None:
-        self.task_id = task_id
-        self.status = TaskStatus.PENDING
-        self.current_chunk = 0
-        self.total_chunks = 0
-        self.result: (
-            EvaluationResponse
-            | TranscriptResponse
-            | ComplianceResponse
-            | None
-        ) = None
-        self.error: str | None = None
-        self.eval_only = eval_only
-        self.audio_path: str | None = None
-        self.parent_task_id = parent_task_id
-
-    @property
-    def progress(self) -> TaskProgress:
-        if self.status == TaskStatus.PENDING:
-            percent = 0.0
-        elif self.status == TaskStatus.EXTRACTING_FRAMES:
-            percent = 5.0
-        elif self.status == TaskStatus.SCANNING_VISUAL:
-            if self.total_chunks > 0:
-                percent = 5.0 + (self.current_chunk / self.total_chunks) * 15.0
-            else:
-                percent = 10.0
-        elif self.status == TaskStatus.PROCESSING_ASR:
-            percent = 20.0
-        elif self.status == TaskStatus.CORRECTING and self.total_chunks > 0:
-            percent = 20.0 + (self.current_chunk / self.total_chunks) * 70.0
-        elif self.status == TaskStatus.AUDITING:
-            if self.total_chunks > 0:
-                percent = (self.current_chunk / self.total_chunks) * 100.0
-            else:
-                percent = 0.0
-        elif self.status == TaskStatus.EVALUATING:
-            if self.eval_only:
-                if self.total_chunks > 0:
-                    percent = (self.current_chunk / self.total_chunks) * 100.0
-                else:
-                    percent = 0.0
-            else:
-                if self.total_chunks > 0:
-                    percent = 90.0 + (self.current_chunk / self.total_chunks) * 10.0
-                else:
-                    percent = 90.0
-        elif self.status == TaskStatus.COMPLETED:
-            percent = 100.0
-        else:
-            percent = 20.0 + (self.current_chunk / max(self.total_chunks, 1)) * 70.0
-        return TaskProgress(
-            current_chunk=self.current_chunk,
-            total_chunks=self.total_chunks,
-            percent=round(percent, 1),
-        )
-
-
-class _SynthesisJob:
-    __slots__ = ("status", "error", "duration_ms", "synthesis_time_ms")
-
-    def __init__(self) -> None:
-        self.status: str = "running"
-        self.error: str | None = None
-        self.duration_ms: float | None = None
-        self.synthesis_time_ms: float | None = None
-
-
 class TaskStore:
     def __init__(
         self,
@@ -171,7 +77,7 @@ class TaskStore:
         self._compliance = compliance
         self._persistence = persistence
         self._model_manager = model_manager
-        self._synthesis_jobs: dict[str, _SynthesisJob] = {}
+        self._synthesis_jobs: dict[str, SynthesisJob] = {}
         self._template_manager = template_manager
         self._task_timeout = settings.task_timeout_seconds
         self._max_tasks = settings.task_max_in_memory
@@ -209,10 +115,10 @@ class TaskStore:
         job = self._synthesis_jobs.get(task_id)
         if job is not None and job.status == "running":
             return False
-        self._synthesis_jobs[task_id] = _SynthesisJob()
+        self._synthesis_jobs[task_id] = SynthesisJob()
         return True
 
-    def get_synthesis_job(self, task_id: str) -> _SynthesisJob | None:
+    def get_synthesis_job(self, task_id: str) -> SynthesisJob | None:
         return self._synthesis_jobs.get(task_id)
 
     def finish_synthesis(self, task_id: str, duration_ms: float, synthesis_time_ms: float) -> None:

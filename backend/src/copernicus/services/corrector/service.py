@@ -145,13 +145,19 @@ class CorrectorService:
         # 阶段 2：热词强制替换（可选）
         # ============================================================
         if self._hotword_replacer is not None:
-            preprocessed_entries = self._hotword_replacer.replace_entries(preprocessed_entries)
+            # 纯 CPU 计算，放入线程：否则会在批量转写期间阻塞事件循环，导致轮询/健康检查无响应
+            preprocessed_entries = await asyncio.to_thread(
+                self._hotword_replacer.replace_entries, preprocessed_entries
+            )
 
         # ============================================================
         # 阶段 3：pycorrector 轻量级纠错（可选）
         # ============================================================
         if self._text_corrector is not None:
-            preprocessed_entries = self._text_corrector.correct_entries(preprocessed_entries)
+            # 首次调用会加载 MacBERT 模型（数秒到数十秒），推理也是逐条同步执行，必须离开事件循环
+            preprocessed_entries = await asyncio.to_thread(
+                self._text_corrector.correct_entries, preprocessed_entries
+            )
 
         # ============================================================
         # 阶段 4：LLM 润色

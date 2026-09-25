@@ -1,10 +1,13 @@
 """GPU 模型生命周期管理器。
 
-在显存受限的单 GPU 上管理重型模型（OCR、YOLO 等）的互斥加载。
-ASR 模型假定常驻显存，不在此处管理。
+单 GPU 显存有限，ASR、TTS 等重型模型不能同时常驻。本模块保证两件事：
 
-Phase 0：仅骨架和接口定义。具体加载器将在
-Phase 2（OCR）和 Phase 3（YOLO）中注册。
+1. 使用期间不会被卸载：`use()` 持有该模型的使用锁，`unload()` 必须等锁释放。
+   （否则转写任务正在跑、或在排队等 GPU 时，模型被卸载会得到 None 并失败。）
+2. 互斥加载：`use(..., exclusive=True)` 先卸载其他模型再加载自己，等待它们的使用者结束。
+
+使用锁是每个模型一把、按 FIFO 排队；只允许一个模型以 exclusive 方式获取（当前只有 TTS），
+因为两个 exclusive 使用者会互相等待对方的锁。
 
 作者：afu
 """
@@ -23,11 +26,11 @@ class ModelManager:
     """异步安全的单 GPU 模型加载/卸载管理器。"""
 
     def __init__(self) -> None:
-        self._lock = asyncio.Lock()
         self._loaded: dict[str, Any] = {}
         self._loaders: dict[str, Callable[[], Any]] = {}
         self._unloaders: dict[str, Callable[[Any], None]] = {}
         self._vram_estimates: dict[str, float] = {}
+        self._use_locks: dict[str, asyncio.Lock] = {}
 
     def register_loader(
         self,
@@ -54,48 +57,38 @@ class ModelManager:
     def estimated_vram_gb(self) -> float:
         return sum(self._vram_estimates.get(m, 0.0) for m in self._loaded)
 
-    async def ensure(self, model_type: str) -> None:
-        """确保指定模型已加载，不影响其他已加载模型（与 acquire() 不同）。"""
-        async with self._lock:
-            if model_type not in self._loaded:
-                await self._do_load(model_type)
+    def _use_lock(self, model_type: str) -> asyncio.Lock:
+        return self._use_locks.setdefault(model_type, asyncio.Lock())
 
     @asynccontextmanager
-    async def acquire(self, model_type: str):
-        """加载指定 model_type，必要时先卸载其他模型。
+    async def use(self, model_type: str, *, exclusive: bool = False, unload_after: bool = False):
+        """独占使用指定模型；未加载则先加载。持有期间该模型不会被卸载。
+
+        exclusive:    先卸载其他所有模型（会等它们的使用者结束）。
+        unload_after: 使用结束后立即卸载本模型，释放显存（用于偶发、体积大的模型）。
 
         用法::
 
-            async with manager.acquire("ocr") as model:
-                result = model.predict(image)
+            async with manager.use("asr") as model:
+                await asyncio.to_thread(model.transcribe, ...)
         """
-        async with self._lock:
-            # Unload other models to free VRAM
-            for name in list(self._loaded):
-                if name != model_type:
-                    await self._do_unload(name)
-
-            # Load requested model if not already loaded
+        async with self._use_lock(model_type):
+            if exclusive:
+                for name in list(self._loaded):
+                    if name != model_type:
+                        await self.unload(name)
             if model_type not in self._loaded:
                 await self._do_load(model_type)
-
-        try:
-            yield self._loaded[model_type]
-        finally:
-            # Model stays loaded for short-term reuse.
-            # Explicit unload() can be called to free VRAM immediately.
-            pass
+            try:
+                yield self._loaded[model_type]
+            finally:
+                if unload_after:
+                    await asyncio.shield(self._do_unload(model_type))
 
     async def unload(self, model_type: str) -> None:
-        """显式卸载指定模型并释放显存。"""
-        async with self._lock:
+        """卸载指定模型并释放显存；模型正被使用时等待其结束。"""
+        async with self._use_lock(model_type):
             await self._do_unload(model_type)
-
-    async def unload_all(self) -> None:
-        """卸载所有托管模型。"""
-        async with self._lock:
-            for name in list(self._loaded):
-                await self._do_unload(name)
 
     # -- internal --------------------------------------------------------
 

@@ -43,7 +43,7 @@ class PipelineContext:
 
     # Input
     task_id: str = ""
-    audio_bytes: bytes | None = None
+    media_path: Path | None = None  # 已落盘的原始音/视频文件；管线不在内存中持有文件内容
     filename: str = ""
     hotwords: list[str] | None = None
 

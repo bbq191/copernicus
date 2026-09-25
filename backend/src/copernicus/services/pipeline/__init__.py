@@ -7,15 +7,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from copernicus.services.asr import ASRService
 from copernicus.services.audio import AudioService
 from copernicus.services.corrector import CorrectorService
 from copernicus.services.hotword_replacer import HotwordReplacerService
+from copernicus.services.model_manager import ModelManager
 from copernicus.services.pipeline.base import (
     PipelineContext,
     TranscriptEntry,
@@ -64,8 +65,10 @@ class PipelineService:
         run_merge_gap: int = 3,
         pre_merge_gap_ms: int = 1000,
         hotword_replacer: HotwordReplacerService | None = None,
-        settings: Settings | None = None,
-        persistence: PersistenceService | None = None,
+        *,
+        settings: Settings,
+        persistence: PersistenceService,
+        model_manager: ModelManager,
         ocr_service: OCRService | None = None,
         face_detector: FaceDetectorService | None = None,
     ) -> None:
@@ -73,7 +76,7 @@ class PipelineService:
         self._corrector = corrector_service
         self._hotword_replacer = hotword_replacer
 
-        asr_stage = ASRTranscribeStage(asr_service, audio_service, asyncio.Lock())
+        asr_stage = ASRTranscribeStage(model_manager, audio_service)
 
         # Transcript pipeline -- stage order matters for status progression:
         #   video_preprocess → keyframe_extract → ocr_scan → face_detect
@@ -85,23 +88,19 @@ class PipelineService:
         self._transcript_pipeline = PipelineOrchestrator()
 
         # 1. Video -> extract audio + set video_path (skipped for audio files)
-        if settings and persistence:
-            self._transcript_pipeline.register(VideoPreprocessStage(settings, persistence))
+        self._transcript_pipeline.register(VideoPreprocessStage(settings, persistence, audio_service))
 
         # 2. Video -> keyframe extraction (skipped for audio files)
-        if settings and persistence:
-            self._transcript_pipeline.register(
-                KeyframeExtractStage(settings, persistence)
-            )
+        self._transcript_pipeline.register(KeyframeExtractStage(settings, persistence))
 
         # 3. OCR scan keyframes (skipped for audio files)
-        if ocr_service and persistence:
+        if ocr_service:
             self._transcript_pipeline.register(
-                OCRScanStage(ocr_service, persistence, enabled=settings.ocr_enabled if settings else True)
+                OCRScanStage(ocr_service, persistence, enabled=settings.ocr_enabled)
             )
 
         # 4. Face detection on keyframes (skipped for audio files)
-        if face_detector and persistence and settings:
+        if face_detector:
             interval_ms = int(settings.keyframe_interval_s * 1000)
             self._transcript_pipeline.register(
                 FaceDetectStage(
@@ -112,7 +111,7 @@ class PipelineService:
             )
 
         # 5. Audio -> WAV 16kHz (skipped when VideoPreprocess already set wav_path)
-        self._transcript_pipeline.register(AudioPreprocessStage(audio_service))
+        self._transcript_pipeline.register(AudioPreprocessStage(audio_service, persistence))
 
         # 6. ASR
         self._transcript_pipeline.register(asr_stage)
@@ -136,7 +135,7 @@ class PipelineService:
 
     async def process_transcript(
         self,
-        audio_bytes: bytes,
+        media_path: Path,
         filename: str,
         hotwords: list[str] | None = None,
         on_progress: ProgressCallback | None = None,
@@ -153,7 +152,7 @@ class PipelineService:
 
         ctx = PipelineContext(
             task_id=task_id,
-            audio_bytes=audio_bytes,
+            media_path=media_path,
             filename=filename,
             hotwords=self._merge_hotwords(hotwords),
             sentence_timestamp=True,

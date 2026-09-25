@@ -109,13 +109,15 @@ async def _run_synthesis(
     model_manager: ModelManager,
 ) -> None:
     """后台协程：执行 TTS 合成并更新 job 状态。"""
-    output_path = store.persistence.task_dir(task_id) / "synthesis.mp3"
+    output_path = store.persistence.path_of(task_id) / "synthesis.mp3"
     t0 = time.perf_counter()
     try:
         with tempfile.TemporaryDirectory() as tmp_work:
             work_dir = Path(tmp_work)
 
-            async with model_manager.acquire("tts") as model:
+            # exclusive：先卸载 ASR 腾出显存；unload_after：合成是偶发操作，用完立即释放约 4GB，
+            # 否则它会与后续的 ASR/LLM 同时驻留
+            async with model_manager.use("tts", exclusive=True, unload_after=True) as model:
                 parts = await asyncio.to_thread(
                     tts_service.synthesize_chunks_batched,
                     chunks,
@@ -143,7 +145,7 @@ async def _run_synthesis(
             duration_ms = round(sum(sf.info(str(p)).duration * 1000 for p in parts), 1)
             await tts_service.concat_parts_to_mp3(parts, output_path)
 
-        store.persistence.save_dict(
+        store.persistence.save_data(
             task_id, "synthesis_result.json",
             {"duration_ms": duration_ms, "synthesis_time_ms": synthesis_ms},
         )
@@ -249,7 +251,7 @@ async def get_synthesis_status(
             synthesis_time_ms=result.get("synthesis_time_ms"),
         )
 
-    mp3_path = store.persistence.task_dir(task_id) / "synthesis.mp3"
+    mp3_path = store.persistence.path_of(task_id) / "synthesis.mp3"
     if mp3_path.exists():
         return SynthesisStatusResponse(status="completed", audio_url=audio_url)
 
@@ -266,7 +268,7 @@ async def get_synthesis_audio(
     store: TaskStore = Depends(get_task_store),
 ) -> FileResponse:
     """返回 `POST /synthesize` 生成的 MP3 文件。生命周期同原始媒体（24 小时后自动清理）。"""
-    path = store.persistence.task_dir(task_id) / "synthesis.mp3"
+    path = store.persistence.path_of(task_id) / "synthesis.mp3"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Synthesis audio not found. Call POST /synthesize first.")
     return FileResponse(path, media_type="audio/mpeg", filename=f"{task_id}_synthesis.mp3")

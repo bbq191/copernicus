@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import shutil
+import uuid
 from pathlib import Path
 
 from copernicus.exceptions import InvalidIdentifierError
@@ -12,6 +13,7 @@ from copernicus.exceptions import InvalidIdentifierError
 logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = ".sessions"
+_INCOMING_DIR = ".incoming"
 _SAFE_FILE_HASH = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -39,6 +41,17 @@ class UploadSessionService:
     def _data_path(self, file_hash: str) -> Path:
         return self._session_dir(file_hash) / "data.bin"
 
+    def data_path(self, file_hash: str) -> Path:
+        """已接收数据的文件路径；提交任务时直接把它移走，不再读入内存。"""
+        return self._data_path(file_hash)
+
+    @staticmethod
+    def _write_meta(path: Path, meta: dict) -> None:
+        """先写临时文件再改名：事件循环里的查询与线程里的追加会并发读取它，不能读到写了一半的内容。"""
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
     def get_or_create(
         self,
         file_hash: str,
@@ -57,7 +70,7 @@ class UploadSessionService:
                 meta["hotwords"] = hotwords or []
                 meta["visual_scan"] = visual_scan
                 meta["generate_summary"] = generate_summary
-                meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+                self._write_meta(meta_path, meta)
             except (json.JSONDecodeError, OSError):
                 pass
             data = self._data_path(file_hash)
@@ -75,7 +88,7 @@ class UploadSessionService:
             "visual_scan": visual_scan,
             "generate_summary": generate_summary,
         }
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        self._write_meta(meta_path, meta)
         logger.info("New session %.8s total=%d bytes", file_hash, total_size)
         return 0
 
@@ -118,8 +131,10 @@ class UploadSessionService:
         )
         return new_offset, complete
 
-    def read_assembled(self, file_hash: str) -> bytes:
-        return self._data_path(file_hash).read_bytes()
+    def truncate(self, file_hash: str, size: int) -> None:
+        """回退到指定大小：末块提交失败（如队列已满）时撤销刚追加的块，客户端可原样重传。"""
+        with self._data_path(file_hash).open("r+b") as f:
+            f.truncate(size)
 
     def delete_session(self, file_hash: str) -> None:
         d = self._session_dir(file_hash)
@@ -127,3 +142,10 @@ class UploadSessionService:
             shutil.rmtree(d)
             logger.info("Deleted session %.8s", file_hash)
         self._locks.pop(file_hash, None)
+
+
+def incoming_path(upload_dir: Path) -> Path:
+    """为一次表单上传分配落盘路径。与任务目录同处 upload_dir，后续移入任务目录只是一次 rename。"""
+    incoming = upload_dir / _INCOMING_DIR
+    incoming.mkdir(parents=True, exist_ok=True)
+    return incoming / f"{uuid.uuid4().hex}.part"

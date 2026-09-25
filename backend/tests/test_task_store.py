@@ -40,7 +40,7 @@ def _make_task_dir(
         task_id, filename="a.wav", file_hash=file_hash, audio_suffix=".wav"
     )
     if media:
-        persistence.save_audio(task_id, b"audio", ".wav")
+        (persistence.task_dir(task_id) / "audio.wav").write_bytes(b"audio")
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def store(persistence: PersistenceService) -> TaskStore:
 class TestRestoreFromDisk:
     def test_completed_task_restored_as_completed(self, persistence, store):
         _make_task_dir(persistence, TID_DONE, file_hash="h1")
-        persistence.save_dict(TID_DONE, "transcript.json", _TRANSCRIPT)
+        persistence.save_data(TID_DONE, "transcript.json", _TRANSCRIPT)
 
         store.restore_from_disk()
 
@@ -105,7 +105,7 @@ class TestFailurePersistence:
 class TestLazyRestore:
     def test_evicted_task_recovered_from_disk(self, persistence, store):
         _make_task_dir(persistence, TID_DONE, file_hash="h1")
-        persistence.save_dict(TID_DONE, "transcript.json", _TRANSCRIPT)
+        persistence.save_data(TID_DONE, "transcript.json", _TRANSCRIPT)
         # 未调用 restore_from_disk，模拟任务已被内存淘汰
 
         task = store.get(TID_DONE)
@@ -114,7 +114,7 @@ class TestLazyRestore:
 
     def test_invalidated_task_not_resurrected(self, persistence, store):
         _make_task_dir(persistence, TID_DONE, file_hash="h1")
-        persistence.save_dict(TID_DONE, "transcript.json", _TRANSCRIPT)
+        persistence.save_data(TID_DONE, "transcript.json", _TRANSCRIPT)
         store.restore_from_disk()
 
         store.invalidate_task(TID_DONE)

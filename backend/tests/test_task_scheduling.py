@@ -58,9 +58,12 @@ class TestCapacity:
         store = _store(tmp_path, max_active=1)
         _fill(store, 1)
         before = len(store._tasks)
+        source = tmp_path / "in.part"
+        source.write_bytes(b"audio")
         with pytest.raises(QueueFullError):
-            store.submit_transcript(b"audio", "a.wav")
+            await store.submit_transcript(source, "a.wav")
         assert len(store._tasks) == before
+        assert source.exists()  # 被拒绝时上传文件原样保留，由调用方清理
 
     def test_router_maps_queue_full_to_429(self, tmp_path):
         store = _store(tmp_path, max_active=1)

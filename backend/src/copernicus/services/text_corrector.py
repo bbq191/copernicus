@@ -14,7 +14,7 @@ Author: afu
 """
 
 import logging
-from functools import lru_cache
+import threading
 
 from copernicus.config import Settings
 
@@ -29,9 +29,14 @@ class TextCorrectorService:
         self._model_type = settings.pycorrector_model
         self._corrector = None
         self._initialized = False
+        self._init_lock = threading.Lock()
 
     def _lazy_init(self) -> bool:
-        """懒加载模型，避免启动时阻塞"""
+        """懒加载模型，避免启动时阻塞。可能被多个任务的工作线程同时调用，加载只允许发生一次。"""
+        with self._init_lock:
+            return self._load_once()
+
+    def _load_once(self) -> bool:
         if self._initialized:
             return self._corrector is not None
 
@@ -106,38 +111,6 @@ class TextCorrectorService:
             )
             return text
 
-    def correct_batch(self, texts: list[str]) -> list[str]:
-        """批量纠正文本
-
-        Args:
-            texts: 输入文本列表
-
-        Returns:
-            纠正后的文本列表
-        """
-        if not texts:
-            return []
-
-        if not self._lazy_init():
-            return texts
-
-        results = []
-        corrected_count = 0
-        for text in texts:
-            corrected = self.correct(text)
-            if corrected != text:
-                corrected_count += 1
-            results.append(corrected)
-
-        if corrected_count > 0:
-            logger.info(
-                "pycorrector Phase 2: corrected %d/%d texts",
-                corrected_count,
-                len(texts),
-            )
-
-        return results
-
     def correct_entries(self, entries: list[dict]) -> list[dict]:
         """纠正 transcript entries
 
@@ -171,14 +144,3 @@ class TextCorrectorService:
             )
 
         return results
-
-    @property
-    def is_available(self) -> bool:
-        """检查纠错器是否可用"""
-        return self._lazy_init()
-
-
-@lru_cache(maxsize=1)
-def get_text_corrector(settings: Settings) -> TextCorrectorService:
-    """获取 TextCorrectorService 单例"""
-    return TextCorrectorService(settings)

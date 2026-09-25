@@ -9,6 +9,14 @@ from copernicus.services.pipeline import PipelineService
 from copernicus.services.task_store import TaskStore
 
 
+@pytest.fixture(autouse=True)
+def isolated_upload_dir(tmp_path, monkeypatch):
+    """表单上传会先落盘到 upload_dir/.incoming：测试不能写进真实的 uploads 目录。"""
+    from copernicus.config import settings
+
+    monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
+
+
 @pytest.fixture
 def mock_client() -> MagicMock:
     return MagicMock()

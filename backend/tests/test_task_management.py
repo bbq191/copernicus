@@ -88,7 +88,7 @@ def _seed(persistence, task_id, *, created_at, filename="a.wav", done=True):
     )
     # 固定创建时间以便断言排序
     persistence.update_meta(task_id, created_at=created_at)
-    persistence.save_audio(task_id, b"audio", ".wav")
+    (persistence.task_dir(task_id) / "audio.wav").write_bytes(b"audio")
     if done:
         persistence.save_json(task_id, "transcript.json", _transcript())
 
@@ -118,7 +118,7 @@ class TestListTasks:
         _seed(persistence, TID_A, created_at="2026-01-01T00:00:00+00:00", filename="raw.wav")
         assert api.get("/api/v1/tasks").json()["tasks"][0]["name"] == "raw.wav"
 
-        persistence.save_dict(TID_A, "evaluation.json", {"title": "季度复盘会", "formatted_content": ""})
+        persistence.save_data(TID_A, "evaluation.json", {"title": "季度复盘会", "formatted_content": ""})
         assert api.get("/api/v1/tasks").json()["tasks"][0]["name"] == "季度复盘会"
 
         assert api.patch(f"/api/v1/tasks/{TID_A}", json={"name": " 我的会议 "}).status_code == 204
@@ -222,3 +222,14 @@ class TestProofreadingEndpoints:
             json={"edits": [{"index": 0, "text_corrected": "x"}]},
         )
         assert r.status_code == 404
+
+
+class TestReadPathsDoNotCreateDirectories:
+    def test_load_json_and_has_file_for_unknown_task_leave_no_trace(self, tmp_path):
+        persistence = PersistenceService(tmp_path)
+        unknown = "e" * 32
+
+        assert persistence.load_json(unknown, "transcript.json") is None
+        assert persistence.has_file(unknown, "meta.json") is False
+        assert persistence.find_audio(unknown) is None
+        assert not (tmp_path / unknown).exists()

@@ -1,65 +1,35 @@
-import os
-import tempfile
-import uuid
 from pathlib import Path
 
-from copernicus.config import Settings
 from copernicus.exceptions import AudioProcessingError
 from copernicus.utils.ffmpeg import run as ffmpeg_run
 
+# 会议场景优化滤镜链：
+# highpass=f=200 — 过滤低频噪声（空调、风扇）
+# afftdn=nf=-25 — FFT 降噪，去除稳态背景噪声
+# dynaudnorm p=0.9:m=10:s=3 — 动态音量标准化，s=3 平滑说话人切换
+_ENHANCE_FILTER = "highpass=f=200,afftdn=nf=-25,dynaudnorm=p=0.9:m=10:s=3"
+
+_FFMPEG_TIMEOUT_S = 600
+
 
 class AudioService:
-    def __init__(self, settings: Settings) -> None:
-        self._upload_dir = settings.upload_dir
-        self._audio_enhance = settings.audio_enhance
+    """音视频 → 16kHz 单声道 WAV。音频文件与视频音轨共用同一条转换命令。"""
 
-    async def preprocess(self, audio_bytes: bytes, original_filename: str) -> Path:
-        """将上传的音频通过 ffmpeg 转换为 16kHz 单声道 WAV 格式。"""
-        self._upload_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, audio_enhance: bool = True) -> None:
+        self._audio_enhance = audio_enhance
 
-        suffix = Path(original_filename).suffix or ".bin"
-        file_id = uuid.uuid4().hex
-        output_path = self._upload_dir / f"{file_id}_processed.wav"
+    async def extract_wav(self, input_path: Path, output_path: Path) -> Path:
+        """把 input_path（音频或视频）转成 16kHz 单声道 WAV 写入 output_path。"""
+        cmd = ["ffmpeg", "-y", "-i", str(input_path)]
+        if self._audio_enhance:
+            cmd += ["-af", _ENHANCE_FILTER]
+        cmd += ["-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le", "-f", "wav", str(output_path)]
 
-        tmp_fd, tmp_input = tempfile.mkstemp(suffix=suffix)
-        input_path = Path(tmp_input)
-        try:
-            os.close(tmp_fd)
-            input_path.write_bytes(audio_bytes)
-            await self._run_ffmpeg(input_path, output_path, self._audio_enhance)
-        finally:
-            input_path.unlink(missing_ok=True)
-
-        return output_path
-
-    @staticmethod
-    async def _run_ffmpeg(
-        input_path: Path, output_path: Path, audio_enhance: bool = True
-    ) -> None:
-        if audio_enhance:
-            # 会议场景优化滤镜链：
-            # highpass=f=200 — 过滤低频噪声（空调、风扇）
-            # afftdn=nf=-25 — FFT 降噪，去除稳态背景噪声
-            # dynaudnorm p=0.9:m=10:s=3 — 动态音量标准化，s=3 平滑说话人切换
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", str(input_path),
-                "-af", "highpass=f=200,afftdn=nf=-25,dynaudnorm=p=0.9:m=10:s=3",
-                "-ar", "16000", "-ac", "1",
-                "-acodec", "pcm_s16le", "-f", "wav",
-                str(output_path),
-            ]
-        else:
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", str(input_path),
-                "-ar", "16000", "-ac", "1",
-                "-acodec", "pcm_s16le", "-f", "wav",
-                str(output_path),
-            ]
-        rc, stderr = await ffmpeg_run(cmd, timeout=600)
+        rc, stderr = await ffmpeg_run(cmd, timeout=_FFMPEG_TIMEOUT_S)
         if rc != 0:
+            output_path.unlink(missing_ok=True)
             raise AudioProcessingError(f"ffmpeg failed (code {rc}): {stderr}")
+        return output_path
 
     @staticmethod
     def cleanup(path: Path) -> None:

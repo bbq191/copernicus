@@ -135,3 +135,63 @@ class TestChunkedUpload:
 
         store.ensure_capacity = full
         assert _open(client).json()["offset"] == 40
+
+
+class TestFinalChunkHandling:
+    def test_queue_full_at_final_chunk_leaves_it_retryable(self, env):
+        from copernicus.exceptions import QueueFullError
+
+        client, store, sessions, _ = env
+        _open(client)
+        _put(client, 0, DATA[:60])
+
+        def full():
+            raise QueueFullError("队列已满")
+
+        real = store.ensure_capacity
+        store.ensure_capacity = full
+        r = _put(client, 60, DATA[60:])
+        assert r.status_code == 429
+        assert sessions.get_session(FILE_HASH)["received_bytes"] == 60  # 末块没有落盘
+
+        store.ensure_capacity = real  # 队列腾出空位后原样重传
+        r = _put(client, 60, DATA[60:])
+        assert r.status_code == 200 and r.json()["complete"] is True
+
+    def test_submit_rejection_after_hashing_rolls_the_chunk_back(self, env):
+        from unittest.mock import AsyncMock
+
+        from copernicus.exceptions import QueueFullError
+
+        client, store, sessions, _ = env
+        _open(client)
+        _put(client, 0, DATA[:60])
+        store.submit_standard_minutes = AsyncMock(side_effect=QueueFullError("队列已满"))
+
+        assert _put(client, 60, DATA[60:]).status_code == 429
+        assert sessions.get_session(FILE_HASH)["received_bytes"] == 60
+
+    def test_oversized_chunk_is_rejected_by_declared_length(self, env, monkeypatch):
+        import copernicus.routers.upload as upload_module
+
+        client, *_ = env
+        _open(client)
+        monkeypatch.setattr(upload_module, "_MAX_CHUNK_BYTES", 10)
+        assert _put(client, 0, DATA[:60]).status_code == 413
+
+    def test_hotword_limits_apply_to_chunked_sessions(self, env):
+        client, *_ = env
+        r = client.get(
+            f"/api/v1/uploads/{FILE_HASH}",
+            params={"filename": "a.wav", "total_size": 10, "hotwords": ["x" * 101]},
+        )
+        assert r.status_code == 422
+
+    def test_final_chunk_moves_the_file_into_the_task_dir(self, env):
+        client, _, sessions, persistence = env
+        _open(client)
+        _put(client, 0, DATA[:60])
+        task_id = _put(client, 60, DATA[60:]).json()["task_id"]
+
+        assert persistence.find_audio(task_id).read_bytes() == DATA
+        assert sessions.get_session(FILE_HASH) is None

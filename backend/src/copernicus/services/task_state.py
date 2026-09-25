@@ -54,6 +54,17 @@ class TaskInfo:
         self.audio_path: str | None = None
         self.parent_task_id = parent_task_id
 
+    def enter(self, status: TaskStatus) -> None:
+        """切换到新阶段并清零该阶段的进度。"""
+        self.status = status
+        self.current_chunk = 0
+        self.total_chunks = 0
+
+    def set_progress(self, current: int, total: int) -> None:
+        """阶段内进度回调（可直接作为 on_progress 传入）。"""
+        self.current_chunk = current
+        self.total_chunks = total
+
     @property
     def progress(self) -> TaskProgress:
         if self.status == TaskStatus.PENDING:
@@ -87,8 +98,8 @@ class TaskInfo:
                     percent = 90.0
         elif self.status == TaskStatus.COMPLETED:
             percent = 100.0
-        else:
-            percent = 20.0 + (self.current_chunk / max(self.total_chunks, 1)) * 70.0
+        else:  # FAILED：失败时刻的阶段进度已不可知，不显示一个误导性的百分比
+            percent = 0.0
         return TaskProgress(
             current_chunk=self.current_chunk,
             total_chunks=self.total_chunks,

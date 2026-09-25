@@ -1,3 +1,5 @@
+import os
+import time
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -116,3 +118,33 @@ class TestRunOnce:
 
         assert result["expired_media"] == 1
         assert result["stale_failed_tasks"] == 1
+
+
+class TestUploadLeftovers:
+    def test_active_session_is_kept_even_if_its_directory_mtime_is_old(self, tmp_path):
+        sessions = tmp_path / ".sessions" / ("a" * 64)
+        sessions.mkdir(parents=True)
+        data = sessions / "data.bin"
+        data.write_bytes(b"chunk")
+        old = time.time() - 48 * 3600
+        os.utime(sessions, (old, old))  # 目录自身 mtime 很旧，但数据文件刚被追加
+
+        assert LifecycleService(tmp_path, retention_hours=24).cleanup_stale_sessions() == 0
+        assert sessions.exists()
+
+    def test_idle_session_and_stale_incoming_file_are_removed(self, tmp_path):
+        session = tmp_path / ".sessions" / ("b" * 64)
+        session.mkdir(parents=True)
+        (session / "data.bin").write_bytes(b"x")
+        incoming = tmp_path / ".incoming"
+        incoming.mkdir()
+        part = incoming / "u.part"
+        part.write_bytes(b"x")
+        fresh = incoming / "fresh.part"
+        fresh.write_bytes(b"x")
+        old = time.time() - 48 * 3600
+        for path in (session, session / "data.bin", part):
+            os.utime(path, (old, old))
+
+        assert LifecycleService(tmp_path, retention_hours=24).cleanup_stale_sessions() == 2
+        assert not session.exists() and not part.exists() and fresh.exists()

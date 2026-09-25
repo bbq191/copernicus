@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -36,6 +37,10 @@ class PersistenceService:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def count_frames(self, task_id: str) -> int:
+        frames = self.path_of(task_id) / "frames"
+        return sum(1 for p in frames.iterdir() if p.is_file()) if frames.is_dir() else 0
+
     # -- JSON read / write ---------------------------------------------------
 
     def save_json(self, task_id: str, filename: str, model: BaseModel) -> None:
@@ -43,13 +48,15 @@ class PersistenceService:
         self._atomic_write(dest, model.model_dump_json(indent=2))
         logger.info("Persisted %s for task %s", filename, task_id)
 
-    def save_dict(self, task_id: str, filename: str, data: dict) -> None:
+    def save_data(self, task_id: str, filename: str, data: Any) -> None:
+        """保存任意可 JSON 序列化的数据（dict 或 list）。"""
         dest = self.task_dir(task_id) / filename
         self._atomic_write(dest, json.dumps(data, ensure_ascii=False, indent=2))
         logger.info("Persisted %s for task %s", filename, task_id)
 
     def load_json(self, task_id: str, filename: str) -> dict | None:
-        path = self.task_dir(task_id) / filename
+        # 读路径不能创建目录：否则对任意 id 的 GET 都会留下永远不被清理的空目录
+        path = self.path_of(task_id) / filename
         if not path.exists():
             return None
         try:
@@ -58,17 +65,17 @@ class PersistenceService:
             logger.warning("Failed to load %s for task %s: %s", filename, task_id, e)
             return None
 
-    def _task_dir_unchecked(self, task_id: str) -> Path:
-        """返回 task 目录路径，验证格式但不创建目录（供只读查询用）。"""
+    def path_of(self, task_id: str) -> Path:
+        """返回 task 目录路径，验证格式但不创建目录（读路径与只读查询用）。"""
         if not _SAFE_TASK_ID.fullmatch(task_id):
             raise InvalidIdentifierError(f"Invalid task_id format: {task_id!r}")
         return self._upload_dir / task_id
 
     def has_file(self, task_id: str, filename: str) -> bool:
-        return (self._task_dir_unchecked(task_id) / filename).exists()
+        return (self.path_of(task_id) / filename).exists()
 
     def delete_file(self, task_id: str, filename: str) -> None:
-        path = self._task_dir_unchecked(task_id) / filename
+        path = self.path_of(task_id) / filename
         if path.exists():
             path.unlink()
             logger.info("Deleted %s for task %s", filename, task_id)
@@ -114,23 +121,43 @@ class PersistenceService:
 
     def delete_task(self, task_id: str) -> bool:
         """删除任务目录及其全部文件（原始媒体、结果、关键帧等）。"""
-        d = self._task_dir_unchecked(task_id)
+        d = self.path_of(task_id)
         if not d.is_dir():
             return False
         shutil.rmtree(d)
         logger.info("Purged task directory %s", task_id)
         return True
 
-    # -- audio ---------------------------------------------------------------
+    # -- media ---------------------------------------------------------------
 
-    def save_audio(self, task_id: str, audio_bytes: bytes, suffix: str) -> Path:
-        dest = self.task_dir(task_id) / f"audio{suffix}"
-        dest.write_bytes(audio_bytes)
-        logger.info("Saved audio (%d bytes) for task %s", len(audio_bytes), task_id)
+    def adopt_media(
+        self,
+        task_id: str,
+        filename: str,
+        file_hash: str,
+        source: Path,
+        video_extensions: frozenset[str],
+    ) -> Path:
+        """把已落盘的上传文件移入任务目录并写 meta.json，返回最终路径。
+
+        同一文件系统内是一次 rename，不复制数据；音频/视频按后缀区分存放。
+        """
+        suffix = Path(filename).suffix or ".bin"
+        is_video = suffix.lower() in video_extensions
+        dest = self.task_dir(task_id) / f"{'video' if is_video else 'audio'}{suffix}"
+        shutil.move(str(source), dest)
+        logger.info("Adopted media (%d bytes) for task %s", dest.stat().st_size, task_id)
+        if is_video:
+            self.save_meta(
+                task_id, filename=filename, file_hash=file_hash,
+                audio_suffix=suffix, media_type="video", video_suffix=suffix,
+            )
+        else:
+            self.save_meta(task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix)
         return dest
 
     def find_audio(self, task_id: str) -> Path | None:
-        d = self._task_dir_unchecked(task_id)
+        d = self.path_of(task_id)
         if not d.exists():
             return None
         for p in d.glob("audio.*"):
@@ -144,35 +171,8 @@ class PersistenceService:
 
     # -- video ---------------------------------------------------------------
 
-    def save_video(self, task_id: str, video_bytes: bytes, suffix: str) -> Path:
-        dest = self.task_dir(task_id) / f"video{suffix}"
-        dest.write_bytes(video_bytes)
-        logger.info("Saved video (%d bytes) for task %s", len(video_bytes), task_id)
-        return dest
-
-    def persist_media(
-        self,
-        task_id: str,
-        filename: str,
-        file_hash: str,
-        data: bytes,
-        video_extensions: frozenset[str],
-    ) -> Path:
-        """保存媒体文件及 meta.json，返回保存路径。音频/视频自动按后缀区分。"""
-        suffix = Path(filename).suffix or ".bin"
-        if suffix.lower() in video_extensions:
-            path = self.save_video(task_id, data, suffix)
-            self.save_meta(
-                task_id, filename=filename, file_hash=file_hash,
-                audio_suffix=suffix, media_type="video", video_suffix=suffix,
-            )
-        else:
-            path = self.save_audio(task_id, data, suffix)
-            self.save_meta(task_id, filename=filename, file_hash=file_hash, audio_suffix=suffix)
-        return path
-
     def find_video(self, task_id: str) -> Path | None:
-        d = self._task_dir_unchecked(task_id)
+        d = self.path_of(task_id)
         if not d.exists():
             return None
         for p in d.glob("video.*"):
@@ -247,7 +247,7 @@ class PersistenceService:
 
     def scan_task(self, task_id: str) -> dict | None:
         """扫描单个任务目录，结构同 scan_completed_tasks 的条目；不存在返回 None。"""
-        d = self._task_dir_unchecked(task_id)
+        d = self.path_of(task_id)
         return self._scan_entry(d) if d.is_dir() else None
 
     def _scan_entry(self, d: Path) -> dict | None:
@@ -264,8 +264,6 @@ class PersistenceService:
             return None
         audio_path = self.find_audio(task_id)
         video_path = self.find_video(task_id)
-        frames_path = d / "frames"
-        keyframe_count = sum(1 for p in frames_path.glob("*") if p.is_file()) if frames_path.is_dir() else 0
         return {
             "task_id": task_id,
             "meta": meta,
@@ -274,9 +272,6 @@ class PersistenceService:
             "has_compliance": (d / "compliance.json").exists(),
             "audio_path": str(audio_path) if audio_path else None,
             "has_video": video_path is not None,
-            "keyframe_count": keyframe_count,
-            "has_ocr_results": (d / "ocr_results.json").exists(),
-            "has_visual_events": (d / "visual_events.json").exists(),
         }
 
     # -- internal ------------------------------------------------------------

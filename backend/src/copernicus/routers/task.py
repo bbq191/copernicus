@@ -25,6 +25,7 @@ from copernicus.schemas.task import (
 )
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.task_store import TaskStore
+from copernicus.services.upload_session import incoming_path
 from copernicus.utils.request import parse_hotwords
 
 _SAFE_FILENAME_RE = re.compile(r'^[A-Za-z0-9_.-]+$')
@@ -34,34 +35,63 @@ router = APIRouter(prefix="/api/v1")
 
 
 class _UploadResult(NamedTuple):
-    audio_bytes: bytes
+    path: Path | None          # 已落盘的上传文件（existing_response 存在时为 None）
     file_hash: str
     hotwords: list[str]
     filename: str
     existing_response: TaskSubmitResponse | None
 
 
-async def _read_upload(
+_READ_CHUNK = 1024 * 1024
+
+
+def _write_block(out, digest, chunk: bytes) -> None:
+    digest.update(chunk)
+    out.write(chunk)
+
+
+async def _receive_upload(
     file: UploadFile,
     hotwords_str: str | None,
     store: TaskStore,
 ) -> _UploadResult:
-    """读取并校验上传文件；文件已存在时在 existing_response 中返回缓存响应。"""
-    audio_bytes = await file.read()
-    if len(audio_bytes) > settings.max_upload_size_bytes:
+    """把上传文件边读边写到磁盘并计算哈希，全程不整体载入内存。
+
+    文件已存在（哈希命中）时丢弃临时文件，在 existing_response 中返回缓存响应。
+    """
+    limit = settings.max_upload_size_bytes
+    if file.size is not None and file.size > limit:
         raise HTTPException(status_code=413, detail="File too large")
-    file_hash = await asyncio.to_thread(lambda: hashlib.sha256(audio_bytes).hexdigest())
-    existing_id = store.lookup_by_hash(file_hash)
-    if existing_id:
-        existing_task = store.get(existing_id)
-        existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
-        existing_resp = TaskSubmitResponse(task_id=existing_id, status=existing_status, existing=True)
-        return _UploadResult(b"", file_hash, [], "", existing_resp)
+
+    dest = incoming_path(settings.upload_dir)
+    digest = hashlib.sha256()
+    received = 0
     try:
-        hw = parse_hotwords(hotwords_str)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    return _UploadResult(audio_bytes, file_hash, hw, file.filename or "upload.bin", None)
+        with dest.open("wb") as out:
+            while chunk := await file.read(_READ_CHUNK):
+                received += len(chunk)
+                if received > limit:
+                    raise HTTPException(status_code=413, detail="File too large")
+                await asyncio.to_thread(_write_block, out, digest, chunk)
+        file_hash = digest.hexdigest()
+
+        existing_id = store.lookup_by_hash(file_hash)
+        if existing_id:
+            existing_task = store.get(existing_id)
+            existing_status = existing_task.status if existing_task else TaskStatus.COMPLETED
+            dest.unlink(missing_ok=True)
+            return _UploadResult(
+                None, file_hash, [], "",
+                TaskSubmitResponse(task_id=existing_id, status=existing_status, existing=True),
+            )
+        try:
+            hw = parse_hotwords(hotwords_str)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+    return _UploadResult(dest, file_hash, hw, file.filename or "upload.bin", None)
 
 
 # ---------------------------------------------------------------------------
@@ -92,18 +122,15 @@ async def submit_standard_minutes_task(
     `visual_scan=true` 时额外执行关键帧提取、OCR 和人脸检测，结果存入
     `ocr_results.json` 与 `visual_events.json`，可供后续合规审核使用。
     """
-    upload = await _read_upload(file, hotwords, store)
+    upload = await _receive_upload(file, hotwords, store)
     if upload.existing_response:
         return upload.existing_response
-    task_id = store.submit_standard_minutes(
-        upload.audio_bytes, upload.filename, upload.hotwords,
+    task_id = await store.submit_standard_minutes(
+        upload.path, upload.filename, upload.hotwords,
         file_hash=upload.file_hash,
         visual_scan=visual_scan,
         generate_summary=generate_summary,
         template_id=template_id,
-    )
-    await asyncio.to_thread(
-        store.attach_media, task_id, upload.filename, upload.file_hash, upload.audio_bytes
     )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
@@ -126,16 +153,13 @@ async def submit_transcript_task(
     比 `standard_minutes` 快约 30%（省去评估阶段的 LLM 调用）。
     适用于只需要转写文本、后续自行处理摘要的场景。
     """
-    upload = await _read_upload(file, hotwords, store)
+    upload = await _receive_upload(file, hotwords, store)
     if upload.existing_response:
         return upload.existing_response
-    task_id = store.submit_transcript(
-        upload.audio_bytes, upload.filename, upload.hotwords,
+    task_id = await store.submit_transcript(
+        upload.path, upload.filename, upload.hotwords,
         file_hash=upload.file_hash,
         visual_scan=visual_scan,
-    )
-    await asyncio.to_thread(
-        store.attach_media, task_id, upload.filename, upload.file_hash, upload.audio_bytes
     )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
@@ -323,9 +347,8 @@ async def get_task_results(
 
     has_audio = persistence.find_audio(task_id) is not None
     has_video = persistence.find_video(task_id) is not None
-    has_synthesis = (persistence.task_dir(task_id) / "synthesis.mp3").exists()
-    frames_path = persistence.task_dir(task_id) / "frames"
-    keyframe_count = sum(1 for p in frames_path.glob("*") if p.is_file()) if frames_path.is_dir() else 0
+    has_synthesis = (persistence.path_of(task_id) / "synthesis.mp3").exists()
+    keyframe_count = persistence.count_frames(task_id)
 
     ocr_data = persistence.load_json(task_id, "ocr_results.json")
     ocr_text_count = len(ocr_data) if isinstance(ocr_data, list) else 0
@@ -456,8 +479,9 @@ async def get_task_frame(
     """
     if not _SAFE_FILENAME_RE.fullmatch(filename):
         raise HTTPException(status_code=422, detail="Invalid filename")
-    frames_path = store.persistence.task_dir(task_id) / "frames" / filename
-    if not frames_path.exists():
+    frames_path = store.persistence.path_of(task_id) / "frames" / filename
+    # is_file 而不是 exists：filename 允许包含 "."，".." 会命中目录并让 FileResponse 抛 500
+    if not frames_path.is_file():
         raise HTTPException(status_code=404, detail="Frame not found")
     mime = mimetypes.guess_type(str(frames_path))[0] or "image/jpeg"
     return FileResponse(frames_path, media_type=mime)

@@ -9,7 +9,6 @@ Author: afu
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -78,11 +77,6 @@ class FaceDetectStage:
             len(events), total, ctx.task_id,
         )
 
-        # Persist visual_events.json
-        dest = self._persistence.task_dir(ctx.task_id) / "visual_events.json"
-        dest.write_text(
-            json.dumps(ctx.visual_events, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._persistence.save_data(ctx.task_id, "visual_events.json", ctx.visual_events)
 
         return ctx

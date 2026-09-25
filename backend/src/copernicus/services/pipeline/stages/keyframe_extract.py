@@ -1,6 +1,5 @@
 """Stage: Keyframe extraction from video."""
 
-import json
 import logging
 import re
 from pathlib import Path
@@ -77,8 +76,7 @@ class KeyframeExtractStage:
         ctx.keyframes = keyframes
         logger.info("Extracted %d keyframes for task %s", len(keyframes), ctx.task_id)
 
-        dest = self._persistence.task_dir(ctx.task_id) / "keyframes.json"
-        dest.write_text(json.dumps(keyframes, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._persistence.save_data(ctx.task_id, "keyframes.json", keyframes)
 
         return ctx
 

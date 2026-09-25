@@ -5,7 +5,7 @@ import frontmatter
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_PROMPT = "你是一个会议助手，请根据以下转写文本生成会议纪要。"
+FALLBACK_PROMPT = "你是一个会议助手，请根据以下转写文本生成会议纪要。"
 _DEFAULT_TEMPLATE_ID = "universal"
 
 
@@ -73,5 +73,5 @@ class TemplateManager:
                 "Template '%s' not found and no default available, using minimal prompt",
                 template_id,
             )
-            return _FALLBACK_PROMPT
+            return FALLBACK_PROMPT
         return template["prompt"]

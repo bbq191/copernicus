@@ -1,18 +1,22 @@
 """分片上传接口：GET 查询/创建会话 → PATCH 分块上传 → 自动触发标准纪要任务。"""
 
 import asyncio
-import hashlib
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from copernicus.config import settings
+from copernicus.exceptions import QueueFullError
 from copernicus.dependencies import get_task_store, get_upload_session_service
 from copernicus.schemas.upload import UploadChunkResponse, UploadQueryResponse
 from copernicus.services.task_store import TaskStore
 from copernicus.services.upload_session import UploadSessionService
+from copernicus.utils.hashing import sha256_file
+from copernicus.utils.request import validate_hotwords
 
 router = APIRouter(prefix="/api/v1/uploads", tags=["存储层"])
+
+_MAX_CHUNK_BYTES = 64 * 1024 * 1024  # 客户端默认 5MB 一块，留足余量即可
 
 
 @router.get(
@@ -41,6 +45,10 @@ async def query_upload(
     """
     if total_size > settings.max_upload_size_bytes:
         raise HTTPException(status_code=413, detail="File too large")
+    try:
+        hotwords = validate_hotwords(hotwords or [])
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     existing_id = store.lookup_by_hash(file_hash)
     if existing_id:
@@ -53,7 +61,7 @@ async def query_upload(
         file_hash=file_hash,
         filename=filename,
         total_size=total_size,
-        hotwords=hotwords or None,
+        hotwords=hotwords,
         visual_scan=visual_scan,
         generate_summary=generate_summary,
     )
@@ -90,7 +98,13 @@ async def upload_chunk(
     except (ValueError, AttributeError):
         raise HTTPException(status_code=400, detail="Invalid or missing Content-Range header")
 
+    # 先看声明的长度再读取：避免为一个超大的块先把它整个读进内存
+    declared = int(request.headers.get("content-length") or 0)
+    if declared > _MAX_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail=f"Chunk too large (max {_MAX_CHUNK_BYTES} bytes)")
     chunk = await request.body()
+    if len(chunk) > _MAX_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail=f"Chunk too large (max {_MAX_CHUNK_BYTES} bytes)")
     if not chunk:
         raise HTTPException(status_code=400, detail="Empty chunk body")
 
@@ -113,6 +127,11 @@ async def _handle_chunk(
             detail="Upload session not found — call GET /uploads/{hash} first",
         )
 
+    total_size: int = session["total_size"]
+    if offset + len(chunk) >= total_size:
+        # 末块：先确认队列有空位，再写入。队列已满时块尚未落盘，客户端稍后可原样重试
+        store.ensure_capacity()
+
     try:
         new_offset, complete = await asyncio.to_thread(
             upload_sessions.append_chunk, file_hash, offset, chunk
@@ -123,8 +142,24 @@ async def _handle_chunk(
     if not complete:
         return UploadChunkResponse(received=new_offset, complete=False)
 
-    # --- 最后一块：组装、校验、提交任务（大文件读写与哈希放入线程，避免阻塞事件循环）---
-    assembled, actual_hash = await asyncio.to_thread(_assemble_and_hash, upload_sessions, file_hash)
+    try:
+        task_id = await _finalize_upload(file_hash, session, store, upload_sessions)
+    except QueueFullError:
+        # 校验期间队列被占满：撤销刚追加的末块，让客户端可以原样重传
+        upload_sessions.truncate(file_hash, offset)
+        raise
+    return UploadChunkResponse(received=new_offset, complete=True, task_id=task_id)
+
+
+async def _finalize_upload(
+    file_hash: str,
+    session: dict,
+    store: TaskStore,
+    upload_sessions: UploadSessionService,
+) -> str:
+    """末块到达后：完整性校验 → 去重 → 提交任务（哈希在线程里流式计算，不载入内存）。"""
+    data_path = upload_sessions.data_path(file_hash)
+    actual_hash = await asyncio.to_thread(sha256_file, data_path)
     if actual_hash != session["hash"]:
         upload_sessions.delete_session(file_hash)
         raise HTTPException(
@@ -132,26 +167,18 @@ async def _handle_chunk(
             detail=f"SHA-256 mismatch: expected {session['hash']}, got {actual_hash}",
         )
 
-    filename: str = session["filename"]
-
     # 竞态保护：两次并发上传同一文件只处理一次
     existing_id = store.lookup_by_hash(file_hash)
     if existing_id:
         upload_sessions.delete_session(file_hash)
-        return UploadChunkResponse(received=new_offset, complete=True, task_id=existing_id)
+        return existing_id
 
-    task_id = store.submit_standard_minutes(
-        assembled, filename, session["hotwords"] or None,
+    # 数据文件被直接移入任务目录，无需再读入内存
+    task_id = await store.submit_standard_minutes(
+        data_path, session["filename"], session["hotwords"] or None,
         file_hash=file_hash,
         visual_scan=session["visual_scan"],
         generate_summary=session.get("generate_summary", True),
     )
-    await asyncio.to_thread(store.attach_media, task_id, filename, file_hash, assembled)
-
     upload_sessions.delete_session(file_hash)
-    return UploadChunkResponse(received=new_offset, complete=True, task_id=task_id)
-
-
-def _assemble_and_hash(upload_sessions: UploadSessionService, file_hash: str) -> tuple[bytes, str]:
-    assembled = upload_sessions.read_assembled(file_hash)
-    return assembled, hashlib.sha256(assembled).hexdigest()
+    return task_id

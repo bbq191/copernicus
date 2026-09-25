@@ -4,9 +4,10 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from copernicus.schemas.compliance import ComplianceResponse
-from copernicus.schemas.evaluation import EvaluationResponse
+from copernicus.schemas.evaluation import EvaluationResponse, EvaluationResult
 from copernicus.schemas.task import TaskStatus, TaskSummary
 from copernicus.schemas.transcription import (
     TranscriptEntrySchema,
@@ -32,7 +33,7 @@ from copernicus.services.task_state import (
     SynthesisJob,
     TaskInfo,
 )
-from copernicus.services.template_manager import TemplateManager
+from copernicus.services.template_manager import FALLBACK_PROMPT, TemplateManager
 from copernicus.services.transcript_edit import apply_speaker_renames, apply_text_edits
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class TaskStore:
         self._compliance = compliance
         self._persistence = persistence
         self._model_manager = model_manager
+        self._llm_is_local = settings.llm_provider == "ollama"
         self._synthesis_jobs: dict[str, SynthesisJob] = {}
         self._template_manager = template_manager
         self._task_timeout = settings.task_timeout_seconds
@@ -348,30 +350,60 @@ class TaskStore:
         self._evict_completed()
         return info
 
-    def submit_transcript(
+    async def _submit_media_task(
+        self, source: Path, filename: str, file_hash: str, label: str, make_run
+    ) -> str:
+        """音视频任务的公共提交流程：占位 → 媒体落盘 → 启动。
+
+        媒体必须先落盘再启动管线：管线第一个阶段就会读取任务目录里的文件，
+        先启动会让它读到写了一半的大文件。
+        """
+        self.ensure_capacity()
+        task_id = uuid.uuid4().hex
+        info = self._register_task(task_id)
+        if file_hash:
+            # 占位即登记：落盘期间到达的同一文件的重复上传会命中本任务，而不是再开一个
+            self._register_hash(file_hash, task_id)
+        try:
+            media_path = await asyncio.to_thread(
+                self._persistence.adopt_media,
+                task_id, filename, file_hash, source, self._video_extensions,
+            )
+        except BaseException:  # 含客户端断开导致的取消：不能留下无媒体的幽灵任务
+            self._discard_submission(task_id, file_hash)
+            raise
+        info.audio_path = str(media_path)
+        self._spawn(task_id, make_run(task_id, media_path))
+        logger.info("Task %s submitted (%s)", task_id, label)
+        return task_id
+
+    def _discard_submission(self, task_id: str, file_hash: str) -> None:
+        self._tasks.pop(task_id, None)
+        if file_hash and self._hash_index.get(file_hash) == task_id:
+            del self._hash_index[file_hash]
+            self._persistence.save_hash_index(self._hash_index)
+        self._persistence.delete_task(task_id)
+
+    async def submit_transcript(
         self,
-        audio_bytes: bytes,
+        source: Path,
         filename: str,
         hotwords: list[str] | None = None,
         *,
         file_hash: str = "",
         visual_scan: bool = False,
     ) -> str:
-        self.ensure_capacity()
-        task_id = uuid.uuid4().hex
-        self._register_task(task_id)
-        self._spawn(
-            task_id,
-            self._run_transcript(task_id, audio_bytes, filename, hotwords, visual_scan=visual_scan),
+        """提交转写任务。source 是已落盘的上传文件，会被移入任务目录。"""
+        return await self._submit_media_task(
+            source, filename, file_hash, f"transcript, visual_scan={visual_scan}",
+            lambda task_id, media: self._run_transcript(
+                task_id, media, filename, hotwords, visual_scan=visual_scan
+            ),
         )
-        if file_hash:
-            self._register_hash(file_hash, task_id)
-        logger.info("Task %s submitted (transcript, visual_scan=%s)", task_id, visual_scan)
-        return task_id
 
-    def submit_standard_minutes(
+    async def submit_standard_minutes(
         self,
-        audio_bytes: bytes,
+        source: Path,
         filename: str,
         hotwords: list[str] | None = None,
         *,
@@ -380,26 +412,22 @@ class TaskStore:
         generate_summary: bool = True,
         template_id: str = "universal",
     ) -> str:
-        """提交标准纪要任务：Pipeline 完成后自动生成摘要。"""
-        self.ensure_capacity()
-        task_id = uuid.uuid4().hex
-        self._register_task(task_id)
-        self._spawn(
-            task_id,
-            self._run_standard_minutes(
-                task_id, audio_bytes, filename, hotwords,
+        """提交标准纪要任务：Pipeline 完成后自动生成摘要。source 是已落盘的上传文件。"""
+        return await self._submit_media_task(
+            source, filename, file_hash,
+            f"standard_minutes, visual_scan={visual_scan}, summary={generate_summary}, template={template_id}",
+            lambda task_id, media: self._run_standard_minutes(
+                task_id, media, filename, hotwords,
                 visual_scan=visual_scan,
                 generate_summary=generate_summary,
                 template_id=template_id,
             ),
         )
-        if file_hash:
-            self._register_hash(file_hash, task_id)
-        logger.info(
-            "Task %s submitted (standard_minutes, visual_scan=%s, summary=%s, template=%s)",
-            task_id, visual_scan, generate_summary, template_id,
-        )
-        return task_id
+
+    def _require_parent(self, parent_task_id: str | None) -> None:
+        """关联的父任务必须存在。否则结果只会在算完 LLM 后才因目录不存在而落盘失败，白白浪费算力。"""
+        if parent_task_id is not None and not self._persistence.has_file(parent_task_id, "meta.json"):
+            raise TaskNotFoundError(f"Parent task {parent_task_id} not found")
 
     def submit_text_evaluation(
         self,
@@ -411,6 +439,7 @@ class TaskStore:
         """提交纯文本评估任务（不需要 ASR）。"""
         if self._evaluator is None:
             raise ServiceNotConfiguredError("EvaluatorService not configured")
+        self._require_parent(parent_task_id)
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
         self._spawn(
@@ -434,6 +463,7 @@ class TaskStore:
         """提交合规审核任务（纯文本，不需要 ASR）。"""
         if self._compliance is None:
             raise ServiceNotConfiguredError("ComplianceService not configured")
+        self._require_parent(parent_task_id)
         task_id = uuid.uuid4().hex
         self._register_task(task_id, eval_only=True, parent_task_id=parent_task_id)
         self._spawn(
@@ -464,13 +494,8 @@ class TaskStore:
         if media_path is None:
             raise AudioNotFoundError(f"Audio not found for task {task_id}")
 
-        audio_bytes = media_path.read_bytes()
-        suffix = media_path.suffix
-
         # reset task state
-        task.status = TaskStatus.PENDING
-        task.current_chunk = 0
-        task.total_chunks = 0
+        task.enter(TaskStatus.PENDING)
         task.result = None
         task.error = None
 
@@ -484,19 +509,11 @@ class TaskStore:
 
         self._spawn(
             task_id,
-            self._run_transcript(task_id, audio_bytes, f"audio{suffix}", hotwords),
+            # 文件名用落盘文件自己的名字：管线靠后缀判断是否为视频
+            self._run_transcript(task_id, media_path, media_path.name, hotwords),
         )
         logger.info("Task %s rerun (transcript)", task_id)
         return task_id
-
-    def attach_media(self, task_id: str, filename: str, file_hash: str, data: bytes) -> None:
-        """保存任务的原始媒体与 meta.json，并记录路径（同步磁盘 IO，异步调用方应放入线程）。"""
-        path = self._persistence.persist_media(
-            task_id, filename, file_hash, data, self._video_extensions
-        )
-        task = self._tasks.get(task_id)
-        if task:
-            task.audio_path = str(path)
 
     # -- get -----------------------------------------------------------------
 
@@ -522,12 +539,7 @@ class TaskStore:
         """内存超限时淘汰最早完成/失败的任务。"""
         if len(self._tasks) <= self._max_tasks:
             return
-        terminal = (TaskStatus.COMPLETED, TaskStatus.FAILED)
-        evict_ids = [
-            tid
-            for tid, t in self._tasks.items()
-            if t.status in terminal
-        ]
+        evict_ids = [tid for tid, t in self._tasks.items() if t.status in TERMINAL_STATUSES]
         # Evict from the front (oldest inserted first, dict preserves insertion order)
         to_remove = len(self._tasks) - self._max_tasks
         for tid in evict_ids[:to_remove]:
@@ -604,7 +616,7 @@ class TaskStore:
             raise
         except asyncio.TimeoutError:
             task = self._tasks.get(task_id)
-            if task and task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            if task and task.status not in TERMINAL_STATUSES:
                 self._mark_failed(task, f"任务超时（{self._task_timeout}s）")
                 logger.error("Task %s timed out after %ds", task_id, self._task_timeout)
 
@@ -624,46 +636,38 @@ class TaskStore:
                 "Task %s failed: [%s] %s", task_id, type(e).__name__, e, exc_info=True
             )
 
+    def _template_prompt(self, template_id: str) -> str:
+        if self._template_manager is None:
+            return FALLBACK_PROMPT
+        return self._template_manager.get_prompt(template_id)
+
+    async def _evaluate_text(self, task: TaskInfo, text: str, template_id: str) -> EvaluationResult:
+        """摘要评估：纯文本评估任务与标准纪要的摘要阶段共用。"""
+        if self._evaluator is None:
+            raise RuntimeError("EvaluatorService not configured")
+        task.enter(TaskStatus.EVALUATING)
+        return await self._evaluator.evaluate(
+            text, self._template_prompt(template_id), on_progress=task.set_progress
+        )
+
     async def _run_text_evaluation(
         self, task_id: str, text: str, template_id: str
     ) -> None:
         async with self._task_lifecycle(task_id, "text evaluation") as task:
-            task.status = TaskStatus.EVALUATING
-            task.current_chunk = 0
-            task.total_chunks = 0
-            if self._evaluator is None:
-                raise RuntimeError("EvaluatorService not configured")
-
-            template_prompt = (
-                self._template_manager.get_prompt(template_id)
-                if self._template_manager
-                else "你是一个会议助手，请根据以下转写文本生成会议纪要。"
-            )
-
-            def on_eval_progress(current: int, total: int) -> None:
-                task.current_chunk = current
-                task.total_chunks = total
-
-            evaluation = await self._evaluator.evaluate(
-                text, template_prompt, on_progress=on_eval_progress
-            )
-
+            evaluation = await self._evaluate_text(task, text, template_id)
             task.result = EvaluationResponse(
                 raw_text="",
                 corrected_text=text,
                 evaluation=evaluation,
                 processing_time_ms=0,
             )
-
             if task.parent_task_id:
-                self._persistence.save_json(
-                    task.parent_task_id, "evaluation.json", evaluation
-                )
+                self._persistence.save_json(task.parent_task_id, "evaluation.json", evaluation)
 
     async def _execute_pipeline(
         self,
         task: TaskInfo,
-        audio_bytes: bytes,
+        media_path: Path,
         filename: str,
         hotwords: list[str] | None,
         visual_scan: bool,
@@ -675,20 +679,11 @@ class TaskStore:
         def on_stage_change(stage_name: str) -> None:
             new_status = _PIPELINE_STAGE_STATUS.get(stage_name)
             if new_status:
-                task.status = TaskStatus(new_status)
-                task.current_chunk = 0
-                task.total_chunks = 0
-
-        def on_progress(current: int, total: int) -> None:
-            task.current_chunk = current
-            task.total_chunks = total
-
-        if self._model_manager:
-            await self._model_manager.ensure("asr")
+                task.enter(TaskStatus(new_status))
 
         result = await self._pipeline.process_transcript(
-            audio_bytes, filename, hotwords,
-            on_progress=on_progress,
+            media_path, filename, hotwords,
+            on_progress=task.set_progress,
             on_stage_change=on_stage_change,
             task_id=task_id,
             visual_scan=visual_scan,
@@ -715,19 +710,19 @@ class TaskStore:
     async def _run_transcript(
         self,
         task_id: str,
-        audio_bytes: bytes,
+        media_path: Path,
         filename: str,
         hotwords: list[str] | None,
         *,
         visual_scan: bool = False,
     ) -> None:
         async with self._task_lifecycle(task_id, "transcript") as task:
-            await self._execute_pipeline(task, audio_bytes, filename, hotwords, visual_scan, task_id)
+            await self._execute_pipeline(task, media_path, filename, hotwords, visual_scan, task_id)
 
     async def _run_standard_minutes(
         self,
         task_id: str,
-        audio_bytes: bytes,
+        media_path: Path,
         filename: str,
         hotwords: list[str] | None,
         *,
@@ -737,34 +732,29 @@ class TaskStore:
     ) -> None:
         async with self._task_lifecycle(task_id, "standard_minutes") as task:
             transcript_response = await self._execute_pipeline(
-                task, audio_bytes, filename, hotwords, visual_scan, task_id
+                task, media_path, filename, hotwords, visual_scan, task_id
             )
-
             if generate_summary and self._evaluator:
-                task.status = TaskStatus.EVALUATING
-                task.current_chunk = 0
-                task.total_chunks = 0
+                await self._generate_summary(task, transcript_response, template_id)
 
-                full_text = "\n".join(e.text_corrected for e in transcript_response.transcript)
-                if full_text.strip():
-                    template_prompt = (
-                        self._template_manager.get_prompt(template_id)
-                        if self._template_manager
-                        else "你是一个会议助手，请根据以下转写文本生成会议纪要。"
-                    )
+    async def _generate_summary(
+        self, task: TaskInfo, transcript: TranscriptResponse, template_id: str
+    ) -> None:
+        """标准纪要的摘要阶段。转写已落盘，摘要失败不应让整个任务变成失败：
 
-                    def on_eval_progress(current: int, total: int) -> None:
-                        task.current_chunk = current
-                        task.total_chunks = total
-
-                    evaluation = await self._evaluator.evaluate(
-                        full_text, template_prompt, on_progress=on_eval_progress
-                    )
-                    self._persistence.save_json(task_id, "evaluation.json", evaluation)
-                    logger.info(
-                        "Task %s: summary generated (standard_minutes, template=%s)",
-                        task_id, template_id,
-                    )
+        否则内存里是 FAILED（同一文件重传要重跑 ASR），重启后又因 transcript.json 存在而恢复为 COMPLETED，
+        前后状态不一致。这里只记录警告；前端发现没有摘要时会自动重新生成。
+        """
+        full_text = "\n".join(e.text_corrected for e in transcript.transcript)
+        if not full_text.strip():
+            return
+        try:
+            evaluation = await self._evaluate_text(task, full_text, template_id)
+        except Exception as e:
+            logger.warning("Task %s: summary failed, transcript kept: %s", task.task_id, e, exc_info=True)
+            return
+        self._persistence.save_json(task.task_id, "evaluation.json", evaluation)
+        logger.info("Task %s: summary generated (template=%s)", task.task_id, template_id)
 
     async def _run_compliance_audit(
         self,
@@ -774,9 +764,7 @@ class TaskStore:
         rules_filename: str,
     ) -> None:
         async with self._task_lifecycle(task_id, "compliance audit") as task:
-            task.status = TaskStatus.AUDITING
-            task.current_chunk = 0
-            task.total_chunks = 0
+            task.enter(TaskStatus.AUDITING)
             if self._compliance is None:
                 raise RuntimeError("ComplianceService not configured")
 
@@ -785,8 +773,9 @@ class TaskStore:
                 rules_bytes, rules_filename
             )
 
-            # 卸载 ASR 以释放 VRAM 供 14B LLM 推理使用
-            if self._model_manager:
+            # 本地 LLM（Ollama）与 ASR 争用显存：先卸载 ASR。远端 LLM 不占本机显存，
+            # 此时卸载只会让下一个转写任务白白重载数十秒
+            if self._model_manager and self._llm_is_local:
                 await self._model_manager.unload("asr")
 
             # 从持久化层加载 OCR 数据（如果存在）
@@ -805,15 +794,11 @@ class TaskStore:
             if ve_data and isinstance(ve_data, list):
                 visual_events = ve_data
 
-            def on_audit_progress(current: int, total: int) -> None:
-                task.current_chunk = current
-                task.total_chunks = total
-
             report = await self._compliance.audit(
                 rules,
                 transcript_entries,
                 few_shot_examples=few_shot_examples,
-                on_progress=on_audit_progress,
+                on_progress=task.set_progress,
                 ocr_results=ocr_results,
                 visual_events=visual_events,
             )

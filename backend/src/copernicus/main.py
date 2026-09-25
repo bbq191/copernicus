@@ -55,7 +55,7 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
     """构造并注册所有服务到 app.state，返回后台任务句柄。"""
     # 基础依赖层
     app.state.template_manager = TemplateManager(settings.templates_dir)
-    audio_service    = AudioService(settings)
+    audio_service    = AudioService(settings.audio_enhance)
     asr_service      = ASRService(settings)
     text_corrector   = TextCorrectorService(settings)
     hotword_replacer = HotwordReplacerService(settings)
@@ -64,27 +64,6 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
     app.state.upload_session = UploadSessionService(settings.upload_dir)
     ocr_service   = OCRService(settings) if settings.ocr_enabled else None
     face_detector = FaceDetectorService(settings) if settings.face_detect_enabled else None
-
-    # 管道层
-    app.state.pipeline = PipelineService(
-        audio_service=audio_service,
-        asr_service=asr_service,
-        corrector_service=corrector_service,
-        confidence_threshold=settings.confidence_threshold,
-        chunk_size=settings.correction_chunk_size,
-        run_merge_gap=settings.confidence_run_merge_gap,
-        pre_merge_gap_ms=settings.pre_merge_gap_ms,
-        hotword_replacer=hotword_replacer,
-        settings=settings,
-        persistence=persistence,
-        ocr_service=ocr_service,
-        face_detector=face_detector,
-    )
-
-    # LLM 衍生服务
-    app.state.llm_client = llm_client
-    app.state.evaluator  = EvaluatorService(llm_client, settings)
-    app.state.compliance = ComplianceService(llm_client, settings)
 
     # 模型热插拔管理
     model_manager = ModelManager()
@@ -102,6 +81,28 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
         vram_estimate_gb=settings.tts_vram_estimate_gb,
     )
     app.state.model_manager = model_manager
+
+    # 管道层
+    app.state.pipeline = PipelineService(
+        audio_service=audio_service,
+        asr_service=asr_service,
+        corrector_service=corrector_service,
+        confidence_threshold=settings.confidence_threshold,
+        chunk_size=settings.correction_chunk_size,
+        run_merge_gap=settings.confidence_run_merge_gap,
+        pre_merge_gap_ms=settings.pre_merge_gap_ms,
+        hotword_replacer=hotword_replacer,
+        settings=settings,
+        persistence=persistence,
+        model_manager=model_manager,
+        ocr_service=ocr_service,
+        face_detector=face_detector,
+    )
+
+    # LLM 衍生服务
+    app.state.llm_client = llm_client
+    app.state.evaluator  = EvaluatorService(llm_client, settings)
+    app.state.compliance = ComplianceService(llm_client, settings)
 
     # 任务存储与恢复
     app.state.task_store = TaskStore(

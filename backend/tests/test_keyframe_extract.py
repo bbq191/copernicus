@@ -37,7 +37,7 @@ def _stage(tmp_path, strategy: str) -> tuple[KeyframeExtractStage, MagicMock]:
 
 
 def _ctx(tmp_path) -> PipelineContext:
-    ctx = PipelineContext(audio_bytes=b"", filename="v.mp4")
+    ctx = PipelineContext(filename="v.mp4")
     ctx.visual_scan = True
     ctx.video_path = tmp_path / "v.mp4"
     ctx.task_id = "a" * 32

@@ -8,7 +8,6 @@ Author: afu
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -69,11 +68,6 @@ class OCRScanStage:
             len(all_records), total, ctx.task_id,
         )
 
-        # Persist ocr_results.json
-        dest = self._persistence.task_dir(ctx.task_id) / "ocr_results.json"
-        dest.write_text(
-            json.dumps(ctx.ocr_results, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._persistence.save_data(ctx.task_id, "ocr_results.json", ctx.ocr_results)
 
         return ctx

@@ -22,7 +22,7 @@ export function useExport() {
             downloadSrt(content);
             break;
           }
-          // Word/PDF 依赖 docx、jspdf、html2canvas 等大体积库，按需加载
+          // Word/PDF 依赖 docx、jspdf 等大体积库，按需加载
           case "word": {
             const { exportToWord } = await import("../utils/wordGenerator");
             await exportToWord(mergedBlocks, textMode);

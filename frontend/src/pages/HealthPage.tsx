@@ -99,8 +99,8 @@ export function HealthPage() {
         </div>
       </div>
 
-      <div className="flex-1 p-6 max-w-2xl mx-auto w-full">
-        <div className="flex items-center justify-between mb-6">
+      <div className="flex-1 p-4 sm:p-6 max-w-2xl mx-auto w-full">
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-6">
           <div className="flex items-center gap-2">
             <Activity className="h-5 w-5" />
             <h1 className="text-xl font-semibold">服务健康状态</h1>

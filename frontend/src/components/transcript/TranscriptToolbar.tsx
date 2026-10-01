@@ -48,7 +48,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
   return (
     <div className="flex flex-col gap-2 p-3 bg-base-200 rounded-lg">
       <IncompleteNotice notes={transcriptIncompleteness(correction)} />
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         {/* Text display controls group */}
         <div className="join">
           <button
@@ -107,7 +107,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
           </div>
         </div>
 
-        <div className="dropdown dropdown-end ml-auto">
+        <div className="dropdown dropdown-end">
           <div
             tabIndex={0}
             role="button"
@@ -138,7 +138,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
           </ul>
         </div>
 
-        <label className="input input-sm input-bordered flex items-center gap-2 w-48">
+        <label className="input input-sm input-bordered flex items-center gap-2 w-full sm:w-48 sm:ml-auto">
           <Search className="h-4 w-4 opacity-50" />
           <input
             type="text"
@@ -151,7 +151,7 @@ export function TranscriptToolbar({ onOpenRename }: Props) {
       </div>
 
       {speakers.length > 1 && (
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex items-center gap-3 text-sm flex-wrap">
           <Eye className="h-4 w-4 opacity-50 shrink-0" />
           {speakers.map((spk) => (
             <label key={spk} className="flex items-center gap-1 cursor-pointer">

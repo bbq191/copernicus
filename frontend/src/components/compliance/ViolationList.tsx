@@ -100,7 +100,7 @@ export function ViolationList() {
     <div className="flex flex-col h-full">
       <IncompleteNotice notes={reportIncompleteness(report)} />
       {/* Stats Dashboard */}
-      <div className="stats stats-horizontal shadow-sm w-full bg-base-200 border-b border-base-300">
+      <div className="stats stats-horizontal shadow-sm w-full bg-base-200 border-b border-base-300 overflow-x-auto">
         <div className="stat place-items-center py-2 px-3">
           <div className="stat-title text-xs">高风险</div>
           <div className="stat-value text-error text-lg">{summary.severity.high}</div>
@@ -123,7 +123,7 @@ export function ViolationList() {
 
       {/* Keyboard shortcuts hint */}
       {!kbdDismissed && (
-        <div className="flex items-center gap-3 px-3 py-1.5 bg-base-200 border-b border-base-300 text-xs text-base-content/60">
+        <div className="flex items-center gap-3 px-3 py-1.5 bg-base-200 border-b border-base-300 text-xs text-base-content/60 flex-wrap">
           <span className="flex items-center gap-1">
             <kbd className="kbd kbd-xs">Space</kbd> 播放
           </span>
@@ -153,7 +153,7 @@ export function ViolationList() {
 
       {/* Toolbar */}
       <div className="flex flex-col gap-2 p-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <FilterChips
             icon={ShieldAlert}
             options={SEVERITY_OPTIONS}
@@ -163,7 +163,7 @@ export function ViolationList() {
           />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <FilterChips
             icon={Layers}
             options={SOURCE_OPTIONS}
@@ -174,7 +174,7 @@ export function ViolationList() {
         </div>
 
         {/* Status filter + search + batch toggle */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <FilterChips icon={Filter} options={STATUS_OPTIONS} value={statusFilter} onChange={setStatusFilter} />
 
           <button
@@ -197,7 +197,7 @@ export function ViolationList() {
             </a>
           )}
 
-          <label className="input input-sm input-bordered flex items-center gap-2 w-48 ml-auto">
+          <label className="input input-sm input-bordered flex items-center gap-2 w-full sm:w-48 sm:ml-auto">
             <Search className="h-4 w-4 opacity-50" />
             <input
               type="text"
@@ -230,7 +230,7 @@ export function ViolationList() {
 
       {/* Batch action bar */}
       {batchMode && (
-        <div className="flex items-center gap-3 px-4 py-2 bg-base-200 border-t border-base-300 shrink-0">
+        <div className="flex items-center gap-3 px-4 py-2 bg-base-200 border-t border-base-300 shrink-0 flex-wrap">
           <span className="text-sm font-medium">
             已选 {checkedCount} 项
           </span>
@@ -242,7 +242,7 @@ export function ViolationList() {
             <X className="h-3 w-3" />
             取消
           </button>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex gap-2 flex-wrap">
             <button
               className="btn btn-success btn-sm gap-1"
               disabled={checkedCount === 0}

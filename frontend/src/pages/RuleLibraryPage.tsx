@@ -96,12 +96,12 @@ export function RuleLibraryPage() {
         </div>
       </div>
 
-      <div className="flex-1 p-6 max-w-4xl mx-auto w-full">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
+      <div className="flex-1 p-4 sm:p-6 max-w-4xl mx-auto w-full">
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-4">
+          <div className="flex items-center gap-2 flex-wrap">
             <ListChecks className="h-5 w-5" />
             <h1 className="text-xl font-semibold">合规规则库</h1>
-            <span className="text-xs text-base-content/40">
+            <span className="hidden sm:inline text-xs text-base-content/40">
               跨任务复用的自定义规则，提交合规审核时可整体选用
             </span>
           </div>

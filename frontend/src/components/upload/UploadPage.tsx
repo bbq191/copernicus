@@ -103,7 +103,7 @@ export function UploadPage() {
   );
 
   return (
-    <div className="min-h-screen flex flex-col items-center gap-8 p-8 pt-16">
+    <div className="min-h-screen flex flex-col items-center gap-8 p-4 pt-10 sm:p-8 sm:pt-16">
       <div className="text-center">
         <h1 className="text-4xl font-bold mb-2">Copernicus</h1>
         <p className="text-base-content/60">音视频智能听写平台</p>
@@ -111,7 +111,7 @@ export function UploadPage() {
 
       {/* 视频合规确认弹窗 */}
       {pendingFile && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-base-100 rounded-xl p-6 w-full max-w-sm flex flex-col gap-4 shadow-xl">
             <h2 className="font-semibold text-lg">{pendingFile.name}</h2>
             <p className="text-sm text-base-content/60">
@@ -149,7 +149,7 @@ export function UploadPage() {
       )}
 
       {uploading ? (
-        <div className="border-2 border-dashed border-base-300 rounded-xl p-16 w-full max-w-lg flex flex-col items-center gap-4">
+        <div className="border-2 border-dashed border-base-300 rounded-xl p-8 sm:p-16 w-full max-w-lg flex flex-col items-center gap-4">
           <span className="loading loading-spinner loading-lg text-primary" />
           {uploadProgress ? (
             <div className="flex flex-col items-center gap-2 w-full max-w-xs">
@@ -173,7 +173,7 @@ export function UploadPage() {
       ) : (
         <div className="flex flex-col items-center gap-4 w-full max-w-lg">
           <div
-            className={`border-2 border-dashed rounded-xl p-16 w-full text-center cursor-pointer transition-colors ${
+            className={`border-2 border-dashed rounded-xl p-8 sm:p-16 w-full text-center cursor-pointer transition-colors ${
               dragging
                 ? "border-primary bg-primary/5"
                 : "border-base-300 hover:border-primary/50"

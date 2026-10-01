@@ -21,7 +21,7 @@ export function FilterChips<T extends string>({ icon: Icon, options, value, onCh
   return (
     <>
       <Icon className="h-4 w-4 opacity-50" />
-      <div className="flex gap-1">
+      <div className="flex gap-1 flex-wrap">
         {options.map((opt) => {
           const count = counts?.[opt.value] ?? 0;
           const active = value === opt.value ? (opt.activeClass ?? "badge-primary") : "badge-ghost";

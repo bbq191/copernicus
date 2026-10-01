@@ -12,8 +12,8 @@ export function WorkspaceSkeleton() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left panel skeleton */}
-        <div className="w-[400px] shrink-0 border-r border-base-300 p-4 flex flex-col gap-4">
+        {/* Left panel skeleton：移动端默认显示的那一栏，占满宽度；桌面端是固定宽度的左栏 */}
+        <div className="w-full lg:w-[25rem] lg:shrink-0 border-r border-base-300 p-4 flex flex-col gap-4">
           {/* AudioPlayer placeholder */}
           <div className="skeleton h-20 w-full" />
           <div className="skeleton h-3 w-full" />
@@ -34,8 +34,8 @@ export function WorkspaceSkeleton() {
           <div className="skeleton h-16 w-full" />
         </div>
 
-        {/* Right panel skeleton */}
-        <div className="flex-1 p-4 flex flex-col gap-3">
+        {/* Right panel skeleton：移动端默认隐藏（对应 AppLayout 的底部 Tab 默认选中左栏） */}
+        <div className="hidden lg:flex flex-1 p-4 flex-col gap-3">
           {/* Toolbar placeholder */}
           <div className="skeleton h-10 w-full rounded-lg" />
 

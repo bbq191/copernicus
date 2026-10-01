@@ -51,6 +51,26 @@ class TestSubmitTranscriptEndpoint:
         assert data["existing"] is True
         mock_task_store.submit_transcript.assert_not_called()
 
+    def test_submit_transcript_passes_callback_url_through(self, client, mock_task_store):
+        response = client.post(
+            "/api/v1/tasks/transcript",
+            files={"file": ("test.wav", b"fake", "audio/wav")},
+            data={"callback_url": "https://example.com/hook"},
+        )
+
+        assert response.status_code == 202
+        assert mock_task_store.submit_transcript.call_args.kwargs["callback_url"] == "https://example.com/hook"
+
+    def test_submit_transcript_rejects_non_http_callback_url(self, client, mock_task_store):
+        response = client.post(
+            "/api/v1/tasks/transcript",
+            files={"file": ("test.wav", b"fake", "audio/wav")},
+            data={"callback_url": "javascript:alert(1)"},
+        )
+
+        assert response.status_code == 422
+        mock_task_store.submit_transcript.assert_not_called()
+
 
 class TestHealthEndpoint:
     def test_health_check(self, client, mock_pipeline):

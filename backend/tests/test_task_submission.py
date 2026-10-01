@@ -162,3 +162,80 @@ class TestCorrectionDegradationIsExposed:
 
         old = {"transcript": [], "processing_time_ms": 1.0}
         assert TranscriptResponse.model_validate(old).correction_failed_batches == 0
+
+
+class TestWebhook:
+    """任务到达终态（completed/failed）时回调一次 callback_url。"""
+
+    @staticmethod
+    def _fake_httpx(monkeypatch, calls: list, *, raise_error: Exception | None = None):
+        class _Response:
+            status_code = 200
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def post(self, url, json=None):
+                if raise_error:
+                    raise raise_error
+                calls.append((url, json))
+                return _Response()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+    async def test_fires_once_on_success_with_the_submitted_url(self, tmp_path, persistence, monkeypatch):
+        calls: list = []
+        self._fake_httpx(monkeypatch, calls)
+        store, _ = _store(persistence)
+
+        task_id = await store.submit_transcript(
+            _upload(tmp_path), "a.wav", file_hash=FILE_HASH, callback_url="https://example.com/hook"
+        )
+        await store._handles[task_id]
+        await asyncio.gather(*list(store._webhook_tasks))
+
+        assert calls == [("https://example.com/hook", {"task_id": task_id, "status": "completed", "error": None})]
+
+    async def test_fires_with_the_error_message_on_failure(self, tmp_path, persistence, monkeypatch):
+        calls: list = []
+        self._fake_httpx(monkeypatch, calls)
+        store, pipeline = _store(persistence)
+        pipeline.process_transcript = AsyncMock(side_effect=RuntimeError("boom"))
+
+        task_id = await store.submit_transcript(
+            _upload(tmp_path), "a.wav", file_hash=FILE_HASH, callback_url="https://example.com/hook"
+        )
+        await store._handles[task_id]
+        await asyncio.gather(*list(store._webhook_tasks))
+
+        assert calls == [("https://example.com/hook", {"task_id": task_id, "status": "failed", "error": "boom"})]
+
+    async def test_no_callback_url_means_no_request(self, tmp_path, persistence, monkeypatch):
+        calls: list = []
+        self._fake_httpx(monkeypatch, calls)
+        store, _ = _store(persistence)
+
+        task_id = await store.submit_transcript(_upload(tmp_path), "a.wav", file_hash=FILE_HASH)
+        await store._handles[task_id]
+
+        assert calls == []
+        assert store._webhook_tasks == set()
+
+    async def test_delivery_failure_does_not_affect_the_task_itself(self, tmp_path, persistence, monkeypatch):
+        self._fake_httpx(monkeypatch, [], raise_error=RuntimeError("network down"))
+        store, _ = _store(persistence)
+
+        task_id = await store.submit_transcript(
+            _upload(tmp_path), "a.wav", file_hash=FILE_HASH, callback_url="https://example.com/hook"
+        )
+        await store._handles[task_id]
+        await asyncio.gather(*list(store._webhook_tasks), return_exceptions=True)
+
+        assert store.get(task_id).status == TaskStatus.COMPLETED

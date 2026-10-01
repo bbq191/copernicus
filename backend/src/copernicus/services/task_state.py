@@ -33,6 +33,7 @@ class TaskInfo:
         "audio_path",
         "parent_task_id",
         "created_at",
+        "callback_url",
     )
 
     def __init__(
@@ -41,6 +42,7 @@ class TaskInfo:
         *,
         eval_only: bool = False,
         parent_task_id: str | None = None,
+        callback_url: str | None = None,
     ) -> None:
         self.task_id = task_id
         self.status = TaskStatus.PENDING
@@ -57,6 +59,7 @@ class TaskInfo:
         self.audio_path: str | None = None
         self.parent_task_id = parent_task_id
         self.created_at = time.monotonic()  # 供任务耗时统计；不落盘，重启恢复的任务不参与统计
+        self.callback_url = callback_url  # 任务终态时通知一次；不落盘，重启恢复的任务不会再通知
 
     def enter(self, status: TaskStatus) -> None:
         """切换到新阶段并清零该阶段的进度。"""

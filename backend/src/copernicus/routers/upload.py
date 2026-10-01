@@ -32,6 +32,7 @@ async def query_upload(
     visual_scan: bool = False,
     generate_summary: bool = True,
     template_id: str = "universal",
+    callback_url: str | None = Query(default=None, max_length=2048),
     store: TaskStore = Depends(get_task_store),
     upload_sessions: UploadSessionService = Depends(get_upload_session_service),
 ) -> UploadQueryResponse:
@@ -42,7 +43,8 @@ async def query_upload(
     - 全新文件：创建会话并返回 `offset=0`。
 
     `file_hash` 为文件的 SHA-256 十六进制字符串。`visual_scan=true`
-    时将在转写完成后额外执行关键帧 OCR 和人脸检测。
+    时将在转写完成后额外执行关键帧 OCR 和人脸检测。`callback_url`（必须以
+    `http://` 或 `https://` 开头）在任务完成/失败时回调一次，语义同 3.1。
     """
     if total_size > settings.max_upload_size_bytes:
         raise HTTPException(status_code=413, detail="File too large")
@@ -50,6 +52,8 @@ async def query_upload(
         hotwords = validate_hotwords(hotwords or [])
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    if callback_url and not callback_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="callback_url 必须以 http:// 或 https:// 开头")
 
     existing_id = store.lookup_by_hash(file_hash)
     if existing_id:
@@ -66,6 +70,7 @@ async def query_upload(
         visual_scan=visual_scan,
         generate_summary=generate_summary,
         template_id=template_id,
+        callback_url=callback_url,
     )
     return UploadQueryResponse(offset=offset, complete=False)
 
@@ -182,6 +187,7 @@ async def _finalize_upload(
         visual_scan=session["visual_scan"],
         generate_summary=session.get("generate_summary", True),
         template_id=session.get("template_id", "universal"),
+        callback_url=session.get("callback_url"),
     )
     upload_sessions.delete_session(file_hash)
     return task_id

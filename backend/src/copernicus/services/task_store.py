@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 _INTERRUPTED_MESSAGE = "服务重启导致任务中断，请重新转写或重新上传"
 _CANCELLED_MESSAGE = "任务已取消"
 
+_WEBHOOK_TIMEOUT_S = 5.0
+
 # 仅这些阶段可安全取消：其余阶段（ASR 推理、视觉扫描）运行在线程中，无法中断，
 # 取消协程会让线程继续占用 GPU，同时放行下一个任务，造成显存冲突
 _CANCELLABLE_STATUSES: frozenset[TaskStatus] = frozenset({
@@ -85,6 +87,7 @@ class TaskStore:
         self._tasks: dict[str, TaskInfo] = {}
         self._invalidated: set[str] = set()  # 已被用户作废，不再从磁盘惰性恢复
         self._hash_index: dict[str, str] = persistence.load_hash_index()
+        self._webhook_tasks: set[asyncio.Task] = set()  # 持有引用防止后台任务被提前回收
 
     @property
     def persistence(self) -> PersistenceService:
@@ -385,7 +388,13 @@ class TaskStore:
         return info
 
     async def _submit_media_task(
-        self, source: Path, filename: str, file_hash: str, label: str, make_run
+        self,
+        source: Path,
+        filename: str,
+        file_hash: str,
+        label: str,
+        make_run,
+        callback_url: str | None = None,
     ) -> str:
         """音视频任务的公共提交流程：占位 → 媒体落盘 → 启动。
 
@@ -394,7 +403,7 @@ class TaskStore:
         """
         self.ensure_capacity()
         task_id = uuid.uuid4().hex
-        info = self._register_task(task_id)
+        info = self._register_task(task_id, callback_url=callback_url)
         if file_hash:
             # 占位即登记：落盘期间到达的同一文件的重复上传会命中本任务，而不是再开一个
             self._register_hash(file_hash, task_id)
@@ -426,6 +435,7 @@ class TaskStore:
         *,
         file_hash: str = "",
         visual_scan: bool = False,
+        callback_url: str | None = None,
     ) -> str:
         """提交转写任务。source 是已落盘的上传文件，会被移入任务目录。"""
         return await self._submit_media_task(
@@ -433,6 +443,7 @@ class TaskStore:
             lambda task_id, media: self._run_transcript(
                 task_id, media, filename, hotwords, visual_scan=visual_scan
             ),
+            callback_url=callback_url,
         )
 
     async def submit_standard_minutes(
@@ -445,6 +456,7 @@ class TaskStore:
         visual_scan: bool = False,
         generate_summary: bool = True,
         template_id: str = "universal",
+        callback_url: str | None = None,
     ) -> str:
         """提交标准纪要任务：Pipeline 完成后自动生成摘要。source 是已落盘的上传文件。"""
         return await self._submit_media_task(
@@ -456,6 +468,7 @@ class TaskStore:
                 generate_summary=generate_summary,
                 template_id=template_id,
             ),
+            callback_url=callback_url,
         )
 
     def _require_parent(self, parent_task_id: str | None) -> None:
@@ -589,6 +602,35 @@ class TaskStore:
             self._persistence.save_failure(task.task_id, error)
         except Exception:
             logger.warning("Failed to persist failure of task %s", task.task_id, exc_info=True)
+        self._fire_webhook(task)
+
+    # -- webhook notification --------------------------------------------------
+
+    def _fire_webhook(self, task: TaskInfo) -> None:
+        """任务到达终态时尽力通知一次：不重试、失败只记日志，不影响任务本身。
+
+        callback_url 由提交方提供，等同于转写/纪要等其他接口参数，不做目标可达性以外的信任校验。
+        进程重启后恢复的任务不会再触发（callback_url 不落盘）。
+        """
+        if not task.callback_url:
+            return
+        webhook_task = asyncio.create_task(self._send_webhook(task))
+        self._webhook_tasks.add(webhook_task)
+        webhook_task.add_done_callback(self._webhook_tasks.discard)
+
+    async def _send_webhook(self, task: TaskInfo) -> None:
+        import httpx
+
+        payload = {"task_id": task.task_id, "status": task.status.value, "error": task.error}
+        try:
+            async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT_S) as client:
+                resp = await client.post(task.callback_url, json=payload)
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Webhook for task %s returned HTTP %s", task.task_id, resp.status_code
+                )
+        except Exception:
+            logger.warning("Webhook delivery failed for task %s", task.task_id, exc_info=True)
 
     # -- scheduling ----------------------------------------------------------
 
@@ -664,6 +706,7 @@ class TaskStore:
             task.status = TaskStatus.COMPLETED
             _record_outcome(task, "completed")
             logger.info("Task %s completed (%s)", task_id, label)
+            self._fire_webhook(task)
         except Exception as e:
             self._mark_failed(task, str(e) or type(e).__name__)
             logger.error(

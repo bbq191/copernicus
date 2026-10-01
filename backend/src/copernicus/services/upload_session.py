@@ -61,6 +61,7 @@ class UploadSessionService:
         visual_scan: bool = False,
         generate_summary: bool = True,
         template_id: str = "universal",
+        callback_url: str | None = None,
     ) -> int:
         """查找或创建会话，返回当前已接收字节数（0 = 新会话）。"""
         meta_path = self._meta_path(file_hash)
@@ -72,6 +73,7 @@ class UploadSessionService:
                 meta["visual_scan"] = visual_scan
                 meta["generate_summary"] = generate_summary
                 meta["template_id"] = template_id
+                meta["callback_url"] = callback_url
                 self._write_meta(meta_path, meta)
             except (json.JSONDecodeError, OSError):
                 pass
@@ -90,6 +92,7 @@ class UploadSessionService:
             "visual_scan": visual_scan,
             "generate_summary": generate_summary,
             "template_id": template_id,
+            "callback_url": callback_url,
         }
         self._write_meta(meta_path, meta)
         logger.info("New session %.8s total=%d bytes", file_hash, total_size)

@@ -200,6 +200,31 @@ class TestFinalChunkHandling:
 
         assert store.submit_standard_minutes.call_args.kwargs["template_id"] == "weekly"
 
+    def test_callback_url_is_carried_through_the_session_to_the_task(self, env):
+        from unittest.mock import AsyncMock
+
+        client, store, *_ = env
+        store.submit_standard_minutes = AsyncMock(return_value="t" * 32)
+        client.get(
+            f"/api/v1/uploads/{FILE_HASH}",
+            params={
+                "filename": "a.wav",
+                "total_size": len(DATA),
+                "callback_url": "https://example.com/hook",
+            },
+        )
+        _put(client, 0, DATA)
+
+        assert store.submit_standard_minutes.call_args.kwargs["callback_url"] == "https://example.com/hook"
+
+    def test_non_http_callback_url_is_rejected_at_session_creation(self, env):
+        client, *_ = env
+        r = client.get(
+            f"/api/v1/uploads/{FILE_HASH}",
+            params={"filename": "a.wav", "total_size": len(DATA), "callback_url": "ftp://evil"},
+        )
+        assert r.status_code == 422
+
     def test_final_chunk_moves_the_file_into_the_task_dir(self, env):
         client, _, sessions, persistence = env
         _open(client)

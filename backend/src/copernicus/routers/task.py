@@ -98,6 +98,18 @@ async def _receive_upload(
 # 基础 AI — 任务提交
 # ---------------------------------------------------------------------------
 
+_CALLBACK_URL_DESC = (
+    "任务到达终态（completed/failed）时回调一次的 URL，必须以 http:// 或 https:// 开头；"
+    "回调只尝试一次、不重试，仅作为轮询的补充，不保证送达"
+)
+
+
+def _validate_callback_url(callback_url: str | None) -> str | None:
+    if callback_url and not callback_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="callback_url 必须以 http:// 或 https:// 开头")
+    return callback_url or None
+
+
 @router.post(
     "/tasks/standard_minutes",
     response_model=TaskSubmitResponse,
@@ -111,17 +123,20 @@ async def submit_standard_minutes_task(
     visual_scan: bool = Form(default=False, description="是否提取关键帧并执行 OCR/人脸检测"),
     generate_summary: bool = Form(default=True, description="是否在转写完成后自动生成摘要"),
     template_id: str = Form(default="universal", description="纪要模板 ID，可通过 GET /api/v1/templates 查询可用列表"),
+    callback_url: str | None = Form(default=None, max_length=2048, description=_CALLBACK_URL_DESC),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
     """上传音视频文件，执行完整的 Base AI 流水线。
 
     **流程**：ASR 转写（SenseVoice）→ 物理清洗 → LLM 文字纠错 → 智能摘要（Map-Reduce）
 
-    重复上传同一文件（SHA-256 相同）时直接返回已有任务，`existing=true`。
+    重复上传同一文件（SHA-256 相同）时直接返回已有任务，`existing=true`
+    ——此时若已有任务不是刚提交的，传入的 `callback_url` 不会生效。
 
     `visual_scan=true` 时额外执行关键帧提取、OCR 和人脸检测，结果存入
     `ocr_results.json` 与 `visual_events.json`，可供后续合规审核使用。
     """
+    callback_url = _validate_callback_url(callback_url)
     upload = await _receive_upload(file, hotwords, store)
     if upload.existing_response:
         return upload.existing_response
@@ -131,6 +146,7 @@ async def submit_standard_minutes_task(
         visual_scan=visual_scan,
         generate_summary=generate_summary,
         template_id=template_id,
+        callback_url=callback_url,
     )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 
@@ -146,6 +162,7 @@ async def submit_transcript_task(
     file: UploadFile = File(..., description="音频或视频文件，最大 500 MB"),
     hotwords: str | None = Form(default=None, description="热词列表，JSON 字符串数组"),
     visual_scan: bool = Form(default=False, description="是否执行视觉扫描"),
+    callback_url: str | None = Form(default=None, max_length=2048, description=_CALLBACK_URL_DESC),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
     """上传音视频文件，执行 ASR 转写 + 文字纠错，不生成摘要。
@@ -153,6 +170,7 @@ async def submit_transcript_task(
     比 `standard_minutes` 快约 30%（省去评估阶段的 LLM 调用）。
     适用于只需要转写文本、后续自行处理摘要的场景。
     """
+    callback_url = _validate_callback_url(callback_url)
     upload = await _receive_upload(file, hotwords, store)
     if upload.existing_response:
         return upload.existing_response
@@ -160,6 +178,7 @@ async def submit_transcript_task(
         upload.path, upload.filename, upload.hotwords,
         file_hash=upload.file_hash,
         visual_scan=visual_scan,
+        callback_url=callback_url,
     )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 

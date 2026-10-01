@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from copernicus.exceptions import InvalidIdentifierError
+from copernicus.utils.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,7 @@ class UploadSessionService:
     @staticmethod
     def _write_meta(path: Path, meta: dict) -> None:
         """先写临时文件再改名：事件循环里的查询与线程里的追加会并发读取它，不能读到写了一半的内容。"""
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        atomic_write(path, json.dumps(meta, ensure_ascii=False))
 
     def get_or_create(
         self,

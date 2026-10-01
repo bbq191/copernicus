@@ -8,11 +8,11 @@ id 从 1000 起自增，与内置的 13 条规则（1-13）不会冲突。
 """
 
 import logging
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from copernicus.schemas.compliance import CustomRule, CustomRuleCreate, CustomRuleUpdate
+from copernicus.utils.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -21,19 +21,6 @@ _ID_START = 1000
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """先写临时文件再改名：进程崩溃不会留下损坏的规则文件（同 PersistenceService 的写入约定）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        Path(tmp_path).replace(path)
-    except BaseException:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
 
 
 class RuleStore:
@@ -68,7 +55,7 @@ class RuleStore:
     def create_rule(self, data: CustomRuleCreate) -> CustomRule:
         now = _now()
         rule = CustomRule(id=self._next_id(), created_at=now, updated_at=now, **data.model_dump())
-        _atomic_write(self._path(rule.id), rule.model_dump_json(indent=2))
+        atomic_write(self._path(rule.id), rule.model_dump_json(indent=2))
         return rule
 
     def update_rule(self, rule_id: int, data: CustomRuleUpdate) -> CustomRule | None:
@@ -78,7 +65,7 @@ class RuleStore:
         changes = data.model_dump(exclude_unset=True)
         changes["updated_at"] = _now()
         updated = existing.model_copy(update=changes)
-        _atomic_write(self._path(rule_id), updated.model_dump_json(indent=2))
+        atomic_write(self._path(rule_id), updated.model_dump_json(indent=2))
         return updated
 
     def delete_rule(self, rule_id: int) -> bool:

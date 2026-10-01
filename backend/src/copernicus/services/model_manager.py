@@ -67,7 +67,10 @@ class ModelManager:
 
     def queue_position(self, model_type: str, ticket: str) -> int:
         """ticket 在该模型等待队列中前面还有几个；不在队列中（已拿到锁或从未排队）则为 0。"""
-        return self._waiters.get(model_type, []).index(ticket) if ticket in self._waiters.get(model_type, []) else 0
+        try:
+            return self._waiters.get(model_type, []).index(ticket)
+        except ValueError:
+            return 0
 
     @asynccontextmanager
     async def use(

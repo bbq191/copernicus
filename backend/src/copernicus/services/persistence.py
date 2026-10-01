@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import shutil
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from copernicus.exceptions import InvalidIdentifierError
+from copernicus.utils.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,13 @@ class PersistenceService:
 
     def save_json(self, task_id: str, filename: str, model: BaseModel) -> None:
         dest = self.task_dir(task_id) / filename
-        self._atomic_write(dest, model.model_dump_json(indent=2))
+        atomic_write(dest, model.model_dump_json(indent=2))
         logger.info("Persisted %s for task %s", filename, task_id)
 
     def save_data(self, task_id: str, filename: str, data: Any) -> None:
         """保存任意可 JSON 序列化的数据（dict 或 list）。"""
         dest = self.task_dir(task_id) / filename
-        self._atomic_write(dest, json.dumps(data, ensure_ascii=False, indent=2))
+        atomic_write(dest, json.dumps(data, ensure_ascii=False, indent=2))
         logger.info("Persisted %s for task %s", filename, task_id)
 
     def load_json(self, task_id: str, filename: str) -> dict | None:
@@ -102,7 +102,7 @@ class PersistenceService:
         if video_suffix:
             meta["video_suffix"] = video_suffix
         dest = self.task_dir(task_id) / "meta.json"
-        self._atomic_write(dest, json.dumps(meta, ensure_ascii=False, indent=2))
+        atomic_write(dest, json.dumps(meta, ensure_ascii=False, indent=2))
 
     def load_meta(self, task_id: str) -> dict | None:
         return self.load_json(task_id, "meta.json")
@@ -113,7 +113,7 @@ class PersistenceService:
         if meta is None:
             return False
         meta.update(fields)
-        self._atomic_write(
+        atomic_write(
             self.task_dir(task_id) / "meta.json",
             json.dumps(meta, ensure_ascii=False, indent=2),
         )
@@ -191,7 +191,7 @@ class PersistenceService:
         if not self.has_file(task_id, "meta.json"):
             return
         dest = self.task_dir(task_id) / _FAILURE_FILE
-        self._atomic_write(
+        atomic_write(
             dest,
             json.dumps(
                 {"error": error, "failed_at": datetime.now(timezone.utc).isoformat()},
@@ -224,7 +224,7 @@ class PersistenceService:
         return {}
 
     def save_hash_index(self, index: dict[str, str]) -> None:
-        self._atomic_write(
+        atomic_write(
             self._hash_index_path,
             json.dumps(index, ensure_ascii=False, indent=2),
         )
@@ -274,18 +274,3 @@ class PersistenceService:
             "has_video": video_path is not None,
         }
 
-    # -- internal ------------------------------------------------------------
-
-    @staticmethod
-    def _atomic_write(dest: Path, content: str) -> None:
-        """通过临时文件写入再重命名，防止部分写入导致数据损坏。"""
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(dest.parent), suffix=".tmp"
-        )
-        try:
-            with open(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(content)
-            Path(tmp_path).replace(dest)
-        except BaseException:
-            Path(tmp_path).unlink(missing_ok=True)
-            raise

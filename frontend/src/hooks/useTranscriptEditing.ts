@@ -1,17 +1,18 @@
 import { useCallback } from "react";
 import { errorMessage } from "../api/errors";
-import { editTranscript, renameSpeakers } from "../api/task";
+import { renameSpeakers } from "../api/task";
 import { useTaskStore } from "../stores/taskStore";
+import { scheduleTranscriptEdit } from "../stores/transcriptPersister";
 import { useToastStore } from "../stores/toastStore";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import type { TranscriptEntry } from "../types/transcript";
 
-/** 转写人工校对：乐观更新本地状态，同步到后端，失败时回滚并提示。 */
+/** 转写人工校对：乐观更新本地状态，防抖提交到后端，失败自动重试（见 transcriptPersister）。 */
 export function useTranscriptEditing() {
   const taskId = useTaskStore((s) => s.taskId);
 
   const editSentence = useCallback(
-    async (entry: TranscriptEntry, text: string) => {
+    (entry: TranscriptEntry, text: string) => {
       const next = text.trim();
       const previous = entry.text_corrected;
       const { rawEntries, setSentenceText } = useTranscriptStore.getState();
@@ -19,14 +20,7 @@ export function useTranscriptEditing() {
       if (!taskId || index < 0 || !next || next === previous) return;
 
       setSentenceText(index, next);
-      try {
-        await editTranscript(taskId, [{ index, text_corrected: next }]);
-      } catch (err) {
-        setSentenceText(index, previous);
-        useToastStore
-          .getState()
-          .addToast("error", `保存失败：${errorMessage(err, "未知错误")}`);
-      }
+      scheduleTranscriptEdit(taskId, { index, text_corrected: next });
     },
     [taskId],
   );

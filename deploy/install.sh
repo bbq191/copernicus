@@ -216,7 +216,9 @@ build_frontend() {
     [[ -d $WEB_ROOT ]] && run mv "$WEB_ROOT" "$WEB_ROOT.old"
     run mv "$WEB_ROOT.new" "$WEB_ROOT"
     run rm -rf "$WEB_ROOT.old"
-    have restorecon && run restorecon -R "$WEB_ROOT" || true
+    if have restorecon; then
+        run restorecon -R "$WEB_ROOT" || true
+    fi
 }
 
 install_service() {

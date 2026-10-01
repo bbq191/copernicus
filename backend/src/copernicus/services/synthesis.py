@@ -20,6 +20,7 @@ from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.llm import LLMClient, OllamaClient
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.task_store import TaskStore
+from copernicus.task_context import reset_task_id, set_task_id
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,7 @@ class SynthesisService:
         output = self._store.persistence.path_of(task_id) / "synthesis.mp3"
         partial = output.with_suffix(".partial.mp3")  # 先写临时文件再改名：失败不会留下残缺的 mp3
         started = time.perf_counter()
+        token = set_task_id(task_id)
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 # exclusive：先卸载 ASR 腾出显存；unload_after：合成是偶发操作，
@@ -172,3 +174,4 @@ class SynthesisService:
             self._store.fail_synthesis(task_id, str(exc) or type(exc).__name__)
         finally:
             partial.unlink(missing_ok=True)
+            reset_task_id(token)

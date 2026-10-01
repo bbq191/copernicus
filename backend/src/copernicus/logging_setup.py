@@ -14,8 +14,9 @@ from pathlib import Path
 
 from copernicus.config import settings
 from copernicus.request_context import install_log_record_factory
+from copernicus.task_context import install_log_record_factory as install_task_id_log_record_factory
 
-LOG_FORMAT = "%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s: %(message)s"
+LOG_FORMAT = "%(asctime)s %(levelname)-8s [%(request_id)s|%(task_id)s] %(name)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -23,8 +24,9 @@ _UVICORN_LOGGERS = ("uvicorn", "uvicorn.access", "uvicorn.error")
 
 
 def configure_logging(log_file: Path | None = None) -> None:
-    """让日志带 request_id，并输出到 log_file（None 则输出到 stderr）。"""
-    install_log_record_factory()  # 必须早于格式配置：格式串引用 request_id
+    """让日志带 request_id 与 task_id，并输出到 log_file（None 则输出到 stderr）。"""
+    install_log_record_factory()  # 必须早于格式配置：格式串引用 request_id/task_id
+    install_task_id_log_record_factory()
     if log_file is None:
         logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
         return

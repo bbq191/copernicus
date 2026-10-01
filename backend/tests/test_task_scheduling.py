@@ -174,6 +174,38 @@ class TestTaskMetrics:
         assert any("copernicus_task_duration_seconds_count" in line for line in metrics.task_duration.samples())
 
 
+class TestTaskIdLogging:
+    async def test_logs_emitted_during_a_task_carry_its_task_id(self, tmp_path, caplog):
+        import logging
+
+        from copernicus.task_context import install_log_record_factory
+
+        install_log_record_factory()
+        store = _store(tmp_path)
+        tid = _register(store, "f" * 32)
+
+        async def body():
+            logging.getLogger("probe").info("deep inside the task")
+
+        with caplog.at_level(logging.INFO, logger="probe"):
+            await store._run_with_timeout(tid, body())
+
+        records = [r for r in caplog.records if r.name == "probe"]
+        assert records and records[0].task_id == tid
+
+    async def test_context_is_reset_after_the_task_finishes(self, tmp_path):
+        from copernicus.task_context import get_task_id
+
+        store = _store(tmp_path)
+        tid = _register(store, "e" * 32)
+
+        async def body():
+            pass
+
+        await store._run_with_timeout(tid, body())
+        assert get_task_id() == "-"
+
+
 def _register(store: TaskStore, tid: str) -> str:
     store._tasks[tid] = TaskInfo(tid)
     return tid

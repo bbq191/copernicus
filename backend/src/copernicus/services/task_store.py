@@ -32,6 +32,7 @@ from copernicus.services.task_state import (
 )
 from copernicus.services.template_manager import TemplateManager
 from copernicus.services.transcript_edit import apply_speaker_renames, apply_text_edits
+from copernicus.task_context import reset_task_id, set_task_id
 
 logger = logging.getLogger(__name__)
 
@@ -681,7 +682,8 @@ class TaskStore:
     # -- timeout wrapper -----------------------------------------------------
 
     async def _run_with_timeout(self, task_id: str, coro) -> None:
-        """为任务协程添加超时保护。"""
+        """为任务协程添加超时保护；同时是整个任务生命周期内日志 task_id 的注入点。"""
+        token = set_task_id(task_id)
         try:
             await asyncio.wait_for(coro, timeout=self._task_timeout)
         except asyncio.CancelledError:
@@ -694,6 +696,8 @@ class TaskStore:
             if task and task.status not in TERMINAL_STATUSES:
                 self._mark_failed(task, f"任务超时（{self._task_timeout}s）")
                 logger.error("Task %s timed out after %ds", task_id, self._task_timeout)
+        finally:
+            reset_task_id(token)
 
     # -- run implementations -------------------------------------------------
 

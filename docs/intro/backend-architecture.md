@@ -34,8 +34,9 @@
 |---|---|
 | `main.py` | 应用入口：生命周期（启动预检、创建服务、关停收尾）、CORS、请求追踪中间件 |
 | `config.py` | 全部配置（pydantic-settings，读环境变量与 `.env`），含派生路径与模型清单 |
-| `logging_setup.py` | 日志初始化：带 request_id 的格式，输出到 stderr（journald）或文件 |
+| `logging_setup.py` | 日志初始化：带 request_id、task_id 的格式，输出到 stderr（journald）或文件 |
 | `request_context.py` | 请求追踪：为每个请求分配 request_id，写入响应头与每条日志 |
+| `task_context.py` | 任务追踪：后台任务协程期间（`_run_with_timeout` 之内）注入 task_id，写入每条日志 |
 | `error_handlers.py` | 领域异常到 HTTP 响应的统一映射 |
 | `routers/` | `task`（任务全生命周期）、`upload`（分片上传）、`evaluation`（文本评估与模板）、`compliance`（合规）、`synthesis`（音频重塑）、`transcription`（健康检查） |
 | `services/pipeline/` | 流水线：`orchestrator` 顺序执行，`base` 定义上下文与阶段协议，`stages/` 是 9 个阶段 |
@@ -253,6 +254,8 @@
 ## 十二、错误处理与可观测性
 
 **统一错误格式**：所有领域异常都返回 `{detail, code, request_id}`，响应头带 `X-Request-ID`（跨域已放行该头）。同一个 request_id 会出现在这次请求触发的所有日志里，包括它启动的后台任务日志，方便按 id 检索。
+
+**task_id**：每条日志同时带 task_id（格式 `[request_id|task_id]`）。音视频/合成等任务跑在独立的后台协程里，生命周期可能远超提交它的那次 HTTP 请求（request_id 早已随请求结束而失效），这段时间内管线各阶段、ASR、LLM 调用产生的日志都带着同一个 task_id，可以不靠 request_id 单独按任务检索。非任务协程中的日志 task_id 为 `-`。
 
 | 异常 | 状态码 | code |
 |---|---|---|

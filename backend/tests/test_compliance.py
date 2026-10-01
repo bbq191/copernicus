@@ -225,6 +225,24 @@ class TestExactMatchValidator:
         # "保证质量"拼音与任何 rule 13 keyword 都不匹配，应被丢弃
         assert len(result) == 0
 
+    def test_full_text_pinyin_conversion_reused_across_rules(self, registry: RuleRegistry):
+        """全文拼音转换只做一次，不随未命中的 exact 规则数量重复计算（性能回归）。"""
+        from unittest.mock import patch
+
+        import copernicus.services.compliance_filters as cf
+
+        rules = registry.enrich([
+            ComplianceRule(id=12, content="不得使用存取、利息、本金等概念"),
+            ComplianceRule(id=13, content="不得使用保证水平、零风险等不当用语"),
+        ])
+        full_text = "这个产品笨金有保障，保正水平也很稳定"
+
+        with patch.object(cf, "_text_to_pinyin", wraps=cf._text_to_pinyin) as spy:
+            result = ExactMatchValidator().apply([], rules, full_text)
+
+        assert spy.call_count == 1  # 两条规则都走拼音回退，但只转换一次全文
+        assert {v.rule_id for v in result} == {12, 13}
+
 
 # ------------------------------------------------------------------ #
 #  2. 误报回归测试

@@ -94,8 +94,13 @@ class ExactMatchValidator:
                         text_to_check[:100],
                     )
 
-        # 补充扫描：检查全文本中的关键词命中，LLM 可能遗漏
+        # 补充扫描：检查全文本中的关键词命中，LLM 可能遗漏。
+        # full_text 在整个循环里不变，拼音转换只做一次、惰性求值（只有真的
+        # 需要回退拼音匹配时才算），避免每条未命中的 exact 规则都重新转换
+        # 一遍全文拼音——规则库上线后 exact 规则数不再固定，这个重复计算
+        # 会随规则数量线性增长。
         reported_rules = {v.rule_id for v in validated}
+        full_text_pinyin: list[str] | None = None
         for rule_id, rule in exact_rules.items():
             if rule_id in reported_rules:
                 continue
@@ -133,7 +138,9 @@ class ExactMatchValidator:
             pinyin_patterns = RuleRegistry.get_pinyin_patterns(rule_id)
             if not pinyin_patterns:
                 continue
-            matched_kw = self._pinyin_match(full_text, pinyin_patterns)
+            if full_text_pinyin is None:
+                full_text_pinyin = _text_to_pinyin(full_text) if full_text else []
+            matched_kw = self._pinyin_match_in_pinyin(full_text_pinyin, pinyin_patterns)
             if matched_kw:
                 validated.append(
                     Violation(
@@ -168,7 +175,13 @@ class ExactMatchValidator:
         """对文本做拼音匹配，返回命中的 keyword 原文或 None。"""
         if not text:
             return None
-        text_pinyin = _text_to_pinyin(text)
+        return ExactMatchValidator._pinyin_match_in_pinyin(_text_to_pinyin(text), pinyin_patterns)
+
+    @staticmethod
+    def _pinyin_match_in_pinyin(
+        text_pinyin: list[str], pinyin_patterns: list[tuple[str, str]]
+    ) -> str | None:
+        """同 _pinyin_match，但接受已经转换好的拼音列表（供调用方跨多条规则复用同一次转换）。"""
         for kw, kw_pinyin in pinyin_patterns:
             if _pinyin_contains(text_pinyin, kw_pinyin, len(kw)) is not None:
                 return kw

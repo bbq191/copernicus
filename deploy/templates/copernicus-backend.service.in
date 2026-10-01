@@ -33,6 +33,9 @@ TimeoutStopSec=60
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+# 数据目录权限收紧到 750（见 install.sh ensure_user），这里同步把新建文件的
+# 默认权限也收紧，否则任务目录/上传文件会按默认 umask 落地成同机其他用户可读
+UMask=0027
 LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal

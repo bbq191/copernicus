@@ -123,8 +123,12 @@ ensure_user() {
     fi
 
     local backend="$APP_DIR/backend" frontend="$APP_DIR/frontend"
+    # 数据目录存放用户上传的原始音视频与任务结果，收紧到仅本用户可读写，
+    # 避免同机其他本地账户（默认权限下）能够列出/读取这些审核素材
+    run install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" \
+        "$DATA_DIR" "$DATA_DIR/uploads"
     run install -d -o "$SERVICE_USER" -g "$SERVICE_USER" \
-        "$DATA_DIR" "$DATA_DIR/uploads" "$backend/.venv" "$backend/models"
+        "$backend/.venv" "$backend/models"
     ((SKIP_FRONTEND)) || run install -d -o "$SERVICE_USER" -g "$SERVICE_USER" \
         "$frontend/node_modules" "$frontend/dist"
 }
@@ -229,7 +233,10 @@ install_service() {
     step "systemd 服务"
     render_template "$REPO_DIR/deploy/templates/copernicus-backend.service.in" "$UNIT_FILE"
     if have systemd-analyze && ((!DRY_RUN)); then
-        systemd-analyze verify "$UNIT_FILE" 2>&1 | grep -v "ollama.service" || true
+        local verify_output
+        verify_output="$(systemd-analyze verify "$UNIT_FILE" 2>&1 | grep -v "ollama.service" || true)"
+        [[ -z $verify_output ]] || warn "systemd-analyze verify 发现问题（服务仍会继续安装/启动，请核实）：
+$verify_output"
     fi
     run systemctl daemon-reload
     run systemctl enable "$SERVICE_NAME"

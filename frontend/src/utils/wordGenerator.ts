@@ -9,6 +9,7 @@ import {
 import { saveAs } from "file-saver";
 import type { MergedBlock } from "../types/view";
 import { formatTime } from "./formatTime";
+import { mergedBlockText } from "./mergedBlockText";
 
 export async function exportToWord(
   blocks: MergedBlock[],
@@ -38,9 +39,7 @@ export async function exportToWord(
       }),
     );
 
-    const text = block.sentences
-      .map((s) => (mode === "corrected" ? s.text_corrected : s.text))
-      .join("");
+    const text = mergedBlockText(block, mode);
 
     children.push(new Paragraph({ text }));
   }

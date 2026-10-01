@@ -7,6 +7,7 @@ import { useTaskStore } from "../../stores/taskStore";
 import { useToastStore } from "../../stores/toastStore";
 import { formatTime } from "../../utils/formatTime";
 import { playViolation } from "../../utils/violationPlayback";
+import { splitReasoningSteps } from "../../utils/reasoningSteps";
 import { EvidenceBlock } from "./EvidenceBlock";
 import { STATUS_META, severityMeta, sourceMeta } from "./violationMeta";
 
@@ -150,8 +151,8 @@ export const ViolationCard = memo(function ViolationCard({ violation, isSelected
               AI 判定逻辑
             </summary>
             <div className="mt-1.5 text-base-content/60 space-y-0.5 pl-2 border-l border-base-300">
-              {violation.reasoning.split(/[。；]/).filter(Boolean).map((step, i) => (
-                <p key={i}>{step.trim()}</p>
+              {splitReasoningSteps(violation.reasoning).map((step, i) => (
+                <p key={i}>{step}</p>
               ))}
             </div>
           </details>

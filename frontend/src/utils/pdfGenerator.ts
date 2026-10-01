@@ -1,5 +1,6 @@
 import type { MergedBlock } from "../types/view";
 import { formatTime } from "./formatTime";
+import { mergedBlockText } from "./mergedBlockText";
 
 /**
  * 真文字 PDF 导出：用 jsPDF 的文本 API 直接画字，不再截图 DOM。
@@ -45,9 +46,7 @@ export function buildPdfLines(
     { text: title, sizePt: TITLE_SIZE_PT, color: COLOR_TITLE, gapBeforeMm: 0, align: "center" },
   ];
   for (const block of blocks) {
-    const text = block.sentences
-      .map((s) => (mode === "corrected" ? s.text_corrected : s.text))
-      .join("");
+    const text = mergedBlockText(block, mode);
     lines.push({
       text: `${block.speaker}  ${formatTime(block.startMs)}`,
       sizePt: HEADER_SIZE_PT,

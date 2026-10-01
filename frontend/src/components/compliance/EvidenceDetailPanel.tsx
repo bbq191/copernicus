@@ -2,6 +2,7 @@ import { X, Check, RotateCcw, Clock, BookOpen, ZoomIn } from "lucide-react";
 import { selectEvidenceDetail, useComplianceStore } from "../../stores/complianceStore";
 import { useEvidenceDetail } from "../../hooks/useEvidenceDetail";
 import { formatTime } from "../../utils/formatTime";
+import { splitReasoningSteps } from "../../utils/reasoningSteps";
 import type { Violation } from "../../types/compliance";
 import { STATUS_META, severityMeta, sourceMeta } from "./violationMeta";
 
@@ -83,10 +84,10 @@ function EvidenceDetail({ violation }: { violation: Violation }) {
           <div>
             <h4 className="text-xs font-bold text-base-content/50 mb-1">AI 判定逻辑</h4>
             <div className="bg-base-200 rounded p-3 text-sm border border-base-300 space-y-1">
-              {violation.reasoning.split(/[。；]/).filter(Boolean).map((step, i) => (
+              {splitReasoningSteps(violation.reasoning).map((step, i) => (
                 <p key={i} className="text-base-content/70">
                   <span className="text-base-content/40 mr-1">{i + 1}.</span>
-                  {step.trim()}
+                  {step}
                 </p>
               ))}
             </div>

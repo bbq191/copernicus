@@ -89,5 +89,7 @@ class RuleStore:
         return True
 
     def _next_id(self) -> int:
+        # 先扫描目录再在 create_rule 里写文件，中间无锁：假定单进程（部署固定 --workers 1，
+        # 见 copernicus-backend.service.in），多进程并发调用会撞到同一个 id 导致规则互相覆盖。
         existing = [int(f.stem) for f in self._dir.glob("*.json") if f.stem.isdigit()]
         return max(existing, default=_ID_START - 1) + 1

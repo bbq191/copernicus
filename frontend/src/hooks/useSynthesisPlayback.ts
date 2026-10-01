@@ -59,12 +59,16 @@ export function useSynthesisPlayback() {
       } catch (err) {
         if (signal.aborted) return true;
         if (guardRef.current.shouldRetry(err)) return false; // 网络抖动：下个周期重试
+        if (taskId !== useTaskStore.getState().taskId) return true; // 任务已切换，错误提示没有意义
         useToastStore.getState().addToast("error", errorMessage(err, "查询合成状态失败"));
         setPolling(false);
         setLoading(false);
         return true;
       }
       if (signal.aborted) return true;
+      // 防御性检查：正常情况下任务切换会让本组件连同这个轮询循环一起卸载（见 WorkspacePage），
+      // 这里只是避免"万一没有卸载"时，旧任务的迟到响应污染当前任务的合成结果。
+      if (taskId !== useTaskStore.getState().taskId) return true;
 
       if (s.status === "completed") {
         setResult(s.duration_ms ?? 0, s.synthesis_time_ms ?? 0);

@@ -16,7 +16,8 @@ WorkingDirectory=@APP_DIR@/backend
 Environment="HF_HUB_OFFLINE=1"
 Environment="MODELSCOPE_CACHE=@APP_DIR@/backend/models/funasr"
 Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
-# 单 worker：GPU 锁与内存 TaskStore 无法跨进程共享
+# 单 worker：GPU 锁、内存 TaskStore、RuleStore 的自增 id 生成均无法跨进程共享
+# （RuleStore._next_id 是"先扫描目录再写文件"两步无锁操作，多进程并发会撞 id 覆盖规则）
 # 关闭 access log：前端每 2 秒轮询一次，逐条写日志只增加磁盘与 CPU 开销
 ExecStart=@APP_DIR@/backend/.venv/bin/uvicorn copernicus.main:app \
     --host 127.0.0.1 \

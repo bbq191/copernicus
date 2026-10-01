@@ -102,6 +102,10 @@ class TaskStore:
         """是否有任务正在占用 LLM/VRAM（用于合成前的冲突检测）。"""
         return any(t.status in LLM_ACTIVE_STATUSES for t in self._tasks.values())
 
+    def active_task_ids(self) -> set[str]:
+        """未到终态（非 completed/failed）的任务 id 集合，供磁盘清理服务避让。"""
+        return {tid for tid, t in self._tasks.items() if t.status not in TERMINAL_STATUSES}
+
     def get_task_stats(self) -> dict[str, int]:
         """返回任务队列统计：active / completed / failed / synthesis_running。"""
         tasks = list(self._tasks.values())

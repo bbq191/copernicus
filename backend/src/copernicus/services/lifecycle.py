@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import shutil
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,7 +20,9 @@ _MEDIA_STEMS = frozenset({"audio", "video", "synthesis"})
 _SESSIONS_DIR = ".sessions"
 _INCOMING_DIR = ".incoming"
 
-# 失败任务与运行中任务在磁盘上无法区分，清理前至少等待这么久，避免误删仍在处理的任务
+# 失败任务与运行中任务在磁盘上无法区分，清理前至少等待这么久，避免误删仍在处理的任务。
+# 这只是兜底：task_timeout_seconds 配置得比它还大时（比如支持数小时的长录音），
+# 光靠这个固定下限挡不住误删，真正的防线是下面的 active_task_ids。
 _MIN_FAILED_AGE = timedelta(hours=2)
 
 _GB = 1024 ** 3
@@ -33,10 +36,14 @@ class LifecycleService:
         upload_dir: Path,
         retention_hours: int,
         max_storage_gb: float = 0,
+        active_task_ids: Callable[[], set[str]] | None = None,
     ) -> None:
         self._upload_dir = upload_dir
         self._retention = timedelta(hours=retention_hours)
         self._max_storage_bytes = int(max_storage_gb * _GB)  # 0 表示不限制
+        # 运行中任务的 id（=目录名）集合；传入后，整目录删除与配额清退都会避开它们，
+        # 不再仅依赖"距上次处理时间"这个和 task_timeout_seconds 脱钩的时间下限。
+        self._active_task_ids = active_task_ids or (lambda: set())
 
     # ------------------------------------------------------------------ #
     #  扫描辅助
@@ -87,11 +94,18 @@ class LifecycleService:
             deleted += self._delete_files(self._media_files(task_dir))
         return deleted
 
-    def cleanup_stale_failed_tasks(self, tasks: list[tuple[Path, datetime]] | None = None) -> int:
+    def cleanup_stale_failed_tasks(
+        self,
+        tasks: list[tuple[Path, datetime]] | None = None,
+        active_ids: set[str] | None = None,
+    ) -> int:
         """整目录删除失败/被中断且超期的任务（没有转写结果，留着无用），返回删除任务数。"""
         cutoff = datetime.now(timezone.utc) - max(self._retention, _MIN_FAILED_AGE)
+        active = self._active_task_ids() if active_ids is None else active_ids
         removed = 0
         for task_dir, processed_at in tasks if tasks is not None else self._scan_tasks():
+            if task_dir.name in active:
+                continue
             if processed_at > cutoff or (task_dir / "transcript.json").exists():
                 continue
             shutil.rmtree(task_dir, ignore_errors=True)
@@ -119,7 +133,11 @@ class LifecycleService:
                     removed += 1
         return removed
 
-    def enforce_storage_quota(self, tasks: list[tuple[Path, datetime]] | None = None) -> int:
+    def enforce_storage_quota(
+        self,
+        tasks: list[tuple[Path, datetime]] | None = None,
+        active_ids: set[str] | None = None,
+    ) -> int:
         """磁盘占用超过配额时，从最旧的任务开始删除原始媒体，返回删除文件数。"""
         if self._max_storage_bytes <= 0:
             return 0
@@ -131,8 +149,11 @@ class LifecycleService:
             "Storage %.2f GB exceeds quota %.2f GB, evicting oldest media",
             used / _GB, self._max_storage_bytes / _GB,
         )
+        active = self._active_task_ids() if active_ids is None else active_ids
         deleted = 0
         for task_dir, _ in sorted(tasks if tasks is not None else self._scan_tasks(), key=lambda t: t[1]):
+            if task_dir.name in active:
+                continue
             files = self._media_files(task_dir)
             if not files:
                 continue
@@ -145,11 +166,14 @@ class LifecycleService:
     def run_once(self) -> dict[str, int]:
         """依次执行全部清理策略并返回各项数量。"""
         tasks = self._scan_tasks()  # 只扫描并解析一次 meta.json，各策略共用
+        active = self._active_task_ids()  # 同一轮内任务状态保持一致，避免边界处判断不一致
         result = {
             "expired_media": self.cleanup_expired_media(tasks),
-            "stale_failed_tasks": self.cleanup_stale_failed_tasks(tasks),
+            "stale_failed_tasks": self.cleanup_stale_failed_tasks(tasks, active),
             "stale_sessions": self.cleanup_stale_sessions(),
-            "quota_evicted": self.enforce_storage_quota([t for t in tasks if t[0].is_dir()]),  # 剔除刚被删掉的目录
+            "quota_evicted": self.enforce_storage_quota(
+                [t for t in tasks if t[0].is_dir()], active
+            ),  # 剔除刚被删掉的目录
         }
         if any(result.values()):
             logger.info("Lifecycle cleanup: %s", result)

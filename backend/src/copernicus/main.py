@@ -126,8 +126,13 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
     app.state.synthesis = SynthesisService(app.state.task_store, model_manager, settings)
 
     # 后台定时清理：过期媒体、失败任务、中断上传与存储配额
+    # active_task_ids 让清理避开仍在跑的任务，而不是只靠和 task_timeout_seconds
+    # 脱钩的固定时间下限（超时调大但保留期没跟着调时，长任务会被整目录误删）
     lifecycle = LifecycleService(
-        settings.upload_dir, settings.media_retention_hours, settings.max_storage_gb
+        settings.upload_dir,
+        settings.media_retention_hours,
+        settings.max_storage_gb,
+        active_task_ids=app.state.task_store.active_task_ids,
     )
     return asyncio.create_task(lifecycle.run_periodic())
 

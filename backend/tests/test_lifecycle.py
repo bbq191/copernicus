@@ -71,6 +71,14 @@ class TestStaleFailedTasks:
         assert svc.cleanup_stale_failed_tasks() == 0
         assert d.exists()
 
+    def test_active_task_is_kept_even_past_the_min_age_fallback(self, tmp_path):
+        # task_timeout_seconds 配得比 _MIN_FAILED_AGE（2h）还长时（长录音场景），
+        # 真正挡住误删的是 active_task_ids，而不是固定的时间下限
+        d = _make_task(tmp_path, "still-running", age_hours=3, done=False)
+        svc = LifecycleService(tmp_path, retention_hours=24, active_task_ids=lambda: {"still-running"})
+        assert svc.cleanup_stale_failed_tasks() == 0
+        assert d.exists()
+
 
 class TestStaleSessions:
     def test_removes_only_expired_sessions(self, tmp_path, svc):
@@ -107,6 +115,19 @@ class TestStorageQuota:
         # 结果文件始终保留
         assert (oldest / "transcript.json").exists()
         assert (middle / "meta.json").exists()
+
+    def test_active_task_is_not_evicted_even_if_oldest(self, tmp_path):
+        svc = LifecycleService(
+            tmp_path, retention_hours=24, max_storage_gb=0, active_task_ids=lambda: {"oldest"}
+        )
+        svc._max_storage_bytes = 2500
+        oldest = _make_task(tmp_path, "oldest", age_hours=30, done=True, media=b"x" * 1000)
+        _make_task(tmp_path, "middle", age_hours=20, done=True, media=b"x" * 1000)
+        _make_task(tmp_path, "newest", age_hours=1, done=True, media=b"x" * 1000)
+
+        svc.enforce_storage_quota()
+
+        assert (oldest / "audio.wav").exists()
 
 
 class TestRunOnce:

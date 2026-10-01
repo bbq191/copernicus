@@ -79,9 +79,10 @@ export class DebouncedPersister<TKey, TUpdate, TResult> {
       this.deps.onSaved(taskId, result);
     } catch {
       this.failures += 1;
-      const willRetry = this.failures <= this.maxRetries;
-      // 队列已被别的任务占用时无法回放，只能提示；否则放回队列（不覆盖期间产生的新修改）
-      if (this.pendingTaskId === null || this.pendingTaskId === taskId) {
+      // 队列已被别的任务占用时无法回放，只能提示且不得声称会重试；否则放回队列（不覆盖期间产生的新修改）
+      const canRequeue = this.pendingTaskId === null || this.pendingTaskId === taskId;
+      const willRetry = canRequeue && this.failures <= this.maxRetries;
+      if (canRequeue) {
         this.pendingTaskId = taskId;
         for (const u of batch) {
           const k = this.deps.key(u);

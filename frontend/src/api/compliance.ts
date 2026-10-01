@@ -1,7 +1,7 @@
 import client from "./client";
 import { pollUntilDone } from "./polling";
 import type { PollOptions } from "./polling";
-import type { ComplianceResponse } from "../types/compliance";
+import type { ComplianceResponse, ViolationStatus } from "../types/compliance";
 import type { TaskSubmitResponse } from "../types/task";
 import type { TranscriptEntry } from "../types/transcript";
 
@@ -52,7 +52,7 @@ export async function auditCompliance(
 
 export interface ViolationStatusUpdate {
   violation_id: string;
-  status: string;
+  status: ViolationStatus;
   note?: string;
 }
 

@@ -1,7 +1,17 @@
 import { useState } from "react";
 import { createRule, updateRule } from "../../api/rules";
 import { errorMessage } from "../../api/errors";
-import type { CheckMode, CustomRule, CustomRuleInput, EvidenceSource, RuleCategory, RuleSeverity } from "../../types/rules";
+import {
+  RULE_CONTENT_MAX_LEN,
+  RULE_DESCRIPTION_MAX_LEN,
+  RULE_TITLE_MAX_LEN,
+  type CheckMode,
+  type CustomRule,
+  type CustomRuleInput,
+  type EvidenceSource,
+  type RuleCategory,
+  type RuleSeverity,
+} from "../../types/rules";
 import { CATEGORY_LABEL, CHECK_MODE_LABEL, EMPTY_RULE_DRAFT, EVIDENCE_LABEL, SEVERITY_LABEL } from "./ruleLabels";
 
 interface Props {
@@ -60,7 +70,7 @@ export function RuleFormModal({ initial, onClose, onSaved }: Props) {
             <span className="label-text text-xs mb-1">标题</span>
             <input
               className="input input-bordered input-sm"
-              maxLength={100}
+              maxLength={RULE_TITLE_MAX_LEN}
               value={draft.title}
               onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
             />
@@ -71,7 +81,7 @@ export function RuleFormModal({ initial, onClose, onSaved }: Props) {
             <textarea
               className="textarea textarea-bordered textarea-sm"
               rows={2}
-              maxLength={2000}
+              maxLength={RULE_CONTENT_MAX_LEN}
               value={draft.content}
               onChange={(e) => setDraft((d) => ({ ...d, content: e.target.value }))}
             />
@@ -141,7 +151,7 @@ export function RuleFormModal({ initial, onClose, onSaved }: Props) {
             <textarea
               className="textarea textarea-bordered textarea-sm"
               rows={2}
-              maxLength={2000}
+              maxLength={RULE_DESCRIPTION_MAX_LEN}
               value={draft.description}
               onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
             />

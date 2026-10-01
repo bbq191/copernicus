@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewPersister } from "./reviewPersister";
 import type { ReviewPersisterDeps } from "./reviewPersister";
+import type { ViolationStatus } from "../types/compliance";
 
-const update = (id: string, status = "confirmed") => ({ violation_id: id, status });
+const update = (id: string, status: ViolationStatus = "confirmed") => ({ violation_id: id, status });
 
 function setup(over: Partial<ReviewPersisterDeps> = {}) {
   const send = vi.fn<ReviewPersisterDeps["send"]>().mockResolvedValue(88);
@@ -53,6 +54,27 @@ describe("ReviewPersister", () => {
     await vi.advanceTimersByTimeAsync(600);
     expect(send).toHaveBeenLastCalledWith("t1", [update("a", "rejected")], { keepalive: false });
     expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not claim a retry when the failed batch's task was already switched away from", async () => {
+    // 复现场景：resetWorkspaceStores() 在切到 t2 前先 flush() 补交 t1 的修改，
+    // 这次补交随后失败——此时不能既丢弃数据又谎称"稍后将自动重试"。
+    let rejectSend!: (err: Error) => void;
+    const { persister, send, onError } = setup();
+    send.mockImplementationOnce(() => new Promise((_res, rej) => (rejectSend = rej)));
+
+    persister.schedule("t1", update("a"));
+    void persister.flush();
+    await vi.advanceTimersByTimeAsync(0); // 让 t1 的 send() 真正发出（挂起，尚未 reject）
+    persister.schedule("t2", update("x")); // 切到 t2 之后，t1 的请求才失败
+
+    rejectSend(new Error("offline"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledWith(false);
+
+    await vi.advanceTimersByTimeAsync(10_000); // 即使等足够久，t1 也不应该再被重试
+    expect(send.mock.calls.filter((c) => c[0] === "t1")).toHaveLength(1);
   });
 
   it("stops retrying after maxRetries and reports it", async () => {

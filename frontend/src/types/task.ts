@@ -60,9 +60,12 @@ export interface TaskSummary {
   has_compliance: boolean;
 }
 
+/** in_progress 匹配所有非 completed/failed 的中间状态 */
+export type TaskStatusFilter = "completed" | "failed" | "in_progress";
+
 export interface TaskListResponse {
   tasks: TaskSummary[];
-  /** 磁盘上的任务总数，大于 tasks.length 表示被截断 */
+  /** 应用 search/status 过滤后、分页前的总数 */
   total: number;
 }
 

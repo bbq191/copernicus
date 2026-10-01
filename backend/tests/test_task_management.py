@@ -134,6 +134,44 @@ class TestListTasks:
 
         assert api.get("/api/v1/tasks").json()["tasks"] == []
 
+    def test_offset_pages_through_the_sorted_list(self, api, persistence):
+        _seed(persistence, TID_A, created_at="2026-01-01T00:00:00+00:00")
+        _seed(persistence, TID_B, created_at="2026-02-01T00:00:00+00:00")
+
+        body = api.get("/api/v1/tasks?limit=1&offset=1").json()
+
+        assert [t["task_id"] for t in body["tasks"]] == [TID_A]
+        assert body["total"] == 2
+
+    def test_search_matches_name_or_filename(self, api, persistence):
+        _seed(persistence, TID_A, created_at="2026-01-01T00:00:00+00:00", filename="产说会0101.mp4")
+        _seed(persistence, TID_B, created_at="2026-02-01T00:00:00+00:00", filename="周例会.wav")
+        persistence.save_data(TID_B, "evaluation.json", {"title": "季度复盘会", "formatted_content": ""})
+
+        by_filename = api.get("/api/v1/tasks?search=0101").json()
+        assert [t["task_id"] for t in by_filename["tasks"]] == [TID_A]
+
+        by_title = api.get("/api/v1/tasks?search=复盘").json()
+        assert [t["task_id"] for t in by_title["tasks"]] == [TID_B]
+
+        assert api.get("/api/v1/tasks?search=不存在的任务").json()["tasks"] == []
+
+    def test_status_filter_matches_completed_failed_and_in_progress(self, api, persistence, store):
+        _seed(persistence, TID_A, created_at="2026-01-01T00:00:00+00:00")  # completed
+        _seed(persistence, TID_B, created_at="2026-02-01T00:00:00+00:00", done=False)  # failed
+        tid_c = "c" * 32
+        _seed(persistence, tid_c, created_at="2026-03-01T00:00:00+00:00")
+        running = TaskInfo(tid_c)
+        running.status = TaskStatus.CORRECTING
+        store._tasks[tid_c] = running
+
+        assert [t["task_id"] for t in api.get("/api/v1/tasks?status=completed").json()["tasks"]] == [TID_A]
+        assert [t["task_id"] for t in api.get("/api/v1/tasks?status=failed").json()["tasks"]] == [TID_B]
+        assert [t["task_id"] for t in api.get("/api/v1/tasks?status=in_progress").json()["tasks"]] == [tid_c]
+
+    def test_invalid_status_is_rejected(self, api):
+        assert api.get("/api/v1/tasks?status=bogus").status_code == 422
+
 
 class TestPurge:
     def test_purge_removes_files_memory_and_hash(self, api, persistence, store):

@@ -256,14 +256,16 @@ Copernicus 的转写、纪要和审核都要跑几十秒到几十分钟，所以
 
 | 端点 | 参数 | 类型 | 是否必填 | 说明 |
 |---|---|---|---|---|
-| `GET /tasks` | `limit`（查询） | 整数 | 否 | 返回条数，1 到 500，默认 100 |
+| `GET /tasks` | `limit` / `offset`（查询） | 整数 | 否 | `limit` 返回条数，1 到 500，默认 100；`offset` 跳过的条数，默认 0，用于翻页 |
+| `GET /tasks` | `search`（查询） | 字符串 | 否 | 按任务名称或文件名模糊匹配（不区分大小写） |
+| `GET /tasks` | `status`（查询） | 字符串 | 否 | `completed` / `failed` / `in_progress` 之一；不传则不过滤 |
 | `PATCH /tasks/{id}` | `name`（JSON） | 字符串 | 是 | 新名称，1 到 100 字符，首尾空白会被去掉 |
 | `DELETE /tasks/{id}` | `purge`（查询） | 布尔 | 否 | 默认 `false`；`true` 为彻底删除 |
 | `POST /tasks/{id}/rerun-transcript` | `hotwords`（表单） | 字符串 | 否 | 同 3.1 的热词格式 |
 | `PATCH /tasks/{id}/transcript` | `edits`（JSON） | 数组 | 是 | 1 到 2000 项，每项含 `index`（句段下标，从 0 起）与 `text_corrected`（不超过 5000 字符） |
 | `PATCH /tasks/{id}/speakers` | `renames`（JSON） | 对象 | 是 | 1 到 50 项，键为原说话人标签，值为新名称（不能为空，不超过 50 字符） |
 
-`GET /tasks` 的响应含 `tasks` 数组与 `total`（磁盘上的任务总数，大于返回条数说明被 `limit` 截断）。每个条目含 `task_id`、`name`、`filename`、`created_at`、`status`、`error`、`has_video`、`has_evaluation`、`has_compliance`。`name` 的优先级为：用户重命名，其次纪要标题，最后原始文件名。
+`GET /tasks` 的响应含 `tasks` 数组与 `total`（应用 `search`/`status` 过滤后、分页前的总数；`offset + len(tasks)` 小于 `total` 说明还有更多）。每个条目含 `task_id`、`name`、`filename`、`created_at`、`status`、`error`、`has_video`、`has_evaluation`、`has_compliance`。`name` 的优先级为：用户重命名，其次纪要标题，最后原始文件名。
 
 **关键注意事项：**
 - **DELETE 有两种语义**：

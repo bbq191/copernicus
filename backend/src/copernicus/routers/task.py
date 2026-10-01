@@ -3,7 +3,7 @@ import hashlib
 import mimetypes
 import re
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -202,14 +202,19 @@ async def rerun_transcript(
 )
 async def list_tasks(
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None, max_length=200, description="按任务名称或文件名模糊搜索"),
+    status: Literal["completed", "failed", "in_progress"] | None = Query(
+        default=None, description="不传则不按状态过滤；in_progress 匹配所有未完成/未失败的中间状态"
+    ),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskListResponse:
     """按创建时间倒序返回历史任务摘要（含运行中与失败的任务）。
 
-    `total` 为磁盘上的任务总数，大于返回条数时表示被 `limit` 截断。
+    `total` 为应用 search/status 过滤后、分页前的任务总数；大于 `offset + len(tasks)` 表示还有更多。
     """
     # 需要遍历任务目录并逐个读取 meta.json，放入线程避免任务多时阻塞事件循环
-    tasks, total = await asyncio.to_thread(store.list_tasks, limit)
+    tasks, total = await asyncio.to_thread(store.list_tasks, limit, offset, search, status)
     return TaskListResponse(tasks=tasks, total=total)
 
 

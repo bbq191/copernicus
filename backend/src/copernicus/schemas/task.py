@@ -75,7 +75,7 @@ class TaskSummary(BaseModel):
 
 class TaskListResponse(BaseModel):
     tasks: list[TaskSummary]
-    total: int  # 磁盘上的任务总数（大于 len(tasks) 表示被 limit 截断）
+    total: int  # 应用 search/status 过滤后、分页前的任务总数
 
 
 class TaskRenameRequest(BaseModel):

@@ -265,8 +265,20 @@ class TaskStore:
 
     # -- task management (history / rename / purge / transcript proofreading) --
 
-    def list_tasks(self, limit: int = 100) -> tuple[list[TaskSummary], int]:
-        """按创建时间倒序返回历史任务摘要，以及磁盘上的任务总数。"""
+    def list_tasks(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        search: str | None = None,
+        status: str | None = None,
+    ) -> tuple[list[TaskSummary], int]:
+        """按创建时间倒序返回历史任务摘要，以及（应用 search/status 过滤后的）总数。
+
+        `status` 为 "in_progress" 时匹配所有非 completed/failed 的中间状态。
+        search/status 需要先把每条记录都读全（含 `_evaluation_title` 的额外一次磁盘读取）
+        才能过滤，不再是单纯按 limit 截断前几条；任务量到了万级以上这里会成为瓶颈，
+        目前的部署规模（磁盘任务目录逐个扫描）还远够用。
+        """
         entries = [
             e for e in self._persistence.scan_completed_tasks()
             if e["task_id"] not in self._invalidated
@@ -274,34 +286,50 @@ class TaskStore:
         entries.sort(key=lambda e: e["meta"].get("created_at", ""), reverse=True)
 
         summaries: list[TaskSummary] = []
-        for entry in entries[:limit]:
+        for entry in entries:
             task_id = entry["task_id"]
             live = self._tasks.get(task_id)
-            status = live.status if live else self._disk_status(entry)
-            if status is None:
+            task_status = live.status if live else self._disk_status(entry)
+            if task_status is None:
                 continue
             if live:
                 error = live.error
             else:
-                error = self._failure_error(task_id) if status == TaskStatus.FAILED else None
+                error = self._failure_error(task_id) if task_status == TaskStatus.FAILED else None
             meta = entry["meta"]
             filename = meta.get("filename", "")
+            name = meta.get("display_name") or self._evaluation_title(task_id, entry) or filename
             summaries.append(
                 TaskSummary(
                     task_id=task_id,
-                    name=meta.get("display_name")
-                    or self._evaluation_title(task_id, entry)
-                    or filename,
+                    name=name,
                     filename=filename,
                     created_at=meta.get("created_at", ""),
-                    status=status,
+                    status=task_status,
                     error=error,
                     has_video=entry["has_video"],
                     has_evaluation=entry["has_evaluation"],
                     has_compliance=entry["has_compliance"],
                 )
             )
-        return summaries, len(entries)
+
+        summaries = self._filter_tasks(summaries, search, status)
+        return summaries[offset : offset + limit], len(summaries)
+
+    @staticmethod
+    def _filter_tasks(
+        summaries: list[TaskSummary], search: str | None, status: str | None
+    ) -> list[TaskSummary]:
+        if search and (query := search.strip().lower()):
+            summaries = [
+                s for s in summaries if query in s.name.lower() or query in s.filename.lower()
+            ]
+        if status:
+            if status == "in_progress":
+                summaries = [s for s in summaries if s.status not in TERMINAL_STATUSES]
+            else:
+                summaries = [s for s in summaries if s.status == status]
+        return summaries
 
     def _evaluation_title(self, task_id: str, entry: dict) -> str:
         if not entry["has_evaluation"]:

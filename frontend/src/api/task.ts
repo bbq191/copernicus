@@ -7,6 +7,7 @@ import type {
   TaskSubmitResponse,
   TaskStatusResponse,
   TaskResultsResponse,
+  TaskStatusFilter,
   TranscriptTextEdit,
 } from "../types/task";
 
@@ -127,9 +128,17 @@ export function resolveEvidenceUrl(
   return getFrameUrl(taskId, filename);
 }
 
-export async function listTasks(limit = 100): Promise<TaskListResponse> {
+export interface ListTasksOptions {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  status?: TaskStatusFilter;
+}
+
+export async function listTasks(options: ListTasksOptions = {}): Promise<TaskListResponse> {
+  const { limit = 100, offset = 0, search, status } = options;
   const { data } = await client.get<TaskListResponse>("/tasks", {
-    params: { limit },
+    params: { limit, offset, search: search || undefined, status },
   });
   return data;
 }

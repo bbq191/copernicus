@@ -49,10 +49,16 @@ parse_args() {
 remove_dir() {
     local dir="$1" why="$2"
     [[ -d $dir ]] || return 0
-    # 防呆：拒绝删除根目录、家目录等明显危险的路径
-    case "$(realpath "$dir")" in
-        /|/home|/root|/opt|/var|/usr|/etc|/data) die "拒绝删除危险路径：$dir" ;;
-    esac
+    # 防呆：拒绝删除根目录、家目录等明显危险的路径。
+    # /home/<user> 额外按"整个家目录"精确匹配（不止原来的 /home 本身）——
+    # 防的是 DATA_DIR=/home/alice 这种误配置；但不能用前缀匹配 /home/*，
+    # 否则 APP_DIR 本身就在某用户家目录下时（这台开发机就是这样），
+    # 会连 frontend/node_modules、backend/.venv 这些合法的深层子目录也一并拒删。
+    local resolved
+    resolved="$(realpath "$dir")"
+    if [[ $resolved == / || $resolved =~ ^/(root|home|home/[^/]+|opt|var|usr|etc|data|bin|sbin|lib|lib64|boot|proc|sys|dev|run|mnt|media|srv|tmp)$ ]]; then
+        die "拒绝删除危险路径：$dir"
+    fi
     confirm "删除 $dir（$why）？" || { log "已保留 $dir"; return 0; }
     run rm -rf -- "$dir"
 }

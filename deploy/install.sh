@@ -68,8 +68,11 @@ parse_args() {
             *) usage >&2; die "未知选项：$1" ;;
         esac
     done
-    [[ $PORT =~ ^[0-9]+$ ]] || die "--port 必须是数字"
+    [[ $PORT =~ ^[0-9]+$ && $PORT -ge 1 && $PORT -le 65535 ]] || die "--port 必须是 1-65535 之间的数字"
     [[ $SERVICE_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || die "非法的用户名：$SERVICE_USER"
+    # "_" 是 nginx server_name 的通配写法；否则只接受主机名/IP 合法字符，
+    # 避免拼进 nginx 配置与 CORS_ORIGINS JSON 字符串时因特殊字符破坏格式
+    [[ $SERVER_NAME == _ || $SERVER_NAME =~ ^[A-Za-z0-9.-]+$ ]] || die "非法的 --server-name：$SERVER_NAME"
     finalize_paths
 }
 
@@ -135,6 +138,7 @@ ensure_env_file() {
     for template in "$APP_DIR/backend/.env.prod" "$APP_DIR/backend/.env.example"; do
         [[ -f $template ]] && break
     done
+    [[ -f $template ]] || die "未找到 .env 模板（$APP_DIR/backend/.env.prod 或 .env.example）"
     log "由 $(basename "$template") 生成 .env"
     run install -m 640 -o "$SERVICE_USER" -g "$SERVICE_USER" "$template" "$env_file"
     set_env_key "$env_file" UPLOAD_DIR "$DATA_DIR/uploads"

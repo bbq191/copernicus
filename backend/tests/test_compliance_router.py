@@ -4,13 +4,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from copernicus.error_handlers import register_error_handlers
 from copernicus.routers.compliance import router as compliance_router
 from copernicus.schemas.compliance import (
     ComplianceReport,
     ComplianceResponse,
     ComplianceRule,
+    CustomRuleCreate,
     Violation,
 )
+from copernicus.services.rule_store import RuleStore
 
 
 def _violation(rule_id: int, ts: int, **kw) -> Violation:
@@ -36,11 +39,92 @@ def _response(violations: list[Violation]) -> dict:
 
 
 @pytest.fixture
-def api(mock_task_store: MagicMock) -> TestClient:
+def api(mock_task_store: MagicMock, tmp_path) -> TestClient:
     app = FastAPI()
     app.state.task_store = mock_task_store
+    app.state.rule_store = RuleStore(tmp_path / "rules")
     app.include_router(compliance_router)
+    register_error_handlers(app)
     return TestClient(app)
+
+
+_TRANSCRIPT = '[{"text": "你好"}]'
+
+
+class TestSubmitComplianceAudit:
+    def test_rules_file_takes_the_csv_path(self, api, mock_task_store):
+        mock_task_store.submit_compliance_audit.return_value = "task-1"
+        r = api.post(
+            "/api/v1/tasks/compliance_audit",
+            data={"transcript": _TRANSCRIPT},
+            files={"rules_file": ("r.csv", b"1,content", "text/csv")},
+        )
+        assert r.status_code == 202
+        kwargs = mock_task_store.submit_compliance_audit.call_args.kwargs
+        assert kwargs["rules_filename"] == "r.csv" and kwargs["use_rule_library"] is False
+
+    def test_no_file_and_no_library_flag_is_422(self, api):
+        r = api.post("/api/v1/tasks/compliance_audit", data={"transcript": _TRANSCRIPT})
+        assert r.status_code == 422
+
+    def test_library_flag_without_any_enabled_rule_is_422(self, api):
+        r = api.post(
+            "/api/v1/tasks/compliance_audit",
+            data={"transcript": _TRANSCRIPT, "use_rule_library": "true"},
+        )
+        assert r.status_code == 422
+
+    def test_library_flag_with_an_enabled_rule_submits(self, api, mock_task_store):
+        app: FastAPI = api.app
+        app.state.rule_store.create_rule(
+            CustomRuleCreate(
+                title="t", content="c", category="forbidden_phrase", check_mode="semantic"
+            )
+        )
+        mock_task_store.submit_compliance_audit.return_value = "task-2"
+
+        r = api.post(
+            "/api/v1/tasks/compliance_audit",
+            data={"transcript": _TRANSCRIPT, "use_rule_library": "true"},
+        )
+        assert r.status_code == 202
+        kwargs = mock_task_store.submit_compliance_audit.call_args.kwargs
+        assert kwargs["use_rule_library"] is True
+
+    def test_disabled_only_library_is_422(self, api):
+        app: FastAPI = api.app
+        rule = app.state.rule_store.create_rule(
+            CustomRuleCreate(
+                title="t", content="c", category="forbidden_phrase", check_mode="semantic"
+            )
+        )
+        from copernicus.schemas.compliance import CustomRuleUpdate
+
+        app.state.rule_store.update_rule(rule.id, CustomRuleUpdate(enabled=False))
+
+        r = api.post(
+            "/api/v1/tasks/compliance_audit",
+            data={"transcript": _TRANSCRIPT, "use_rule_library": "true"},
+        )
+        assert r.status_code == 422
+
+    def test_rules_file_wins_over_library_flag(self, api, mock_task_store):
+        app: FastAPI = api.app
+        app.state.rule_store.create_rule(
+            CustomRuleCreate(
+                title="t", content="c", category="forbidden_phrase", check_mode="semantic"
+            )
+        )
+        mock_task_store.submit_compliance_audit.return_value = "task-3"
+
+        r = api.post(
+            "/api/v1/tasks/compliance_audit",
+            data={"transcript": _TRANSCRIPT, "use_rule_library": "true"},
+            files={"rules_file": ("r.csv", b"1,content", "text/csv")},
+        )
+        assert r.status_code == 202
+        kwargs = mock_task_store.submit_compliance_audit.call_args.kwargs
+        assert kwargs["use_rule_library"] is False  # 提供了文件，库开关不生效
 
 
 class TestViolationIds:

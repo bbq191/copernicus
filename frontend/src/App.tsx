@@ -12,6 +12,9 @@ const WorkspacePage = lazy(() =>
 const HealthPage = lazy(() =>
   import("./pages/HealthPage").then((m) => ({ default: m.HealthPage })),
 );
+const RuleLibraryPage = lazy(() =>
+  import("./pages/RuleLibraryPage").then((m) => ({ default: m.RuleLibraryPage })),
+);
 
 function App() {
   return (
@@ -22,6 +25,7 @@ function App() {
             <Route path="/" element={<HomePage />} />
             <Route path="/workspace/:taskId" element={<WorkspacePage />} />
             <Route path="/health" element={<HealthPage />} />
+            <Route path="/rules" element={<RuleLibraryPage />} />
           </Routes>
         </Suspense>
         <ToastContainer />

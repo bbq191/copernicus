@@ -140,7 +140,7 @@ class TestTextEvaluation:
 
 
 class TestComplianceAudit:
-    def _setup(self, *, provider="ollama", ocr=None):
+    def _setup(self, *, provider="ollama", ocr=None, rule_store=None):
         compliance = MagicMock()
         compliance.parse_rules.return_value = (["rule"], ["example"])
         compliance.audit = AsyncMock(return_value=MagicMock())
@@ -149,7 +149,7 @@ class TestComplianceAudit:
         persistence.load_json.return_value = ocr
         executor = TaskExecutor(
             MagicMock(), persistence, Settings(llm_provider=provider),
-            compliance=compliance, model_manager=manager,
+            compliance=compliance, model_manager=manager, rule_store=rule_store,
         )
         return executor, compliance, manager, persistence
 
@@ -192,3 +192,61 @@ class TestComplianceAudit:
         executor, _ = _executor()
         with pytest.raises(ServiceNotConfiguredError):
             await executor.compliance_audit(TaskInfo("c" * 32, eval_only=True), [], b"r", "r.csv")
+
+    async def test_library_mode_skips_file_parsing_and_uses_structured_rules(self, monkeypatch, tmp_path):
+        from copernicus.schemas.compliance import CustomRuleCreate
+        from copernicus.services.rule_registry import StructuredRule
+        from copernicus.services.rule_store import RuleStore
+
+        rule_store = RuleStore(tmp_path / "rules")
+        rule_store.create_rule(CustomRuleCreate(
+            title="不得承诺保本", content="严禁承诺保本保息",
+            category="forbidden_phrase", check_mode="exact", keywords=["保本"],
+        ))
+        executor, compliance, _, _ = self._setup(rule_store=rule_store)
+        monkeypatch.setattr("copernicus.services.task_executor.ComplianceResponse", MagicMock())
+
+        await executor.compliance_audit(
+            TaskInfo("c" * 32, eval_only=True), [], b"", "", use_rule_library=True,
+        )
+
+        compliance.parse_rules.assert_not_called()
+        audit_rules = compliance.audit.call_args.args[0]
+        assert len(audit_rules) == 1 and isinstance(audit_rules[0], StructuredRule)
+        assert audit_rules[0].id == 1000 and audit_rules[0].check_mode == "exact"
+        assert compliance.audit.call_args.kwargs["few_shot_examples"] == []
+
+    async def test_library_mode_ignores_disabled_rules(self, monkeypatch, tmp_path):
+        from copernicus.schemas.compliance import CustomRuleCreate, CustomRuleUpdate
+        from copernicus.services.rule_store import RuleStore
+
+        rule_store = RuleStore(tmp_path / "rules")
+        disabled = rule_store.create_rule(CustomRuleCreate(
+            title="已停用", content="x", category="behavioral", check_mode="semantic",
+        ))
+        rule_store.update_rule(disabled.id, CustomRuleUpdate(enabled=False))
+        executor, compliance, _, _ = self._setup(rule_store=rule_store)
+        monkeypatch.setattr("copernicus.services.task_executor.ComplianceResponse", MagicMock())
+
+        from copernicus.exceptions import ComplianceError
+        with pytest.raises(ComplianceError):
+            await executor.compliance_audit(
+                TaskInfo("c" * 32, eval_only=True), [], b"", "", use_rule_library=True,
+            )
+
+    async def test_library_mode_with_empty_library_raises_compliance_error(self, tmp_path):
+        from copernicus.exceptions import ComplianceError
+        from copernicus.services.rule_store import RuleStore
+
+        executor, _, _, _ = self._setup(rule_store=RuleStore(tmp_path / "rules"))
+        with pytest.raises(ComplianceError):
+            await executor.compliance_audit(
+                TaskInfo("c" * 32, eval_only=True), [], b"", "", use_rule_library=True,
+            )
+
+    async def test_library_mode_without_a_configured_store_is_reported(self):
+        executor, _, _, _ = self._setup()  # rule_store=None
+        with pytest.raises(ServiceNotConfiguredError):
+            await executor.compliance_audit(
+                TaskInfo("c" * 32, eval_only=True), [], b"", "", use_rule_library=True,
+            )

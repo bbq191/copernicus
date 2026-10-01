@@ -42,6 +42,7 @@ class TaskStatusResponse(BaseModel):
     progress: TaskProgress
     result: EvaluationResponse | TranscriptResponse | ComplianceResponse | None = None
     error: str | None = None
+    queue_position: int | None = None  # 仅 status=queued_asr 时有值：前面还有几个任务在等 ASR
 
 
 class TaskResultsResponse(BaseModel):

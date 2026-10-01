@@ -16,6 +16,7 @@ const status = (over: Partial<TaskStatusResponse>): TaskStatusResponse => ({
   progress: { current_chunk: 0, total_chunks: 0, percent: 0 },
   result: null,
   error: null,
+  queue_position: null,
   ...over,
 });
 

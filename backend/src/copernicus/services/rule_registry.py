@@ -15,7 +15,7 @@ from typing import Literal
 
 from pypinyin import lazy_pinyin
 
-from copernicus.schemas.compliance import ComplianceRule
+from copernicus.schemas.compliance import ComplianceRule, CustomRule
 
 RuleCategory = Literal[
     "forbidden_phrase",  # 禁止用语
@@ -345,6 +345,25 @@ class RuleRegistry:
         if best_id is not None:
             return _BUILTIN_INDEX[best_id]
         return None
+
+    @staticmethod
+    def from_custom_rules(rules: list[CustomRule]) -> list[StructuredRule]:
+        """持久化规则库已经带有完整结构化元数据，直接转换，不需要内容模糊匹配。"""
+        return [
+            StructuredRule(
+                id=r.id,
+                title=r.title,
+                content=r.content,
+                category=r.category,
+                check_mode=r.check_mode,
+                evidence_sources=list(r.evidence_sources),
+                keywords=list(r.keywords),
+                description=r.description,
+                severity_default=r.severity_default,
+            )
+            for r in rules
+            if r.enabled
+        ]
 
     @staticmethod
     def get_exact_pattern(rule_id: int) -> re.Pattern[str] | None:

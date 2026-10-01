@@ -38,7 +38,7 @@
 | `request_context.py` | 请求追踪：为每个请求分配 request_id，写入响应头与每条日志 |
 | `task_context.py` | 任务追踪：后台任务协程期间（`_run_with_timeout` 之内）注入 task_id，写入每条日志 |
 | `error_handlers.py` | 领域异常到 HTTP 响应的统一映射 |
-| `routers/` | `task`（任务全生命周期）、`upload`（分片上传）、`evaluation`（文本评估与模板）、`compliance`（合规）、`synthesis`（音频重塑）、`transcription`（健康检查） |
+| `routers/` | `task`（任务全生命周期）、`upload`（分片上传）、`evaluation`（文本评估与模板）、`compliance`（合规）、`rules`（合规规则库 CRUD）、`synthesis`（音频重塑）、`transcription`（健康检查） |
 | `services/pipeline/` | 流水线：`orchestrator` 顺序执行，`base` 定义上下文与阶段协议，`stages/` 是 9 个阶段 |
 | `services/task_store.py`、`task_state.py` | 任务调度与内存状态（提交、排队上限、取消、超时、重启恢复） |
 | `services/task_executor.py` | 各类任务的执行体：管线状态切换、摘要、合规审核（与调度分离，便于单独测试） |
@@ -48,9 +48,10 @@
 | `services/minutes_structure.py` | 纪要结构化：提取行动项与决议，并回溯到转写时间点 |
 | `metrics.py`、`routers/metrics.py` | Prometheus 文本指标（无第三方依赖）与 `/metrics` 端点 |
 | `services/compliance*.py`、`rule_registry.py` | 合规审核、过滤器链、内置规则库、Excel 导出 |
+| `services/rule_store.py` | 持久化的自定义合规规则库（CRUD，每条规则一个 JSON 文件） |
 | `services/synthesis.py`、`tts.py` | 音频重塑（服务编排 + ChatTTS 推理） |
 | `services/llm/` | LLM 客户端（Ollama / OpenAI 兼容）：并发限流与重试 |
-| `services/model_manager.py` | GPU 模型的加载、卸载与互斥 |
+| `services/model_manager.py` | GPU 模型的加载、卸载、互斥，以及等待队列中的排队位置 |
 | `services/persistence.py`、`upload_session.py`、`lifecycle.py` | 磁盘持久化、分片上传会话、过期清理 |
 | `services/preflight.py` | 启动预检（模型文件、LLM 可达性等），只警告不阻止启动 |
 | `services/audio.py`、`ocr.py`、`face_detector.py` | ffmpeg 转换、RapidOCR、YOLO 人脸检测 |

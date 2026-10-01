@@ -31,6 +31,7 @@ class ModelManager:
         self._unloaders: dict[str, Callable[[Any], None]] = {}
         self._vram_estimates: dict[str, float] = {}
         self._use_locks: dict[str, asyncio.Lock] = {}
+        self._waiters: dict[str, list[str]] = {}  # model_type -> 正在等待该锁的 ticket，按到达顺序
 
     def register_loader(
         self,
@@ -64,30 +65,52 @@ class ModelManager:
         """该模型当前是否被占用（新的使用者需要排队）。"""
         return self._use_lock(model_type).locked()
 
+    def queue_position(self, model_type: str, ticket: str) -> int:
+        """ticket 在该模型等待队列中前面还有几个；不在队列中（已拿到锁或从未排队）则为 0。"""
+        return self._waiters.get(model_type, []).index(ticket) if ticket in self._waiters.get(model_type, []) else 0
+
     @asynccontextmanager
-    async def use(self, model_type: str, *, exclusive: bool = False, unload_after: bool = False):
+    async def use(
+        self, model_type: str, *, exclusive: bool = False, unload_after: bool = False, ticket: str | None = None
+    ):
         """独占使用指定模型；未加载则先加载。持有期间该模型不会被卸载。
 
         exclusive:    先卸载其他所有模型（会等它们的使用者结束）。
         unload_after: 使用结束后立即卸载本模型，释放显存（用于偶发、体积大的模型）。
+        ticket:       传入后，排队等待期间可通过 queue_position(model_type, ticket) 查询排在第几位
+                      （asyncio.Lock 按 FIFO 唤醒等待者，这里维护的等待列表与之同序）。
 
         用法::
 
             async with manager.use("asr") as model:
                 await asyncio.to_thread(model.transcribe, ...)
         """
-        async with self._use_lock(model_type):
-            if exclusive:
-                for name in list(self._loaded):
-                    if name != model_type:
-                        await self.unload(name)
-            if model_type not in self._loaded:
-                await self._do_load(model_type)
-            try:
-                yield self._loaded[model_type]
-            finally:
-                if unload_after:
-                    await asyncio.shield(self._do_unload(model_type))
+        lock = self._use_lock(model_type)
+        queued = ticket is not None and lock.locked()
+        if queued:
+            self._waiters.setdefault(model_type, []).append(ticket)
+        try:
+            async with lock:
+                if queued:
+                    self._waiters[model_type].remove(ticket)
+                    queued = False
+                if exclusive:
+                    for name in list(self._loaded):
+                        if name != model_type:
+                            await self.unload(name)
+                if model_type not in self._loaded:
+                    await self._do_load(model_type)
+                try:
+                    yield self._loaded[model_type]
+                finally:
+                    if unload_after:
+                        await asyncio.shield(self._do_unload(model_type))
+        finally:
+            # 等待过程中被取消（如任务排队时被用户取消）时，锁内的移除不会执行，这里兜底清理
+            if queued:
+                waiters = self._waiters.get(model_type)
+                if waiters and ticket in waiters:
+                    waiters.remove(ticket)
 
     async def unload(self, model_type: str) -> None:
         """卸载指定模型并释放显存；模型正被使用时等待其结束。"""

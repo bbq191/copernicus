@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Upload, FileAudio, ScanText, Activity } from "lucide-react";
+import { Upload, FileAudio, ScanText, Activity, ListChecks } from "lucide-react";
 import { submitStandardMinutesTask } from "../../api/task";
 import { useTemplates } from "../../hooks/useTemplates";
 import { TemplateSelect } from "../shared/TemplateSelect";
@@ -226,13 +226,20 @@ export function UploadPage() {
 
       <TaskHistory />
 
-      <div className="mt-4">
+      <div className="mt-4 flex items-center gap-4">
         <Link
           to="/health"
           className="flex items-center gap-1.5 text-xs text-base-content/40 hover:text-base-content/70 transition-colors"
         >
           <Activity className="h-3.5 w-3.5" />
           服务状态
+        </Link>
+        <Link
+          to="/rules"
+          className="flex items-center gap-1.5 text-xs text-base-content/40 hover:text-base-content/70 transition-colors"
+        >
+          <ListChecks className="h-3.5 w-3.5" />
+          规则库
         </Link>
       </div>
     </div>

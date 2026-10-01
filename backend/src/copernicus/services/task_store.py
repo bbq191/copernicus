@@ -23,6 +23,7 @@ from copernicus.services.minutes_structure import MinutesStructurer
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.rule_store import RuleStore
 from copernicus.services.task_executor import TaskExecutor
 from copernicus.services.task_state import (
     LLM_ACTIVE_STATUSES,
@@ -69,8 +70,10 @@ class TaskStore:
         model_manager: ModelManager | None = None,
         template_manager: TemplateManager | None = None,
         structurer: MinutesStructurer | None = None,
+        rule_store: RuleStore | None = None,
     ) -> None:
         self._persistence = persistence
+        self._model_manager = model_manager
         self._executor = TaskExecutor(
             pipeline, persistence, settings,
             evaluator=evaluator,
@@ -78,6 +81,7 @@ class TaskStore:
             model_manager=model_manager,
             template_manager=template_manager,
             structurer=structurer,
+            rule_store=rule_store,
         )
         self._synthesis_jobs: dict[str, SynthesisJob] = {}
         self._task_timeout = settings.task_timeout_seconds
@@ -116,6 +120,13 @@ class TaskStore:
         for t in self._tasks.values():
             counts[t.status.value] += 1
         return counts
+
+    def queue_position(self, task_id: str) -> int | None:
+        """任务正在排队等待 ASR（QUEUED_ASR）时，返回前面还有几个任务；否则 None。"""
+        task = self._tasks.get(task_id)
+        if task is None or task.status != TaskStatus.QUEUED_ASR or self._model_manager is None:
+            return None
+        return self._model_manager.queue_position("asr", task_id)
 
     # -- synthesis job tracking --------------------------------------------------
 
@@ -506,6 +517,7 @@ class TaskStore:
         rules_filename: str,
         *,
         parent_task_id: str | None = None,
+        use_rule_library: bool = False,
     ) -> str:
         """提交合规审核任务（纯文本，不需要 ASR）。"""
         self._executor.require_compliance()
@@ -515,7 +527,7 @@ class TaskStore:
         self._spawn(
             task_id,
             self._run_compliance_audit(
-                task_id, transcript_entries, rules_bytes, rules_filename
+                task_id, transcript_entries, rules_bytes, rules_filename, use_rule_library
             ),
         )
         logger.info("Task %s submitted (compliance audit, parent=%s)", task_id, parent_task_id)
@@ -762,8 +774,10 @@ class TaskStore:
         transcript_entries: list[dict],
         rules_bytes: bytes,
         rules_filename: str,
+        use_rule_library: bool,
     ) -> None:
         async with self._task_lifecycle(task_id, "compliance audit") as task:
             await self._executor.compliance_audit(
-                task, transcript_entries, rules_bytes, rules_filename
+                task, transcript_entries, rules_bytes, rules_filename,
+                use_rule_library=use_rule_library,
             )

@@ -59,7 +59,7 @@ class ASRTranscribeStage:
         async def guarded() -> ASRResult:
             nonlocal started
             try:
-                async with self._models.use("asr") as asr:
+                async with self._models.use("asr", ticket=ctx.task_id or None) as asr:
                     started = True
                     ctx.announce("asr_transcribe")
                     return await asyncio.to_thread(asr.transcribe, ctx.wav_path, ctx.hotwords, use_ts)

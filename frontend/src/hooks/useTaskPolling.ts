@@ -46,7 +46,7 @@ async function pollTask(taskId: string, signal: AbortSignal) {
           setError(res.error ?? "任务失败");
           return;
         }
-        updateStatus(res.status, res.progress);
+        updateStatus(res.status, res.progress, res.queue_position);
       } catch (err) {
         if (signal.aborted) return;
         // 网络抖动等可恢复错误：下个周期重试；连续失败或不可恢复才报错

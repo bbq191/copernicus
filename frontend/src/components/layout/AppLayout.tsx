@@ -4,7 +4,7 @@ import { RightPanel } from "./RightPanel";
 import { EvidenceDetailPanel } from "../compliance/EvidenceDetailPanel";
 import { useComplianceStore } from "../../stores/complianceStore";
 import { useNavigate, Link } from "react-router-dom";
-import { Activity } from "lucide-react";
+import { Activity, ListChecks } from "lucide-react";
 
 export function AppLayout() {
   const navigate = useNavigate();
@@ -23,6 +23,13 @@ export function AppLayout() {
           </button>
         </div>
         <div className="flex-none flex items-center gap-1">
+          <Link
+            to="/rules"
+            className="btn btn-ghost btn-sm btn-square"
+            title="规则库"
+          >
+            <ListChecks className="h-4 w-4" />
+          </Link>
           <Link
             to="/health"
             className="btn btn-ghost btn-sm btn-square"

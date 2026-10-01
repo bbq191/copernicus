@@ -3,6 +3,7 @@ from fastapi import Request
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.synthesis import SynthesisService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.rule_store import RuleStore
 from copernicus.services.task_store import TaskStore
 from copernicus.services.template_manager import TemplateManager
 from copernicus.services.upload_session import UploadSessionService
@@ -30,3 +31,7 @@ def get_synthesis_service(request: Request) -> SynthesisService | None:
 
 def get_template_manager(request: Request) -> TemplateManager:
     return request.app.state.template_manager
+
+
+def get_rule_store(request: Request) -> RuleStore:
+    return request.app.state.rule_store

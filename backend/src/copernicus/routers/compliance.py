@@ -4,10 +4,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field, model_validator
 
-from copernicus.dependencies import get_task_store
+from copernicus.dependencies import get_rule_store, get_task_store
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.task import TaskStatus, TaskSubmitResponse
 from copernicus.services.compliance_export import build_compliance_xlsx
+from copernicus.services.rule_store import RuleStore
 from copernicus.services.task_store import TaskStore
 
 router = APIRouter(prefix="/api/v1", tags=["高阶 AI"])
@@ -20,10 +21,16 @@ router = APIRouter(prefix="/api/v1", tags=["高阶 AI"])
     summary="提交合规审核任务",
 )
 async def submit_compliance_audit(
-    rules_file: UploadFile = File(..., description="CSV 或 XLSX 格式的规则文件，最大 2 MB"),
+    rules_file: UploadFile | None = File(
+        default=None, description="CSV 或 XLSX 格式的规则文件，最大 2 MB；省略时须将 use_rule_library 设为 true"
+    ),
+    use_rule_library: bool = Form(
+        default=False, description="不提供 rules_file 时，使用规则库（/api/v1/rules）中已启用的规则"
+    ),
     transcript: str = Form(..., description="转写条目 JSON 数组，来自 /tasks/{id}/results"),
     parent_task_id: str | None = Form(default=None, description="关联的转写任务 ID，用于自动加载 OCR 证据"),
     store: TaskStore = Depends(get_task_store),
+    rule_store: RuleStore = Depends(get_rule_store),
 ) -> TaskSubmitResponse:
     """对转写文本执行合规推理（Advanced AI 层）。
 
@@ -31,18 +38,32 @@ async def submit_compliance_audit(
     → 过滤链（去重 + 置信度过滤）→ 汇总打分。
 
     **`rules_file`**：支持 CSV / XLSX，需包含规则 ID、规则内容、few-shot 示例列。
+    省略时须将 `use_rule_library` 设为 `true`，改用规则库里已启用的自定义规则
+    （带完整的 category/check_mode/evidence_sources 元数据，不需要再靠内容模糊匹配）；
+    两者二选一，不会合并使用。
 
     **`transcript`**：调用 `GET /tasks/{task_id}/results` 后取
     `transcript.transcript` 字段序列化为 JSON 字符串。
 
     **`parent_task_id`**：填写后自动从持久化层加载对应任务的
-    `ocr_results.json` 作为画面文字证据。该任务若做过人脸检测，`visual_events.json`
-    也会一并生成，但目前只保存统计、不参与本接口的判定。
+    `ocr_results.json` 作为画面文字证据；若该任务做过人脸检测，`visual_events.json`
+    会作为"全程双录"规则（id=4）的证据参与判定。
     结果写入该任务的 `compliance.json`。
     """
-    rules_bytes = await rules_file.read()
-    if len(rules_bytes) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Rules file too large (max 2MB)")
+    if rules_file is None:
+        if not use_rule_library:
+            raise HTTPException(
+                status_code=422, detail="必须提供 rules_file，或将 use_rule_library 设为 true 使用规则库"
+            )
+        if not any(r.enabled for r in rule_store.list_rules()):
+            raise HTTPException(status_code=422, detail="规则库为空或没有已启用的规则，请先在规则库中添加")
+        rules_bytes, rules_filename = b"", ""
+    else:
+        rules_bytes = await rules_file.read()
+        if len(rules_bytes) > 2 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Rules file too large (max 2MB)")
+        rules_filename = rules_file.filename or "rules.csv"
+        use_rule_library = False
 
     if len(transcript.encode()) > 500 * 1024:
         raise HTTPException(status_code=413, detail="Transcript too large (max 500 KB)")
@@ -60,8 +81,9 @@ async def submit_compliance_audit(
     task_id = store.submit_compliance_audit(
         transcript_entries=entries,
         rules_bytes=rules_bytes,
-        rules_filename=rules_file.filename or "rules.csv",
+        rules_filename=rules_filename,
         parent_task_id=parent_task_id,
+        use_rule_library=use_rule_library,
     )
     return TaskSubmitResponse(task_id=task_id, status=TaskStatus.PENDING)
 

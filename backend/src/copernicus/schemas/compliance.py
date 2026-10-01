@@ -100,3 +100,54 @@ class ComplianceResponse(BaseModel):
     rules: list[ComplianceRule]
     report: ComplianceReport
     processing_time_ms: float
+
+
+# ---------------------------------------------------------------------------
+# 持久化的自定义合规规则库（CRUD 管理）
+#
+# category/check_mode/evidence_sources 的取值含义见 rule_registry.py 的
+# RuleCategory/CheckMode；在此重复声明是为了避免 schemas 反向依赖 services。
+# ---------------------------------------------------------------------------
+
+_RuleCategory = Literal["forbidden_phrase", "behavioral", "document", "visual_check"]
+_CheckMode = Literal["exact", "semantic", "visual"]
+_EvidenceSource = Literal["transcript", "ocr", "vision"]
+_Severity = Literal["high", "medium", "low"]
+
+
+class CustomRuleBase(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    content: str = Field(min_length=1, max_length=2000, description="审核标准原文，注入 LLM 审核 prompt")
+    category: _RuleCategory
+    check_mode: _CheckMode
+    evidence_sources: list[_EvidenceSource] = Field(default_factory=lambda: ["transcript"])
+    keywords: list[str] = Field(default_factory=list, max_length=50, description="仅 check_mode=exact 时使用")
+    description: str = Field(default="", max_length=2000, description="审核说明，供 LLM 判断依据")
+    severity_default: _Severity = "medium"
+    enabled: bool = True
+
+
+class CustomRuleCreate(CustomRuleBase):
+    pass
+
+
+class CustomRuleUpdate(BaseModel):
+    """所有字段可选，仅更新提供的字段。"""
+
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    content: str | None = Field(default=None, min_length=1, max_length=2000)
+    category: _RuleCategory | None = None
+    check_mode: _CheckMode | None = None
+    evidence_sources: list[_EvidenceSource] | None = None
+    keywords: list[str] | None = Field(default=None, max_length=50)
+    description: str | None = Field(default=None, max_length=2000)
+    severity_default: _Severity | None = None
+    enabled: bool | None = None
+
+
+class CustomRule(CustomRuleBase):
+    """持久化形态：固定整数 id（1000 起自增，不与内置 13 条规则冲突）+ 时间戳。"""
+
+    id: int
+    created_at: str
+    updated_at: str

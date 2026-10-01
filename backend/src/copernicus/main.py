@@ -42,11 +42,12 @@ from copernicus.services.model_manager import ModelManager
 from copernicus.services.ocr import OCRService
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.rule_store import RuleStore
 from copernicus.services.synthesis import SynthesisService
 from copernicus.services.task_store import TaskStore
 from copernicus.services.template_manager import TemplateManager
 from copernicus.services.upload_session import UploadSessionService
-from copernicus.routers import compliance, task, transcription, evaluation, upload
+from copernicus.routers import compliance, rules, task, transcription, evaluation, upload
 from copernicus.routers import metrics as metrics_router
 from copernicus.routers import synthesis as synthesis_router
 import copernicus.services.tts as tts_service
@@ -59,6 +60,7 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
     """构造并注册所有服务到 app.state，返回后台任务句柄。"""
     # 基础依赖层
     app.state.template_manager = TemplateManager(settings.templates_dir)
+    app.state.rule_store = RuleStore(settings.rules_dir)
     audio_service    = AudioService(settings.audio_enhance)
     asr_service      = ASRService(settings)
     text_corrector   = TextCorrectorService(settings)
@@ -118,6 +120,7 @@ async def _init_app_services(app: FastAPI, settings: Settings, llm_client: LLMCl
         model_manager=model_manager,
         template_manager=app.state.template_manager,
         structurer=MinutesStructurer(llm_client, settings),
+        rule_store=app.state.rule_store,
     )
     app.state.task_store.restore_from_disk()
     app.state.synthesis = SynthesisService(app.state.task_store, model_manager, settings)
@@ -244,6 +247,7 @@ app.include_router(task.router)
 app.include_router(upload.router)
 app.include_router(evaluation.router)
 app.include_router(compliance.router)
+app.include_router(rules.router)
 app.include_router(synthesis_router.router)
 app.include_router(metrics_router.router)
 

@@ -167,6 +167,9 @@ class Settings(BaseSettings):
     # Templates
     templates_dir: Path = Path("./templates")
 
+    # 持久化的自定义合规规则库（CRUD 管理，独立于每次上传的 CSV/XLSX）
+    rules_dir: Path = Path("./rules")
+
     # Upload settings
     upload_dir: Path = Path("./uploads")
     max_upload_size_mb: int = 500

@@ -178,6 +178,106 @@ class TestAsrStageCancellation:
         assert asr.calls == 0
 
 
+class TestQueuePosition:
+    async def test_no_ticket_means_no_position_tracking(self):
+        m, _ = _manager()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def holder():
+            async with m.use("asr"):
+                entered.set()
+                await release.wait()
+
+        h = asyncio.create_task(holder())
+        await entered.wait()
+        assert m.queue_position("asr", "whoever") == 0  # 从未排过队
+
+        release.set()
+        await h
+
+    async def test_second_waiter_sees_one_ahead_and_it_drops_after_the_first_is_served(self):
+        m, _ = _manager()
+        entered, release_a, release_b = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def first():
+            async with m.use("asr", ticket="a"):
+                entered.set()
+                await release_a.wait()
+
+        holder = asyncio.create_task(first())
+        await entered.wait()
+
+        async def second():
+            async with m.use("asr", ticket="b"):
+                await release_b.wait()
+
+        waiter = asyncio.create_task(second())
+        await _tick()
+        assert m.queue_position("asr", "b") == 0  # 只有自己在等，前面没人
+        assert m.queue_position("asr", "a") == 0  # a 已经拿到锁，不在等待队列里
+
+        release_a.set()
+        await _tick()
+        assert m.queue_position("asr", "b") == 0  # b 已经拿到锁
+
+        release_b.set()
+        await asyncio.gather(holder, waiter)
+
+    async def test_third_waiter_counts_both_ahead_of_it(self):
+        m, _ = _manager()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def first():
+            async with m.use("asr", ticket="a"):
+                entered.set()
+                await release.wait()
+
+        holder = asyncio.create_task(first())
+        await entered.wait()
+
+        b = asyncio.create_task(_wait_only(m, "b"))
+        await _tick()
+        c = asyncio.create_task(_wait_only(m, "c"))
+        await _tick()
+
+        assert m.queue_position("asr", "b") == 0
+        assert m.queue_position("asr", "c") == 1
+
+        release.set()
+        await asyncio.gather(holder, b, c)
+
+    async def test_cancelling_a_queued_waiter_removes_it_and_shifts_the_rest_up(self):
+        m, _ = _manager()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def first():
+            async with m.use("asr", ticket="a"):
+                entered.set()
+                await release.wait()
+
+        holder = asyncio.create_task(first())
+        await entered.wait()
+
+        b = asyncio.create_task(_wait_only(m, "b"))
+        await _tick()
+        c = asyncio.create_task(_wait_only(m, "c"))
+        await _tick()
+        assert m.queue_position("asr", "c") == 1
+
+        b.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await b
+        assert m.queue_position("asr", "c") == 0  # b 退出排队，c 前移
+
+        release.set()
+        await asyncio.gather(holder, c)
+
+
+async def _wait_only(m: ModelManager, ticket: str) -> None:
+    async with m.use("asr", ticket=ticket):
+        pass
+
+
 class TestAsrStageAnnouncements:
     async def test_idle_gpu_goes_straight_to_transcribing(self, tmp_path):
         asr = _BlockingASR()

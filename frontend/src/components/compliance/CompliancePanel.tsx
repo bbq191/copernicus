@@ -1,12 +1,13 @@
 import { useCallback, useRef } from "react";
-import { Upload, AlertTriangle } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Upload, AlertTriangle, ListChecks } from "lucide-react";
 import { IncompleteNotice } from "../shared/IncompleteNotice";
 import { reportIncompleteness } from "../../utils/completeness";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { useComplianceStore } from "../../stores/complianceStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { ErrorAlert } from "../shared/ErrorAlert";
-import { auditCompliance } from "../../api/compliance";
+import { auditCompliance, type RulesSource } from "../../api/compliance";
 import { errorMessage } from "../../api/errors";
 import { isAbortError } from "../../api/polling";
 import { currentTaskSignal } from "../../stores/taskScope";
@@ -22,8 +23,8 @@ export function CompliancePanel() {
   const progressText = useComplianceStore((s) => s.progressText);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = useCallback(
-    (file: File) => {
+  const submit = useCallback(
+    (rulesSource: RulesSource) => {
       if (rawEntries.length === 0) return;
 
       if (useComplianceStore.getState().isLoading) return;
@@ -33,7 +34,7 @@ export function CompliancePanel() {
       const signal = currentTaskSignal();
       const taskId = useTaskStore.getState().taskId ?? undefined;
 
-      auditCompliance(rawEntries, file, taskId, {
+      auditCompliance(rawEntries, rulesSource, taskId, {
         signal,
         onProgress: (percent, text) => useComplianceStore.getState().setProgress(percent, text),
       })
@@ -49,19 +50,19 @@ export function CompliancePanel() {
   const onFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (file) handleFile(file);
+      if (file) submit(file);
       e.target.value = "";
     },
-    [handleFile],
+    [submit],
   );
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       const file = e.dataTransfer.files[0];
-      if (file) handleFile(file);
+      if (file) submit(file);
     },
-    [handleFile],
+    [submit],
   );
 
   if (rawEntries.length === 0) {
@@ -181,6 +182,19 @@ export function CompliancePanel() {
         className="hidden"
         onChange={onFileChange}
       />
+
+      <div className="divider text-xs text-base-content/40 my-0">或</div>
+
+      <button
+        className="btn btn-sm btn-outline gap-1.5"
+        onClick={() => submit("library")}
+      >
+        <ListChecks className="h-3.5 w-3.5" />
+        使用规则库中的规则
+      </button>
+      <Link to="/rules" className="text-xs text-base-content/40 hover:text-base-content/70 text-center">
+        管理规则库 →
+      </Link>
     </div>
   );
 }

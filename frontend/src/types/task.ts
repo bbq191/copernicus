@@ -32,6 +32,8 @@ export interface TaskStatusResponse {
   progress: TaskProgress;
   result: EvaluationResponse | TranscriptResponse | ComplianceResponse | null;
   error: string | null;
+  /** 仅 status="queued_asr" 时有值：前面还有几个任务在等语音识别 */
+  queue_position: number | null;
 }
 
 export interface TaskResultsResponse {

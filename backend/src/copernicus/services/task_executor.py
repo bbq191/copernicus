@@ -11,8 +11,8 @@ import time
 from pathlib import Path
 
 from copernicus.config import Settings
-from copernicus.exceptions import ServiceNotConfiguredError
-from copernicus.schemas.compliance import ComplianceResponse
+from copernicus.exceptions import ComplianceError, ServiceNotConfiguredError
+from copernicus.schemas.compliance import ComplianceResponse, ComplianceRule
 from copernicus.schemas.evaluation import EvaluationResponse, EvaluationResult
 from copernicus.schemas.task import TaskStatus
 from copernicus.schemas.transcription import TranscriptEntrySchema, TranscriptResponse
@@ -22,6 +22,8 @@ from copernicus.services.minutes_structure import MinutesStructurer
 from copernicus.services.model_manager import ModelManager
 from copernicus.services.persistence import PersistenceService
 from copernicus.services.pipeline import PipelineService
+from copernicus.services.rule_registry import RuleRegistry
+from copernicus.services.rule_store import RuleStore
 from copernicus.services.task_state import TaskInfo
 from copernicus.services.template_manager import FALLBACK_PROMPT, TemplateManager
 
@@ -51,6 +53,7 @@ class TaskExecutor:
         model_manager: ModelManager | None = None,
         template_manager: TemplateManager | None = None,
         structurer: MinutesStructurer | None = None,
+        rule_store: RuleStore | None = None,
     ) -> None:
         self._structurer = structurer
         self._pipeline = pipeline
@@ -59,6 +62,7 @@ class TaskExecutor:
         self._compliance = compliance
         self._model_manager = model_manager
         self._template_manager = template_manager
+        self._rule_store = rule_store
         self._llm_is_local = settings.llm_provider == "ollama"
 
     # -- 服务是否可用：提交时先检查，失败立即返回 503，而不是等任务跑起来才失败 --
@@ -72,6 +76,11 @@ class TaskExecutor:
         if self._compliance is None:
             raise ServiceNotConfiguredError("ComplianceService not configured")
         return self._compliance
+
+    def require_rule_store(self) -> RuleStore:
+        if self._rule_store is None:
+            raise ServiceNotConfiguredError("RuleStore not configured")
+        return self._rule_store
 
     # -- 各类任务 ----------------------------------------------------------------
 
@@ -119,12 +128,24 @@ class TaskExecutor:
         transcript_entries: list[dict],
         rules_bytes: bytes,
         rules_filename: str,
+        *,
+        use_rule_library: bool = False,
     ) -> None:
         task.enter(TaskStatus.AUDITING)
         compliance = self.require_compliance()
 
         start = time.perf_counter()
-        rules, few_shot_examples = compliance.parse_rules(rules_bytes, rules_filename)
+        if use_rule_library:
+            # 规则库的规则已带完整结构化元数据，直接转换，不走内容模糊匹配
+            custom_rules = [r for r in self.require_rule_store().list_rules() if r.enabled]
+            if not custom_rules:
+                raise ComplianceError("规则库为空或没有已启用的规则")
+            audit_rules = RuleRegistry.from_custom_rules(custom_rules)
+            rules = [ComplianceRule(id=r.id, content=r.content) for r in custom_rules]
+            few_shot_examples: list[str] = []
+        else:
+            rules, few_shot_examples = compliance.parse_rules(rules_bytes, rules_filename)
+            audit_rules = rules
 
         # 本地 LLM（Ollama）与 ASR 争用显存：先卸载 ASR。远端 LLM 不占本机显存，
         # 此时卸载只会让下一个转写任务白白重载数十秒
@@ -132,7 +153,7 @@ class TaskExecutor:
             await self._model_manager.unload("asr")
 
         report = await compliance.audit(
-            rules,
+            audit_rules,
             transcript_entries,
             few_shot_examples=few_shot_examples,
             on_progress=task.set_progress,

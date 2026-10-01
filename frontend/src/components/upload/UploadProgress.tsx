@@ -46,6 +46,7 @@ export function UploadProgress() {
   const progress = useTaskStore((s) => s.progress);
   const error = useTaskStore((s) => s.error);
   const isVideoTask = useTaskStore((s) => s.isVideoTask);
+  const queuePosition = useTaskStore((s) => s.queuePosition);
 
   if (!status) return null;
 
@@ -91,7 +92,9 @@ export function UploadProgress() {
           <div className="flex justify-between text-xs text-base-content/60">
             <span>
               {queued
-                ? "排队等待语音识别..."
+                ? queuePosition
+                  ? `排队等待语音识别，前面还有 ${queuePosition} 个任务...`
+                  : "排队等待语音识别..."
                 : currentStageIndex >= 0
                   ? `${stages[currentStageIndex].label}...`
                   : "处理中..."}

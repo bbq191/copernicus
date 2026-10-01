@@ -12,9 +12,12 @@ const STATUS_TEXT: Record<string, string> = {
 
 export type AuditProgress = Pick<PollOptions, "onProgress" | "signal">;
 
+/** 规则来源：上传的 CSV/XLSX 文件，或规则库（已启用的全部自定义规则）。 */
+export type RulesSource = File | "library";
+
 export async function auditCompliance(
   transcriptEntries: TranscriptEntry[],
-  rulesFile: File,
+  rulesSource: RulesSource,
   parentTaskId: string | undefined,
   { onProgress, signal }: AuditProgress,
 ): Promise<ComplianceResponse> {
@@ -29,7 +32,11 @@ export async function auditCompliance(
 
   const form = new FormData();
   form.append("transcript", transcript);
-  form.append("rules_file", rulesFile);
+  if (rulesSource === "library") {
+    form.append("use_rule_library", "true");
+  } else {
+    form.append("rules_file", rulesSource);
+  }
   if (parentTaskId) form.append("parent_task_id", parentTaskId);
 
   const { data: task } = await client.post<TaskSubmitResponse>("/tasks/compliance_audit", form, { signal });

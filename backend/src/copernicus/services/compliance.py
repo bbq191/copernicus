@@ -135,7 +135,7 @@ class ComplianceService:
 
     async def audit(
         self,
-        rules: list[ComplianceRule],
+        rules: list[ComplianceRule] | list[StructuredRule],
         transcript_entries: list[dict],
         *,
         few_shot_examples: list[str] | None = None,
@@ -146,12 +146,18 @@ class ComplianceService:
         """执行合规审核，长文本自动 Map-Reduce。
 
         证据来源为转写文本，以及可选的 OCR 识别结果（ocr_results）与人脸检测时间轴（visual_events）。
+
+        `rules` 通常是从 CSV/XLSX 解析出的 `ComplianceRule`（id+content），内部按内容模糊匹配
+        内置规则补全结构化元数据；传入已经带有完整元数据的 `StructuredRule`（如规则库里的
+        自定义规则）则跳过模糊匹配，原样使用——这两种来源不会混在同一次调用里。
         """
         total_segments = len(transcript_entries)
         transcript_entries, truncated = self._truncate_entries(transcript_entries)
 
-        # 结构化规则
-        structured_rules = self._registry.enrich(rules)
+        # 结构化规则：已经是 StructuredRule（规则库）则直接用，否则按内容模糊匹配内置规则补全元数据
+        structured_rules = (
+            list(rules) if rules and isinstance(rules[0], StructuredRule) else self._registry.enrich(rules)
+        )
 
         # 决定是否分组审核
         group_by_source = self._settings.compliance_group_by_source

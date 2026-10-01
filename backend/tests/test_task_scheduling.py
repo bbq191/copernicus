@@ -206,6 +206,50 @@ class TestTaskIdLogging:
         assert get_task_id() == "-"
 
 
+class TestQueuePositionField:
+    def test_reports_position_only_while_queued_for_asr(self, tmp_path):
+        model_manager = MagicMock()
+        model_manager.queue_position.return_value = 3
+        store = TaskStore(
+            MagicMock(), PersistenceService(tmp_path), Settings(), model_manager=model_manager,
+        )
+        tid = _register(store, "a" * 32)
+        store._tasks[tid].status = TaskStatus.QUEUED_ASR
+
+        assert store.queue_position(tid) == 3
+        model_manager.queue_position.assert_called_once_with("asr", tid)
+
+    def test_none_when_not_queued(self, tmp_path):
+        model_manager = MagicMock()
+        store = TaskStore(MagicMock(), PersistenceService(tmp_path), Settings(), model_manager=model_manager)
+        tid = _register(store, "b" * 32)
+        store._tasks[tid].status = TaskStatus.PROCESSING_ASR
+
+        assert store.queue_position(tid) is None
+        model_manager.queue_position.assert_not_called()
+
+    def test_none_for_unknown_task(self, tmp_path):
+        store = TaskStore(MagicMock(), PersistenceService(tmp_path), Settings())
+        assert store.queue_position("c" * 32) is None
+
+    def test_router_includes_the_field(self, tmp_path):
+        model_manager = MagicMock()
+        model_manager.queue_position.return_value = 2
+        store = TaskStore(MagicMock(), PersistenceService(tmp_path), Settings(), model_manager=model_manager)
+        tid = _register(store, "d" * 32)
+        store._tasks[tid].status = TaskStatus.QUEUED_ASR
+
+        app = FastAPI()
+        app.state.task_store = store
+        app.include_router(task_router)
+        register_error_handlers(app)
+        client = TestClient(app)
+
+        body = client.get(f"/api/v1/tasks/{tid}").json()
+        assert body["queue_position"] == 2
+        assert body["status"] == "queued_asr"
+
+
 def _register(store: TaskStore, tid: str) -> str:
     store._tasks[tid] = TaskInfo(tid)
     return tid

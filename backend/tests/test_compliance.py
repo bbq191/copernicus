@@ -485,6 +485,39 @@ class TestRuleGrouping:
         assert "保种水平" in rules[1].keywords
 
 
+class TestFromCustomRules:
+    def _custom(self, **over):
+        from copernicus.schemas.compliance import CustomRule
+
+        fields = {
+            "id": 1000,
+            "title": "自定义规则",
+            "content": "不得承诺保本",
+            "category": "forbidden_phrase",
+            "check_mode": "exact",
+            "evidence_sources": ["transcript"],
+            "keywords": ["保本"],
+            "description": "",
+            "severity_default": "high",
+            "enabled": True,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }
+        fields.update(over)
+        return CustomRule(**fields)
+
+    def test_converts_one_to_one_without_content_matching(self):
+        structured = RuleRegistry.from_custom_rules([self._custom()])
+        assert len(structured) == 1
+        r = structured[0]
+        assert (r.id, r.category, r.check_mode, r.keywords) == (1000, "forbidden_phrase", "exact", ["保本"])
+        assert r.severity_default == "high"
+
+    def test_disabled_rules_are_excluded(self):
+        structured = RuleRegistry.from_custom_rules([self._custom(enabled=False)])
+        assert structured == []
+
+
 # ------------------------------------------------------------------ #
 #  7. 向后兼容测试（无 OCR）
 # ------------------------------------------------------------------ #
@@ -554,6 +587,28 @@ class TestBackwardCompatibility:
         v = report.violations[0]
         assert v.rule_id == 12
         assert v.confidence >= 0.7
+
+    @pytest.mark.asyncio
+    async def test_pre_structured_rules_skip_content_based_enrichment(
+        self, service: ComplianceService, mock_client: MagicMock
+    ):
+        """规则库的 StructuredRule 已带完整元数据，audit() 不应再走模糊匹配。"""
+        from copernicus.services.rule_registry import StructuredRule
+
+        service._registry.enrich = MagicMock(side_effect=AssertionError("enrich() must not run"))
+        mock_client.chat = AsyncMock(return_value=ChatResponse(content="[]", model="test-model"))
+
+        structured = [StructuredRule(
+            id=1000, title="自定义", content="不得承诺保本",
+            category="forbidden_phrase", check_mode="exact", keywords=["保本"],
+        )]
+        entries = [{
+            "timestamp": "00:30", "timestamp_ms": 30000, "end_ms": 45000,
+            "speaker": "讲师", "text_corrected": "我们的产品非常安全。",
+        }]
+
+        report = await service.audit(structured, entries)
+        assert report.total_rules == 1
 
 
 class TestVisionWiring:

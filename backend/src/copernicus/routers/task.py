@@ -317,6 +317,8 @@ async def get_task_status(
 
     `progress.percent` 为 0–100 的浮点数。任务完成后 `result` 字段包含
     最终结果（转写、评估或合规报告）。
+
+    `queue_position` 仅在 `status=queued_asr` 时有值：前面还有几个任务在等语音识别的 GPU。
     """
     task = store.get(task_id)
     if task is None:
@@ -328,6 +330,7 @@ async def get_task_status(
         progress=task.progress,
         result=task.result,
         error=task.error,
+        queue_position=store.queue_position(task_id),
     )
 
 

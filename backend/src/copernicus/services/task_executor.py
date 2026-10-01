@@ -137,6 +137,7 @@ class TaskExecutor:
             few_shot_examples=few_shot_examples,
             on_progress=task.set_progress,
             ocr_results=self._load_ocr_results(task),
+            visual_events=self._load_visual_events(task),
         )
         response = ComplianceResponse(
             rules=rules,
@@ -151,11 +152,18 @@ class TaskExecutor:
 
     def _load_ocr_results(self, task: TaskInfo) -> list[dict] | None:
         """从持久化层加载转写任务时保存的 OCR 数据（合规审核的画面文字证据）。"""
+        return self._load_json_list(task, "ocr_results.json", "OCR")
+
+    def _load_visual_events(self, task: TaskInfo) -> list[dict] | None:
+        """从持久化层加载人脸检测时间轴（合规审核的画面人脸覆盖证据）。"""
+        return self._load_json_list(task, "visual_events.json", "视觉事件")
+
+    def _load_json_list(self, task: TaskInfo, filename: str, label: str) -> list[dict] | None:
         source_task_id = task.parent_task_id or task.task_id
-        data = self._persistence.load_json(source_task_id, "ocr_results.json")
+        data = self._persistence.load_json(source_task_id, filename)
         if not data or not isinstance(data, list):
             return None
-        logger.info("Loaded %d OCR records for compliance audit (task=%s)", len(data), source_task_id)
+        logger.info("Loaded %d %s records for compliance audit (task=%s)", len(data), label, source_task_id)
         return data
 
     def _parent_entries(self, task: TaskInfo) -> list[TranscriptEntrySchema]:

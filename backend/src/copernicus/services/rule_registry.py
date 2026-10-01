@@ -99,10 +99,12 @@ _BUILTIN_RULES: list[StructuredRule] = [
         content="产说会全程应进行录音录像",
         category="behavioral",
         check_mode="semantic",
-        evidence_sources=["transcript"],
+        evidence_sources=["transcript", "vision"],
         description=(
-            "检查是否提及录音录像安排。"
-            "此规则侧重流程合规，仅当明确表示未录制时才标记违规。"
+            "检查是否提及录音录像安排，并结合【画面人脸检测证据】判断录像是否真正覆盖全程。"
+            "证据中已给出连续检测不到人脸的具体时段（短暂切镜头不在此列，只有达到一定时长才会列出）；"
+            "仅当这类时段较长、且转写里也没有解释（如中场休息、设备调整）时，才可判定为双录不完整；"
+            "讲师短暂离开镜头、画面短暂切到课件等正常情况不构成违规。"
         ),
         severity_default="high",
     ),
@@ -366,7 +368,7 @@ class RuleRegistry:
         返回 3 个组：
         - "transcript": 仅需转录文本的规则
         - "ocr": 仅需 OCR 的规则
-        - "mixed": 需要转录 + OCR 双源的规则
+        - "mixed": 其余所有组合（转录+OCR、转录+视觉等）；这些规则的 LLM 调用会附带全部可用证据
         """
         groups: dict[str, list[StructuredRule]] = {
             "transcript": [],

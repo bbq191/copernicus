@@ -18,6 +18,7 @@ from pypinyin import lazy_pinyin
 
 from copernicus.schemas.compliance import Violation
 from copernicus.services.rule_registry import RuleRegistry
+from copernicus.utils.text import format_timestamp
 
 if TYPE_CHECKING:
     from copernicus.services.rule_registry import StructuredRule
@@ -213,29 +214,48 @@ class DeduplicationFilter:
 
 
 class EvidenceEnricher:
-    """填充 evidence_url、evidence_text、source 字段。"""
+    """按 source 分别从 OCR 记录或人脸检测时间轴里找最相关的一条，填充 evidence_url/evidence_text。"""
 
     def apply(
         self,
         violations: list[Violation],
         ocr_results: list[dict] | None = None,
+        visual_events: list[dict] | None = None,
     ) -> list[Violation]:
-        if not ocr_results:
+        if not ocr_results and not visual_events:
             return violations
 
         for v in violations:
-            if v.evidence_text or v.source != "transcript":
+            if v.evidence_text:
                 continue
-
-            # 查找时间最接近的 OCR 记录作为辅助证据
-            best_ocr = _find_nearest_ocr(v.timestamp_ms, ocr_results)
-            if best_ocr:
-                v.evidence_text = best_ocr.get("text", "")
-                frame_path = best_ocr.get("frame_path", "")
-                if frame_path:
-                    v.evidence_url = os.path.basename(frame_path)
+            if v.source == "vision" and visual_events:
+                self._enrich_from_vision(v, visual_events)
+            elif ocr_results:
+                self._enrich_from_ocr(v, ocr_results)
 
         return violations
+
+    @staticmethod
+    def _enrich_from_ocr(v: Violation, ocr_results: list[dict]) -> None:
+        best_ocr = _find_nearest_ocr(v.timestamp_ms, ocr_results)
+        if best_ocr:
+            v.evidence_text = best_ocr.get("text", "")
+            frame_path = best_ocr.get("frame_path", "")
+            if frame_path:
+                v.evidence_url = os.path.basename(frame_path)
+
+    @staticmethod
+    def _enrich_from_vision(v: Violation, visual_events: list[dict]) -> None:
+        event = _find_overlapping_visual_event(v.timestamp_ms, v.end_ms, visual_events)
+        if event is None:
+            return
+        v.evidence_text = (
+            f"画面 {format_timestamp(event.get('start_ms', 0))}"
+            f"–{format_timestamp(event.get('end_ms', 0))} 未检测到人脸"
+        )
+        frame_path = event.get("frame_path") or ""
+        if frame_path:
+            v.evidence_url = os.path.basename(frame_path)
 
 
 def run_filters(
@@ -244,6 +264,7 @@ def run_filters(
     rules: list[StructuredRule] | None = None,
     full_text: str = "",
     ocr_results: list[dict] | None = None,
+    visual_events: list[dict] | None = None,
     confidence_threshold: float = 0.7,
     dedup_window_ms: int = 30000,
 ) -> list[Violation]:
@@ -254,7 +275,7 @@ def run_filters(
         result = ExactMatchValidator().apply(result, rules, full_text)
 
     result = DeduplicationFilter(dedup_window_ms).apply(result)
-    result = EvidenceEnricher().apply(result, ocr_results)
+    result = EvidenceEnricher().apply(result, ocr_results, visual_events)
 
     # 恢复时间排序
     result.sort(key=lambda v: v.timestamp_ms)
@@ -315,3 +336,18 @@ def _find_nearest_ocr(
             best = ocr
 
     return best
+
+
+def _find_overlapping_visual_event(
+    timestamp_ms: int, end_ms: int, visual_events: list[dict]
+) -> dict | None:
+    """找与违规时间范围重叠的人脸缺失事件；没有重叠的就退化为最近的一个。"""
+    missing = [e for e in visual_events if e.get("event_type") == "face_missing"]
+    if not missing:
+        return None
+
+    for e in missing:
+        if e.get("start_ms", 0) <= end_ms and e.get("end_ms", 0) >= timestamp_ms:
+            return e
+
+    return min(missing, key=lambda e: abs(e.get("start_ms", 0) - timestamp_ms))

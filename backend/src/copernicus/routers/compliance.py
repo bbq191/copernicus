@@ -22,10 +22,10 @@ router = APIRouter(prefix="/api/v1", tags=["高阶 AI"])
 async def submit_compliance_audit(
     rules_file: UploadFile = File(..., description="CSV 或 XLSX 格式的规则文件，最大 2 MB"),
     transcript: str = Form(..., description="转写条目 JSON 数组，来自 /tasks/{id}/results"),
-    parent_task_id: str | None = Form(default=None, description="关联的转写任务 ID，用于自动加载 OCR/视觉数据"),
+    parent_task_id: str | None = Form(default=None, description="关联的转写任务 ID，用于自动加载 OCR 证据"),
     store: TaskStore = Depends(get_task_store),
 ) -> TaskSubmitResponse:
-    """对转写文本执行多模态合规推理（Advanced AI 层）。
+    """对转写文本执行合规推理（Advanced AI 层）。
 
     **流程**：规则解析 → 卸载 ASR（释放 2 GB VRAM）→ Map-Reduce 逐规则审核
     → 过滤链（去重 + 置信度过滤）→ 汇总打分。
@@ -36,7 +36,8 @@ async def submit_compliance_audit(
     `transcript.transcript` 字段序列化为 JSON 字符串。
 
     **`parent_task_id`**：填写后自动从持久化层加载对应任务的
-    `ocr_results.json` 和 `visual_events.json`，融入多模态推理。
+    `ocr_results.json` 作为画面文字证据。该任务若做过人脸检测，`visual_events.json`
+    也会一并生成，但目前只保存统计、不参与本接口的判定。
     结果写入该任务的 `compliance.json`。
     """
     rules_bytes = await rules_file.read()

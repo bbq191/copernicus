@@ -31,6 +31,10 @@ from copernicus.utils.types import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
+# 画面人脸证据摘要：单段缺失达到此时长才列入证据（短暂切镜头/讲师走动不算）
+_VISION_SUMMARY_MIN_GAP_MS = 60_000
+_VISION_SUMMARY_MAX_GAPS = 5  # 最多列出的缺失时段数，避免 prompt 过长
+
 # ------------------------------------------------------------------ #
 #  CoT Prompt（Phase 3 四步推理框架）
 # ------------------------------------------------------------------ #
@@ -137,10 +141,11 @@ class ComplianceService:
         few_shot_examples: list[str] | None = None,
         on_progress: ProgressCallback | None = None,
         ocr_results: list[dict] | None = None,
+        visual_events: list[dict] | None = None,
     ) -> ComplianceReport:
         """执行合规审核，长文本自动 Map-Reduce。
 
-        证据来源为转写文本，以及可选的 OCR 识别结果（ocr_results）。
+        证据来源为转写文本，以及可选的 OCR 识别结果（ocr_results）与人脸检测时间轴（visual_events）。
         """
         total_segments = len(transcript_entries)
         transcript_entries, truncated = self._truncate_entries(transcript_entries)
@@ -150,6 +155,9 @@ class ComplianceService:
 
         # 决定是否分组审核
         group_by_source = self._settings.compliance_group_by_source
+
+        session_end_ms = max((e.get("end_ms", 0) for e in transcript_entries), default=0)
+        vision_summary = _build_vision_summary(visual_events, session_end_ms)
 
         chunks = self._build_entry_chunks(transcript_entries)
         skipped_rule_ids: list[int] = []
@@ -167,11 +175,12 @@ class ComplianceService:
 
         logger.info(
             "Compliance audit: %d entries -> %d chunks, %d rule groups, "
-            "ocr_records=%d, group_by_source=%s",
+            "ocr_records=%d, vision_events=%d, group_by_source=%s",
             len(transcript_entries),
             len(chunks),
             len(active_groups),
             len(ocr_results) if ocr_results else 0,
+            len(visual_events) if visual_events else 0,
             group_by_source,
         )
         if on_progress:
@@ -197,6 +206,8 @@ class ComplianceService:
                 if include_ocr
                 else None
             )
+            # 画面人脸证据是整场会议的属性（覆盖率、缺失时段），不按 chunk 切分，只决定要不要附加
+            include_vision = group_name in ("mixed", "all") and vision_summary
             result = await self._audit_chunk(
                 chunk_idx,
                 len(chunks),
@@ -205,6 +216,7 @@ class ComplianceService:
                 few_shot_examples,
                 group_name=group_name,
                 ocr_records=chunk_ocr,
+                vision_summary=vision_summary if include_vision else None,
             )
             async with lock:
                 completed += 1
@@ -239,6 +251,7 @@ class ComplianceService:
             rules=structured_rules,
             full_text=full_text,
             ocr_results=ocr_results,
+            visual_events=visual_events,
             confidence_threshold=self._settings.compliance_confidence_threshold,
             dedup_window_ms=self._settings.compliance_dedup_window_ms,
         )
@@ -329,6 +342,7 @@ class ComplianceService:
         *,
         group_name: str = "all",
         ocr_records: list[dict] | None = None,
+        vision_summary: str | None = None,
     ) -> list[Violation] | None:
         """Map 阶段：对单个 chunk 执行 LLM 合规审核，全部重试失败时返回 None。"""
         logger.info(
@@ -379,6 +393,9 @@ class ComplianceService:
                 "【屏幕文字（OCR）】\n" + "\n".join(ocr_lines)
             )
 
+        if vision_summary:
+            user_parts.append(f"【画面人脸检测证据】\n{vision_summary}")
+
         user_parts.append(
             f"【语音转录文本 - 第 {chunk_index + 1}/{total_chunks} 段】\n"
             f"{transcript_text}"
@@ -405,6 +422,8 @@ class ComplianceService:
 
         # 构建 ComplianceRule 列表用于 _parse_violations
         cr_rules = [ComplianceRule(id=r.id, content=r.content) for r in rules]
+        # 这些规则的违规主要由画面证据支撑，而非转写文本本身
+        vision_rule_ids = {r.id for r in rules if "vision" in r.evidence_sources}
 
         # 第二次尝试只用于"模型输出不是合法 JSON"时的重问；网络/服务错误已由 LLMClient 重试过，
         # 这里再重试只会把最坏请求数从 3 次放大到 6 次
@@ -452,6 +471,9 @@ class ComplianceService:
                     chunk_index + 1, total_chunks, group_name, attempt, e,
                 )
                 continue
+            for v in violations:
+                if v.rule_id in vision_rule_ids:
+                    v.source = "vision"
             logger.info(
                 "Audit chunk %d/%d group=%s done: %d violations found",
                 chunk_index + 1, total_chunks, group_name, len(violations),
@@ -504,6 +526,46 @@ class ComplianceService:
                 f"发现 {len(violations)} 条违规"
                 f"（高风险 {high} 条，中风险 {medium} 条，低风险 {low} 条）。"
             )
+
+
+# ------------------------------------------------------------------ #
+#  画面人脸证据摘要
+# ------------------------------------------------------------------ #
+
+
+def _build_vision_summary(
+    visual_events: list[dict] | None, session_end_ms: int
+) -> str | None:
+    """把人脸检测时间轴整理成给 LLM 的画面证据摘要；没有可用数据时返回 None。
+
+    只统计"全程覆盖率"和"较长的缺失时段"两件事——这是"全程双录"类规则真正关心的，
+    不逐帧罗列，避免 prompt 被无意义的细节撑爆。
+    """
+    if not visual_events or session_end_ms <= 0:
+        return None
+
+    missing = [e for e in visual_events if e.get("event_type") == "face_missing"]
+    if not missing:
+        return None
+
+    missing_ms = sum(max(0, e.get("end_ms", 0) - e.get("start_ms", 0)) for e in missing)
+    coverage_pct = max(0.0, 100 * (1 - missing_ms / session_end_ms))
+
+    long_gaps = sorted(
+        (e for e in missing if e.get("end_ms", 0) - e.get("start_ms", 0) >= _VISION_SUMMARY_MIN_GAP_MS),
+        key=lambda e: e.get("end_ms", 0) - e.get("start_ms", 0),
+        reverse=True,
+    )[:_VISION_SUMMARY_MAX_GAPS]
+
+    lines = [f"全程 {format_timestamp(session_end_ms)}，画面检测到人脸的时长占比约 {coverage_pct:.0f}%。"]
+    if long_gaps:
+        lines.append(
+            "以下时段连续检测不到人脸（可能是镜头偏移、遮挡或设备故障，也可能只是讲师短暂离开画面，"
+            "请结合转写内容判断，不要仅凭这一条就判违规）："
+        )
+        for e in sorted(long_gaps, key=lambda e: e.get("start_ms", 0)):
+            lines.append(f"- {format_timestamp(e['start_ms'])} ~ {format_timestamp(e['end_ms'])}")
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------------ #

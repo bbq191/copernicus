@@ -21,7 +21,12 @@ import pytest
 from copernicus.config import Settings
 from copernicus.exceptions import ComplianceError
 from copernicus.schemas.compliance import ComplianceRule, Violation
-from copernicus.services.compliance import ComplianceService, _align_ocr_to_chunk, _parse_violations
+from copernicus.services.compliance import (
+    ComplianceService,
+    _align_ocr_to_chunk,
+    _build_vision_summary,
+    _parse_violations,
+)
 from copernicus.services.compliance_filters import (
     ConfidenceFilter,
     DeduplicationFilter,
@@ -312,6 +317,49 @@ class TestOCRAlignment:
         assert aligned[1]["text"] == "later"
 
 
+class TestVisionSummary:
+    """画面人脸证据摘要：覆盖率 + 较长缺失时段，短暂切镜头不计入。"""
+
+    def test_no_events_or_unknown_duration_returns_none(self):
+        assert _build_vision_summary(None, 100000) is None
+        assert _build_vision_summary([], 100000) is None
+        assert _build_vision_summary([{"event_type": "face_missing", "start_ms": 0, "end_ms": 10000}], 0) is None
+
+    def test_full_coverage_has_no_missing_events(self):
+        events = [{"event_type": "face_detected", "start_ms": 0, "end_ms": 100000, "confidence": 0.9}]
+        assert _build_vision_summary(events, 100000) is None
+
+    def test_short_gap_counted_in_coverage_but_not_listed(self):
+        """短暂切镜头（< 60s）计入覆盖率百分比，但不单独列出时段，避免误导 LLM 过度判定。"""
+        events = [
+            {"event_type": "face_detected", "start_ms": 0, "end_ms": 50000},
+            {"event_type": "face_missing", "start_ms": 50000, "end_ms": 60000},  # 10s，短
+            {"event_type": "face_detected", "start_ms": 60000, "end_ms": 100000},
+        ]
+        summary = _build_vision_summary(events, 100000)
+        assert "90%" in summary
+        assert "~" not in summary  # 没有列出具体时段
+
+    def test_long_gap_is_listed_with_timestamps(self):
+        events = [
+            {"event_type": "face_detected", "start_ms": 0, "end_ms": 60000},
+            {"event_type": "face_missing", "start_ms": 60000, "end_ms": 180000},  # 120s，长
+        ]
+        summary = _build_vision_summary(events, 180000)
+        assert "01:00 ~ 03:00" in summary
+        assert "33%" in summary
+
+    def test_long_gaps_are_capped_and_sorted_by_time(self):
+        events = [
+            {"event_type": "face_missing", "start_ms": i * 1_000_000, "end_ms": i * 1_000_000 + 70000}
+            for i in range(8)
+        ]
+        summary = _build_vision_summary(events, 8_000_000)
+        lines = [ln for ln in summary.splitlines() if ln.startswith("-")]
+        assert len(lines) == 5  # _VISION_SUMMARY_MAX_GAPS
+        assert lines == sorted(lines)  # 按时间先后排列，不是按时长
+
+
 # ------------------------------------------------------------------ #
 #  4. 置信度过滤测试
 # ------------------------------------------------------------------ #
@@ -379,7 +427,8 @@ class TestRuleGrouping:
         rules = registry.enrich([
             ComplianceRule(id=1, content="如实告知"),       # transcript only
             ComplianceRule(id=3, content="条款展示"),       # ocr only
-            ComplianceRule(id=5, content="不得夸大收益"),    # mixed
+            ComplianceRule(id=4, content="全程双录"),       # mixed (transcript + vision)
+            ComplianceRule(id=5, content="不得夸大收益"),    # mixed (transcript + ocr)
             ComplianceRule(id=12, content="禁止混淆概念"),   # mixed
         ])
         groups = RuleRegistry.group_by_source(rules)
@@ -387,9 +436,13 @@ class TestRuleGrouping:
         assert groups["transcript"][0].id == 1
         assert len(groups["ocr"]) == 1
         assert groups["ocr"][0].id == 3
-        assert len(groups["mixed"]) == 2
+        assert len(groups["mixed"]) == 3
         mixed_ids = {r.id for r in groups["mixed"]}
-        assert mixed_ids == {5, 12}
+        assert mixed_ids == {4, 5, 12}
+
+    def test_double_recording_rule_declares_vision_evidence(self, registry: RuleRegistry):
+        rules = registry.enrich([ComplianceRule(id=4, content="全程双录")])
+        assert set(rules[0].evidence_sources) == {"transcript", "vision"}
 
     def test_fallback_rule_in_transcript_group(self, registry: RuleRegistry):
         """未匹配的自定义规则应归入 transcript 组"""
@@ -501,6 +554,62 @@ class TestBackwardCompatibility:
         v = report.violations[0]
         assert v.rule_id == 12
         assert v.confidence >= 0.7
+
+
+class TestVisionWiring:
+    """端到端验证：visual_events 真正进入 prompt，命中规则的违规被标记为 vision 来源。"""
+
+    @pytest.mark.asyncio
+    async def test_long_face_missing_gap_reaches_the_prompt_and_tags_the_violation(
+        self, service: ComplianceService, mock_client: MagicMock
+    ):
+        llm_output = json.dumps([{
+            "rule_id": 4,
+            "timestamp": "01:00",
+            "timestamp_ms": 60000,
+            "end_ms": 60000,
+            "speaker": "讲师",
+            "original_text": "",
+            "reason": "画面长时间未检测到人脸，双录可能不完整",
+            "severity": "high",
+            "confidence": 0.9,
+        }])
+        mock_client.chat = AsyncMock(
+            side_effect=[
+                ChatResponse(content=llm_output, model="test-model"),
+                ChatResponse(content="发现1条高风险违规。", model="test-model"),
+            ]
+        )
+        rules = [ComplianceRule(id=4, content="全程双录")]
+        entries = [
+            {
+                "timestamp": "01:00", "timestamp_ms": 60000, "end_ms": 180000,
+                "speaker": "讲师", "text_corrected": "接下来给大家介绍产品细节。",
+            },
+        ]
+        visual_events = [{"event_type": "face_missing", "start_ms": 60000, "end_ms": 180000}]
+
+        report = await service.audit(rules, entries, visual_events=visual_events)
+
+        sent_prompt = mock_client.chat.call_args_list[0].kwargs["messages"][1]["content"]
+        assert "【画面人脸检测证据】" in sent_prompt
+        assert "01:00 ~ 03:00" in sent_prompt
+        assert len(report.violations) == 1
+        assert report.violations[0].source == "vision"
+
+    @pytest.mark.asyncio
+    async def test_no_visual_events_omits_the_evidence_block(
+        self, service: ComplianceService, mock_client: MagicMock
+    ):
+        mock_client.chat = AsyncMock(return_value=ChatResponse(content="[]", model="test-model"))
+        rules = [ComplianceRule(id=4, content="全程双录")]
+        entries = [{"timestamp": "01:00", "timestamp_ms": 60000, "end_ms": 60000, "speaker": "讲师", "text_corrected": "x"}]
+
+        await service.audit(rules, entries, visual_events=None)
+
+        # 规则描述本身也提到"画面人脸检测证据"这个词，所以用证据摘要独有的措辞来判断证据块是否被注入
+        sent_prompt = mock_client.chat.call_args_list[0].kwargs["messages"][1]["content"]
+        assert "画面检测到人脸的时长占比" not in sent_prompt
 
 
 # ------------------------------------------------------------------ #
@@ -618,6 +727,38 @@ class TestEvidenceEnricher:
             Violation(rule_id=1, rule_content="r", reason="r", confidence=0.9),
         ]
         result = EvidenceEnricher().apply(vs, None)
+        assert result[0].evidence_text is None
+
+    def test_vision_sourced_violation_is_enriched_from_visual_events_not_ocr(self):
+        vs = [
+            Violation(
+                rule_id=4, rule_content="全程双录", reason="r", confidence=0.9,
+                timestamp_ms=65000, end_ms=65000, source="vision",
+            ),
+        ]
+        ocr = [{"timestamp_ms": 65000, "text": "不应该用到这条", "frame_path": "/frames/ocr.jpg"}]
+        visual_events = [
+            {"event_type": "face_missing", "start_ms": 60000, "end_ms": 180000, "frame_path": "0007.jpg"},
+        ]
+        result = EvidenceEnricher().apply(vs, ocr, visual_events)
+        assert result[0].evidence_text == "画面 01:00–03:00 未检测到人脸"
+        assert result[0].evidence_url == "0007.jpg"
+
+    def test_vision_source_without_overlapping_event_falls_back_to_nearest(self):
+        vs = [
+            Violation(
+                rule_id=4, rule_content="全程双录", reason="r", confidence=0.9,
+                timestamp_ms=500000, end_ms=500000, source="vision",
+            ),
+        ]
+        visual_events = [{"event_type": "face_missing", "start_ms": 60000, "end_ms": 180000, "frame_path": "f.jpg"}]
+        result = EvidenceEnricher().apply(vs, None, visual_events)
+        assert result[0].evidence_url == "f.jpg"
+
+    def test_transcript_sourced_violation_ignores_visual_events(self):
+        vs = [Violation(rule_id=1, rule_content="r", reason="r", confidence=0.9, timestamp_ms=65000)]
+        visual_events = [{"event_type": "face_missing", "start_ms": 60000, "end_ms": 180000, "frame_path": "f.jpg"}]
+        result = EvidenceEnricher().apply(vs, None, visual_events)
         assert result[0].evidence_text is None
 
 

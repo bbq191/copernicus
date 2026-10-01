@@ -179,7 +179,7 @@ class TestComplianceAudit:
 
         await executor.compliance_audit(task, [], b"r", "r.csv")
 
-        persistence.load_json.assert_called_with("p" * 32, "ocr_results.json")
+        persistence.load_json.assert_any_call("p" * 32, "ocr_results.json")
         assert compliance.audit.call_args.kwargs["ocr_results"] == [{"text": "免责声明"}]
 
     async def test_non_list_ocr_data_is_ignored(self, monkeypatch):

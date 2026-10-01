@@ -176,7 +176,7 @@
 | `MINUTES_STRUCTURE_ENABLED` | true | 想省 LLM 时间/算力时关闭 | 每个纪要分块少一次调用；关闭后没有行动项与决议列表 |
 | `MEDIA_RETENTION_HOURS` | 24 | 磁盘紧张调小 | 过期后无法重转写 |
 | `MAX_STORAGE_GB` | 0 | 给上传目录设配额 | 超限从最旧任务删媒体 |
-| `FACE_DETECT_ENABLED` | true | 不需要人脸事件时关闭 | 省视频任务的 CPU（事件目前不参与合规判定） |
+| `FACE_DETECT_ENABLED` | true | 不需要人脸事件时关闭 | 省视频任务的 CPU（事件只用于"全程双录"一条合规规则） |
 | `OMP_NUM_THREADS`（环境变量） | 全部核数 | 多核机器上并发任务较多时下调 | 减少 CPU 争用 |
 
 ---

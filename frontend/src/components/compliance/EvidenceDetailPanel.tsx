@@ -1,16 +1,9 @@
 import { X, Check, RotateCcw, Clock, BookOpen, ZoomIn } from "lucide-react";
-import { useState } from "react";
-import { resolveEvidenceUrl } from "../../api/task";
 import { selectEvidenceDetail, useComplianceStore } from "../../stores/complianceStore";
-import { useTaskStore } from "../../stores/taskStore";
-import { useTranscriptStore } from "../../stores/transcriptStore";
-import { usePlayerStore } from "../../stores/playerStore";
-import { useToastStore } from "../../stores/toastStore";
+import { useEvidenceDetail } from "../../hooks/useEvidenceDetail";
 import { formatTime } from "../../utils/formatTime";
 import type { Violation } from "../../types/compliance";
 import { STATUS_META, severityMeta, sourceMeta } from "./violationMeta";
-
-const CONTEXT_RANGE = 3;
 
 export function EvidenceDetailPanel() {
   const violation = useComplianceStore(selectEvidenceDetail);
@@ -19,50 +12,25 @@ export function EvidenceDetailPanel() {
 }
 
 function EvidenceDetail({ violation }: { violation: Violation }) {
-  const closeEvidenceDetail = useComplianceStore((s) => s.closeEvidenceDetail);
-  const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
-  const rawEntries = useTranscriptStore((s) => s.rawEntries);
-  const seekAndPlay = usePlayerStore((s) => s.seekAndPlay);
-  const taskId = useTaskStore((s) => s.taskId);
-  const [imageZoom, setImageZoom] = useState(false);
-  const [note, setNote] = useState(violation.review_note ?? "");
-
-  const imageUrl = resolveEvidenceUrl(violation.evidence_url, taskId);
+  const {
+    closeEvidenceDetail,
+    seekAndPlay,
+    imageUrl,
+    contextEntries,
+    imageZoom,
+    setImageZoom,
+    note,
+    setNote,
+    handleConfirm,
+    handleReject,
+    handleReset,
+  } = useEvidenceDetail(violation);
 
   const sevConfig = severityMeta(violation.severity);
   const SevIcon = sevConfig.icon;
   const sourceInfo = sourceMeta(violation.source);
   const SourceIcon = sourceInfo.icon;
   const isPending = violation.status === "pending";
-
-  // Find surrounding transcript entries for context
-  const contextEntries = (() => {
-    if (violation.source !== "transcript" || rawEntries.length === 0) return [];
-    const targetIdx = rawEntries.findIndex(
-      (e) => e.timestamp_ms === violation.timestamp_ms,
-    );
-    if (targetIdx === -1) return [];
-    const start = Math.max(0, targetIdx - CONTEXT_RANGE);
-    const end = Math.min(rawEntries.length, targetIdx + CONTEXT_RANGE + 1);
-    return rawEntries.slice(start, end).map((e) => ({
-      ...e,
-      isCurrent: e.timestamp_ms === violation.timestamp_ms,
-    }));
-  })();
-
-  const handleConfirm = () => {
-    setViolationStatus(violation, "confirmed", note);
-    useToastStore.getState().addToast("info", "已确认违规");
-  };
-
-  const handleReject = () => {
-    setViolationStatus(violation, "rejected", note);
-    useToastStore.getState().addToast("info", "已标记为误报");
-  };
-
-  const handleReset = () => {
-    setViolationStatus(violation, "pending");
-  };
 
   return (
     <div className="flex flex-col h-full">

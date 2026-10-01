@@ -40,8 +40,8 @@
 | 目录 | 内容 |
 |------|------|
 | `src/pages` | 四个路由页面：`HomePage`、`WorkspacePage`、`HealthPage`、`RuleLibraryPage`（合规规则库管理） |
-| `src/components` | 按功能域分目录：`layout`、`player`、`transcript`、`summary`、`compliance`、`synthesis`、`upload`、`shared` |
-| `src/hooks` | 轮询、音视频同步、自动滚动、快捷键、导出、转写校对、历史任务、模板列表 |
+| `src/components` | 按功能域分目录：`layout`、`player`、`transcript`、`summary`、`compliance`、`synthesis`、`upload`、`rules`、`shared` |
+| `src/hooks` | 轮询、音视频同步、自动滚动、快捷键、导出、转写校对、历史任务、模板列表、规则库 CRUD、上传提交、合规审核提交、音频重塑播放、证据详情 |
 | `src/stores` | 七个 Zustand store，以及四个配套模块：`taskScope`、`reviewPersister`、`hydrateWorkspace`、`resetWorkspace` |
 | `src/api` | axios 实例、错误类型、轮询工具，以及各后端接口的封装 |
 | `src/types` | 手写的 TypeScript 类型（任务、转写、纪要、合规、视图） |

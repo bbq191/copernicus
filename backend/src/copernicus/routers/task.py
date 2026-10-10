@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import mimetypes
 import re
 from pathlib import Path
@@ -10,6 +9,7 @@ from fastapi.responses import FileResponse
 
 from copernicus.config import settings
 from copernicus.dependencies import get_task_store
+from copernicus.exceptions import FileTooLargeError
 from copernicus.schemas.compliance import ComplianceResponse
 from copernicus.schemas.evaluation import EvaluationResult
 from copernicus.schemas.task import (
@@ -25,7 +25,7 @@ from copernicus.schemas.task import (
 )
 from copernicus.schemas.transcription import TranscriptResponse
 from copernicus.services.task_store import TaskStore
-from copernicus.services.upload_session import incoming_path
+from copernicus.services.upload_session import incoming_path, receive_streamed_upload
 from copernicus.utils.request import parse_hotwords
 
 _SAFE_FILENAME_RE = re.compile(r'^[A-Za-z0-9_.-]+$')
@@ -42,38 +42,22 @@ class _UploadResult(NamedTuple):
     existing_response: TaskSubmitResponse | None
 
 
-_READ_CHUNK = 1024 * 1024
-
-
-def _write_block(out, digest, chunk: bytes) -> None:
-    digest.update(chunk)
-    out.write(chunk)
-
-
 async def _receive_upload(
     file: UploadFile,
     hotwords_str: str | None,
     store: TaskStore,
 ) -> _UploadResult:
-    """把上传文件边读边写到磁盘并计算哈希，全程不整体载入内存。
+    """把上传文件边读边写到磁盘并计算哈希（实际 IO 在 UploadSessionService 里，便于脱离 HTTP 单测）。
 
     文件已存在（哈希命中）时丢弃临时文件，在 existing_response 中返回缓存响应。
     """
     limit = settings.max_upload_size_bytes
     if file.size is not None and file.size > limit:
-        raise HTTPException(status_code=413, detail="File too large")
+        raise FileTooLargeError(f"Upload exceeds {limit} bytes")
 
     dest = incoming_path(settings.upload_dir)
-    digest = hashlib.sha256()
-    received = 0
     try:
-        with dest.open("wb") as out:
-            while chunk := await file.read(_READ_CHUNK):
-                received += len(chunk)
-                if received > limit:
-                    raise HTTPException(status_code=413, detail="File too large")
-                await asyncio.to_thread(_write_block, out, digest, chunk)
-        file_hash = digest.hexdigest()
+        file_hash = await receive_streamed_upload(file, dest, limit)
 
         existing_id = store.lookup_by_hash(file_hash)
         if existing_id:
@@ -468,26 +452,13 @@ async def get_task_media(
     优先返回视频；无视频则返回音频。生命周期清理（24 小时）后文件将不再存在，
     此时返回 404。
     """
-    persistence = store.persistence
-
-    video_path = persistence.find_video(task_id)
-    if video_path and video_path.exists():
-        mime = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
-        return FileResponse(video_path, media_type=mime)
-
-    audio_path = persistence.find_audio(task_id)
-    if audio_path and audio_path.exists():
-        mime = mimetypes.guess_type(str(audio_path))[0] or "audio/mpeg"
-        return FileResponse(audio_path, media_type=mime)
-
-    task = store.get(task_id)
-    if task and task.audio_path:
-        legacy = Path(task.audio_path)
-        if legacy.exists():
-            mime = mimetypes.guess_type(str(legacy))[0] or "audio/mpeg"
-            return FileResponse(legacy, media_type=mime)
-
-    raise HTTPException(status_code=404, detail="Media file not found")
+    media_path = store.get_media_path(task_id)
+    if media_path is None:
+        raise HTTPException(status_code=404, detail="Media file not found")
+    is_video = media_path.suffix.lower() in settings.video_extensions_set
+    default_mime = "video/mp4" if is_video else "audio/mpeg"
+    mime = mimetypes.guess_type(str(media_path))[0] or default_mime
+    return FileResponse(media_path, media_type=mime)
 
 
 @router.get(
@@ -507,9 +478,8 @@ async def get_task_frame(
     """
     if not _SAFE_FILENAME_RE.fullmatch(filename):
         raise HTTPException(status_code=422, detail="Invalid filename")
-    frames_path = store.persistence.path_of(task_id) / "frames" / filename
-    # is_file 而不是 exists：filename 允许包含 "."，".." 会命中目录并让 FileResponse 抛 500
-    if not frames_path.is_file():
+    frames_path = store.get_frame_path(task_id, filename)
+    if frames_path is None:
         raise HTTPException(status_code=404, detail="Frame not found")
     mime = mimetypes.guess_type(str(frames_path))[0] or "image/jpeg"
     return FileResponse(frames_path, media_type=mime)

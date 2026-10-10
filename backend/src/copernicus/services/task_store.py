@@ -106,6 +106,24 @@ class TaskStore:
         """未到终态（非 completed/failed）的任务 id 集合，供磁盘清理服务避让。"""
         return {tid for tid, t in self._tasks.items() if t.status not in TERMINAL_STATUSES}
 
+    def get_media_path(self, task_id: str) -> Path | None:
+        """返回任务对应的原始媒体文件路径，优先视频，无视频则音频（含旧数据的 audio_path 兜底）。"""
+        media_path = self._persistence.find_video(task_id) or self._persistence.find_audio(task_id)
+        if media_path and media_path.exists():
+            return media_path
+        task = self.get(task_id)
+        if task and task.audio_path:
+            legacy = Path(task.audio_path)
+            if legacy.exists():
+                return legacy
+        return None
+
+    def get_frame_path(self, task_id: str, filename: str) -> Path | None:
+        """返回视觉扫描关键帧文件路径；不存在则返回 None。"""
+        frame_path = self._persistence.path_of(task_id) / "frames" / filename
+        # is_file 而不是 exists：filename 允许包含 "."，".." 会命中目录
+        return frame_path if frame_path.is_file() else None
+
     def get_task_stats(self) -> dict[str, int]:
         """返回任务队列统计：active / completed / failed / synthesis_running。"""
         tasks = list(self._tasks.values())

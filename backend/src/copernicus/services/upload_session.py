@@ -1,14 +1,16 @@
 """分片上传会话管理：以文件 SHA-256 为 key，负责会话创建、断点续传、数据组装。"""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import shutil
 import uuid
 from pathlib import Path
+from typing import Protocol
 
-from copernicus.exceptions import InvalidIdentifierError
+from copernicus.exceptions import FileTooLargeError, InvalidIdentifierError
 from copernicus.utils.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,43 @@ logger = logging.getLogger(__name__)
 _SESSIONS_DIR = ".sessions"
 _INCOMING_DIR = ".incoming"
 _SAFE_FILE_HASH = re.compile(r'^[0-9a-f]{64}$')
+
+_RECEIVE_CHUNK_BYTES = 1024 * 1024
+
+
+class AsyncChunkReader(Protocol):
+    """只要求异步 read(size)，不绑定 FastAPI 的 UploadFile，服务层单测时可传入假对象。"""
+
+    async def read(self, size: int) -> bytes: ...
+
+
+def _write_chunk(out, digest, chunk: bytes) -> None:
+    digest.update(chunk)
+    out.write(chunk)
+
+
+async def receive_streamed_upload(
+    reader: AsyncChunkReader,
+    dest: Path,
+    max_bytes: int,
+) -> str:
+    """边读边写到 dest 并计算 SHA-256，全程不整体载入内存；返回十六进制哈希。
+
+    超过 max_bytes 时抛 FileTooLargeError，并清理已落盘的部分文件。
+    """
+    digest = hashlib.sha256()
+    received = 0
+    try:
+        with dest.open("wb") as out:
+            while chunk := await reader.read(_RECEIVE_CHUNK_BYTES):
+                received += len(chunk)
+                if received > max_bytes:
+                    raise FileTooLargeError(f"Upload exceeds {max_bytes} bytes")
+                await asyncio.to_thread(_write_chunk, out, digest, chunk)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+    return digest.hexdigest()
 
 
 class UploadSessionService:

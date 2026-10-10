@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from copernicus.exceptions import (
     AudioNotFoundError,
     CopernicusError,
+    FileTooLargeError,
     InvalidIdentifierError,
     QueueFullError,
     ServiceNotConfiguredError,
@@ -29,6 +30,7 @@ _ERROR_TABLE: dict[type[CopernicusError], tuple[int, str]] = {
     TaskBusyError: (409, "task_busy"),
     InvalidIdentifierError: (422, "invalid_identifier"),
     QueueFullError: (429, "queue_full"),
+    FileTooLargeError: (413, "file_too_large"),
     ServiceNotConfiguredError: (503, "service_not_configured"),
     CopernicusError: (500, "internal_error"),
 }

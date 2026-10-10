@@ -36,3 +36,7 @@ class TaskBusyError(CopernicusError):
 
 class QueueFullError(CopernicusError):
     """Raised when too many media tasks are already queued or running."""
+
+
+class FileTooLargeError(CopernicusError):
+    """Raised when an uploaded file exceeds the configured size limit."""

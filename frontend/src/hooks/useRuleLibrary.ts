@@ -12,21 +12,24 @@ export function useRuleLibrary() {
   const [editing, setEditing] = useState<CustomRule | "new" | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      setRules(await listRules());
-      setError(null);
-    } catch (err) {
-      setError(errorMessage(err, "加载规则库失败"));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let ignore = false;
+    (async () => {
+      try {
+        const data = await listRules();
+        if (ignore) return;
+        setRules(data);
+        setError(null);
+      } catch (err) {
+        if (!ignore) setError(errorMessage(err, "加载规则库失败"));
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   const toggleEnabled = useCallback(async (rule: CustomRule) => {
     try {

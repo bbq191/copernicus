@@ -462,15 +462,17 @@ keepalive 请求使用浏览器原生 `fetch`（axios 不支持该模式），�
 
 ### 11.1 单元测试
 
-Vitest 在 node 环境下运行，只匹配 `src` 下的 `*.test.ts`。目前 8 个测试文件、61 个用例，全部通过：
+Vitest 在 node 环境下运行，只匹配 `src` 下的 `*.test.ts`。目前 10 个测试文件、73 个用例，全部通过：
 
 | 测试文件 | 覆盖内容 |
 |----------|----------|
 | `stores/complianceStore.test.ts` | 单条复核只影响目标项、选中态在复核后保持、防抖合并为一次请求并应用服务端评分、多维筛选、键盘导航循环、批量复核 |
 | `stores/reviewPersister.test.ts` | 防抖合并、按任务绑定、失败放回队列与退避重试、重试上限、串行发送、立即提交与丢弃 |
+| `stores/transcriptPersister.test.ts` | 校对编辑的防抖合并（只保留最后一次）、失败重试与提示、重试上限后提示用户手动处理、flush 立即发送与 discard 丢弃未发送内容 |
 | `stores/transcriptStore.test.ts` | 说话人排序、校对更新、重命名与合并、显隐状态的继承 |
 | `api/polling.test.ts` | 可恢复错误判定、失败计数器、轮询的重试/放弃/失败原因/进度回调/中止、后台降频 |
 | `utils/completeness.test.ts` | 三类完整性提示，含旧数据兼容 |
+| `utils/pdfGenerator.test.ts` | 标题居中、说话人+时间头部拼接校正/原文文本、标题与正文对齐方式的区分 |
 | `utils/processTranscript.test.ts` | 30 秒合并规则、说话人切换、对象引用保持 |
 | `utils/findBlockIndex.test.ts` | 二分查找边界 |
 | `utils/srtGenerator.test.ts` | SRT 文案、原文模式、缺失结束时间的兜底 |

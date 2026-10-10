@@ -83,6 +83,8 @@ remove_nginx() {
     else
         log "未发现 $NGINX_CONF，跳过"
     fi
+    # install.sh 替换配置前留的回滚备份，装得成功就不会再被用到，但从没被清理过
+    run rm -f "$NGINX_CONF.bak"
     if ((FIREWALL_OPENED)) && have firewall-cmd; then
         run firewall-cmd --permanent --remove-service=http
         run firewall-cmd --reload
@@ -125,6 +127,7 @@ main() {
     remove_files
     remove_user
     ((DRY_RUN)) || rm -f "$STATE_FILE"
+    ((DRY_RUN)) || rmdir --ignore-fail-on-non-empty "$(dirname "$STATE_FILE")" 2>/dev/null || true
     log "卸载完成。代码目录 $APP_DIR、.env 与模型文件未改动。"
 }
 

@@ -301,16 +301,18 @@ main() {
 
     preflight
     ensure_user
+    save_state          # 尽快落盘 USER_CREATED：后面任一步骤中断退出，uninstall.sh 仍能准确判断用户是否由本次安装创建
     ensure_env_file
     setup_backend
     check_models
     build_frontend
-    save_state
     install_service
     install_nginx
     save_state          # 防火墙放行结果在 install_nginx 之后才确定
-    wait_healthy || true
+    local healthy=1
+    wait_healthy || healthy=0
     summary
+    ((healthy)) || exit 1
 }
 
 main "$@"

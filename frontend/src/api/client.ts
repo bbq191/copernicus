@@ -30,6 +30,29 @@ client.interceptors.response.use(
 
 export const POLL_INTERVAL_MS = 2000;
 
+/**
+ * PATCH 请求；keepalive=true 用于页面关闭前的最后一次提交——axios 不支持 keepalive，
+ * 改用 fetch，浏览器会在页面卸载后继续发送，响应体按 JSON 解析为 T。
+ */
+export async function patchKeepalive<T>(
+  url: string,
+  body: unknown,
+  keepalive: boolean,
+): Promise<T> {
+  if (!keepalive) {
+    const { data } = await client.patch<T>(url, body);
+    return data;
+  }
+  const res = await fetch(`${client.defaults.baseURL}${url}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  });
+  if (!res.ok) throw new Error(`保存失败（${res.status}）`);
+  return (await res.json()) as T;
+}
+
 export const taskMediaUrl = (taskId: string) => `/api/v1/tasks/${taskId}/media`;
 export const taskFrameUrl = (taskId: string, filename: string) =>
   `/api/v1/tasks/${taskId}/frames/${filename}`;

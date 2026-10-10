@@ -1,4 +1,4 @@
-import client, { taskMediaUrl, taskFrameUrl } from "./client";
+import client, { taskMediaUrl, taskFrameUrl, patchKeepalive } from "./client";
 import { isTransientError } from "./errors";
 import { computeFileSHA256 } from "../utils/fileHash";
 import { chunkedUploadFile } from "../utils/chunkedUpload";
@@ -152,26 +152,12 @@ export async function purgeTask(taskId: string): Promise<void> {
   await client.delete(`/tasks/${taskId}`, { params: { purge: true } });
 }
 
-/**
- * keepalive 用于页面关闭前的最后一次提交：axios 不支持，改用 fetch，浏览器会在页面卸载后继续发送。
- */
 export async function editTranscript(
   taskId: string,
   edits: TranscriptTextEdit[],
   { keepalive = false }: { keepalive?: boolean } = {},
 ): Promise<void> {
-  const url = `/tasks/${taskId}/transcript`;
-  if (!keepalive) {
-    await client.patch(url, { edits });
-    return;
-  }
-  const res = await fetch(`${client.defaults.baseURL}${url}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ edits }),
-    keepalive: true,
-  });
-  if (!res.ok) throw new Error(`保存失败（${res.status}）`);
+  await patchKeepalive<unknown>(`/tasks/${taskId}/transcript`, { edits }, keepalive);
 }
 
 export async function renameSpeakers(

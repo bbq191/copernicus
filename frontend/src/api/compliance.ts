@@ -1,4 +1,4 @@
-import client from "./client";
+import client, { patchKeepalive } from "./client";
 import { pollUntilDone } from "./polling";
 import type { PollOptions } from "./polling";
 import type { ComplianceResponse, ViolationStatus } from "../types/compliance";
@@ -56,28 +56,18 @@ export interface ViolationStatusUpdate {
   note?: string;
 }
 
-/**
- * 持久化复核结果，返回服务端按复核状态重算后的合规评分。
- * keepalive 用于页面关闭前的最后一次提交：axios 不支持，改用 fetch，浏览器会在页面卸载后继续发送。
- */
+/** 持久化复核结果，返回服务端按复核状态重算后的合规评分。 */
 export async function persistViolationStatuses(
   taskId: string,
   updates: ViolationStatusUpdate[],
   { keepalive = false }: { keepalive?: boolean } = {},
 ): Promise<number> {
-  const url = `/tasks/${taskId}/compliance/violations`;
-  if (!keepalive) {
-    const { data } = await client.patch<{ compliance_score: number }>(url, { updates });
-    return data.compliance_score;
-  }
-  const res = await fetch(`${client.defaults.baseURL}${url}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ updates }),
-    keepalive: true,
-  });
-  if (!res.ok) throw new Error(`保存失败（${res.status}）`);
-  return ((await res.json()) as { compliance_score: number }).compliance_score;
+  const { compliance_score } = await patchKeepalive<{ compliance_score: number }>(
+    `/tasks/${taskId}/compliance/violations`,
+    { updates },
+    keepalive,
+  );
+  return compliance_score;
 }
 
 export const complianceExportUrl = (taskId: string) =>

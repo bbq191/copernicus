@@ -1,7 +1,12 @@
 import client, { patchKeepalive } from "./client";
 import { pollUntilDone } from "./polling";
 import type { PollOptions } from "./polling";
-import type { ComplianceResponse, ViolationStatus } from "../types/compliance";
+import type {
+  ComplianceResponse,
+  ComplianceTrends,
+  TodoItem,
+  ViolationStatus,
+} from "../types/compliance";
 import type { TaskSubmitResponse } from "../types/task";
 import type { TranscriptEntry } from "../types/transcript";
 
@@ -52,8 +57,13 @@ export async function auditCompliance(
 
 export interface ViolationStatusUpdate {
   violation_id: string;
-  status: ViolationStatus;
+  /** 省略时仅更新 assignee/due_at，不触碰复核状态 */
+  status?: ViolationStatus;
   note?: string;
+  /** 指派给谁复核；传空字符串清除指派，不提供（undefined）则不改动 */
+  assignee?: string;
+  /** 复核截止时间 ISO 8601；传空字符串清除，不提供则不改动 */
+  due_at?: string;
 }
 
 /** 持久化复核结果，返回服务端按复核状态重算后的合规评分。 */
@@ -72,3 +82,17 @@ export async function persistViolationStatuses(
 
 export const complianceExportUrl = (taskId: string) =>
   `/api/v1/tasks/${taskId}/compliance/export`;
+
+/** 查询指派给某人、还未处理的违规（跨任务聚合，按截止时间升序）。 */
+export async function listMyTodos(assignee: string): Promise<TodoItem[]> {
+  const { data } = await client.get<TodoItem[]>("/compliance/todos", {
+    params: { assignee },
+  });
+  return data;
+}
+
+/** 跨任务聚合的合规审核趋势：命中最多的规则、严重度分布、平均合规分。 */
+export async function getComplianceTrends(): Promise<ComplianceTrends> {
+  const { data } = await client.get<ComplianceTrends>("/compliance/analytics/trends");
+  return data;
+}

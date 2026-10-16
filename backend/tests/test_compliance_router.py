@@ -282,6 +282,138 @@ class TestReviewTrailAndScore:
         assert r.status_code == 422
 
 
+class TestAssignment:
+    def _saved(self, store: MagicMock) -> ComplianceResponse:
+        return store.persistence.save_json.call_args.args[2]
+
+    def test_assign_without_status_does_not_touch_review_state(self, api, mock_task_store):
+        mock_task_store.persistence.load_json.return_value = _response([_violation(1, 1000)])
+
+        r = api.patch(
+            "/api/v1/tasks/t/compliance/violations",
+            json={"updates": [{"violation_id": "v0001", "assignee": "张三", "due_at": "2026-01-01T00:00:00+00:00"}]},
+        )
+
+        assert r.status_code == 200
+        v = self._saved(mock_task_store).report.violations[0]
+        assert v.assignee == "张三" and v.due_at == "2026-01-01T00:00:00+00:00"
+        assert v.status == "pending" and v.reviewed_at is None  # 没碰复核状态
+
+    def test_empty_string_clears_assignment(self, api, mock_task_store):
+        mock_task_store.persistence.load_json.return_value = _response(
+            [_violation(1, 1000, assignee="张三", due_at="2026-01-01T00:00:00+00:00")]
+        )
+
+        api.patch(
+            "/api/v1/tasks/t/compliance/violations",
+            json={"updates": [{"violation_id": "v0001", "assignee": "", "due_at": ""}]},
+        )
+
+        v = self._saved(mock_task_store).report.violations[0]
+        assert v.assignee is None and v.due_at is None
+
+    def test_resending_same_status_does_not_bump_reviewed_at(self, api, mock_task_store):
+        """指派等场景会把当前状态原样回传，状态没变时不该刷新复核时间（否则看起来像刚刚复核过）。"""
+        mock_task_store.persistence.load_json.return_value = _response(
+            [_violation(1, 1000, status="confirmed", reviewed_at="2026-01-01T00:00:00+00:00")]
+        )
+
+        api.patch(
+            "/api/v1/tasks/t/compliance/violations",
+            json={"updates": [{"violation_id": "v0001", "status": "confirmed", "assignee": "张三"}]},
+        )
+
+        v = self._saved(mock_task_store).report.violations[0]
+        assert v.reviewed_at == "2026-01-01T00:00:00+00:00"
+        assert v.assignee == "张三"
+
+
+class TestTodos:
+    def test_lists_pending_violations_assigned_to_the_given_person_sorted_by_due_at(
+        self, api, mock_task_store
+    ):
+        mock_task_store.persistence.scan_compliance_reports.return_value = [
+            (
+                "task-a",
+                _response(
+                    [
+                        _violation(1, 1000, assignee="张三", due_at="2026-02-01T00:00:00+00:00"),
+                        _violation(2, 2000, assignee="张三"),  # 无截止时间，排最后
+                        _violation(3, 3000, assignee="李四", due_at="2026-01-01T00:00:00+00:00"),
+                        _violation(4, 4000, assignee="张三", status="confirmed", due_at="2026-01-01T00:00:00+00:00"),
+                    ]
+                ),
+            ),
+            (
+                "task-b",
+                _response(
+                    [_violation(5, 5000, assignee="张三", due_at="2026-01-15T00:00:00+00:00")]
+                ),
+            ),
+        ]
+
+        r = api.get("/api/v1/compliance/todos", params={"assignee": "张三"})
+
+        assert r.status_code == 200
+        todos = r.json()
+        # 排除掉指派给"李四"的、以及已 confirmed 的；剩下 3 条按 due_at 升序，无截止时间排最后
+        assert [(t["task_id"], t["id"]) for t in todos] == [
+            ("task-b", "v0001"),  # due 2026-01-15
+            ("task-a", "v0001"),  # due 2026-02-01
+            ("task-a", "v0002"),  # 无截止时间
+        ]
+
+    def test_no_match_returns_empty_list(self, api, mock_task_store):
+        mock_task_store.persistence.scan_compliance_reports.return_value = []
+        r = api.get("/api/v1/compliance/todos", params={"assignee": "张三"})
+        assert r.json() == []
+
+
+class TestComplianceTrends:
+    def _response_with_score(self, violations: list[Violation], score: float) -> dict:
+        data = _response(violations)
+        data["report"]["compliance_score"] = score
+        return data
+
+    def test_aggregates_rule_hits_severity_and_average_score_excluding_rejected(
+        self, api, mock_task_store
+    ):
+        mock_task_store.persistence.scan_compliance_reports.return_value = [
+            (
+                "task-a",
+                self._response_with_score(
+                    [
+                        _violation(1, 1000, severity="high"),
+                        _violation(1, 2000, severity="high"),
+                        _violation(2, 3000, severity="low", status="rejected"),
+                    ],
+                    70.0,
+                ),
+            ),
+            (
+                "task-b",
+                self._response_with_score([_violation(1, 4000, severity="high")], 90.0),
+            ),
+        ]
+
+        r = api.get("/api/v1/compliance/analytics/trends")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total_tasks"] == 2
+        assert body["avg_compliance_score"] == 80.0
+        # 规则 2 的那条已被驳回，不计入命中排行
+        assert body["top_rules"] == [{"rule_id": 1, "rule_content": "规则", "count": 3}]
+        assert body["severity_counts"] == {"high": 3}
+
+    def test_no_tasks_returns_zero_without_crashing(self, api, mock_task_store):
+        mock_task_store.persistence.scan_compliance_reports.return_value = []
+        r = api.get("/api/v1/compliance/analytics/trends")
+        assert r.json() == {
+            "total_tasks": 0, "avg_compliance_score": None, "top_rules": [], "severity_counts": {}
+        }
+
+
 class TestExport:
     def test_export_xlsx_contains_sheets_and_review_info(self, api, mock_task_store):
         import io

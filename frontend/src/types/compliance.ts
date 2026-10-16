@@ -33,6 +33,10 @@ export interface Violation {
   reviewed_at?: string | null;
   review_note?: string | null;
 
+  // 复核分配：自由文本姓名，不依赖账户体系
+  assignee: string | null;
+  due_at: string | null;
+
   // 音频/文本
   timestamp: string;
   timestamp_ms: number;
@@ -60,4 +64,23 @@ export interface ComplianceResponse {
   rules: ComplianceRule[];
   report: ComplianceReport;
   processing_time_ms: number;
+}
+
+/** "我的待办"列表的一项：跨任务聚合的违规条目，多带一个 task_id 用于跳转。 */
+export interface TodoItem extends Violation {
+  task_id: string;
+}
+
+export interface ComplianceTrendRule {
+  rule_id: number;
+  rule_content: string;
+  /** 命中次数，不含已驳回（人工确认误报）的条目 */
+  count: number;
+}
+
+export interface ComplianceTrends {
+  total_tasks: number;
+  avg_compliance_score: number | null;
+  top_rules: ComplianceTrendRule[];
+  severity_counts: Partial<Record<"high" | "medium" | "low", number>>;
 }

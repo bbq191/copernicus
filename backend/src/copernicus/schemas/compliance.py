@@ -47,16 +47,26 @@ class Violation(BaseModel):
     reviewed_at: str | None = None  # 最近一次确认/驳回的 UTC 时间（ISO 8601）
     review_note: str | None = None
 
+    # 复核分配：谁来处理、什么时候前处理完（均可选，不依赖账户体系，自由文本姓名）
+    assignee: str | None = None
+    due_at: str | None = None  # ISO 8601
+
     def apply_review(
         self, status: Literal["pending", "confirmed", "rejected"], note: str | None = None
     ) -> None:
-        """记录一次人工复核：回到待审会清空留痕，确认/驳回则写入时间与（可选）备注。"""
+        """记录一次人工复核：回到待审会清空留痕，确认/驳回则写入（可选）备注。
+
+        只有状态真正发生变化时才刷新 reviewed_at——指派等其他字段的更新会跟当前状态
+        一起原样回传（见 routers/compliance.py），状态未变时不能把复核时间当成"刚刚复核过"。
+        """
+        changed = status != self.status
         self.status = status
         if status == "pending":
             self.reviewed_at = None
             self.review_note = None
             return
-        self.reviewed_at = datetime.now(timezone.utc).isoformat()
+        if changed:
+            self.reviewed_at = datetime.now(timezone.utc).isoformat()
         if note is not None:
             self.review_note = note.strip() or None
 
@@ -100,6 +110,10 @@ class ComplianceResponse(BaseModel):
     rules: list[ComplianceRule]
     report: ComplianceReport
     processing_time_ms: float
+    # 规则来源：规则库 or 一次性上传的 CSV/XLSX；只有规则库来源的审核才会被"规则变更后批量重审"选中
+    # （两者的 rule_id 编号空间可能偶然重叠，不能只靠 rule_id 判断）。
+    # 旧数据没有这个字段，默认落在更安全的一侧（file，不会被误选去重审）。
+    rules_source: Literal["library", "file"] = "file"
 
 
 # ---------------------------------------------------------------------------

@@ -13,11 +13,14 @@ const CONTEXT_RANGE = 3;
 export function useEvidenceDetail(violation: Violation) {
   const closeEvidenceDetail = useComplianceStore((s) => s.closeEvidenceDetail);
   const setViolationStatus = useComplianceStore((s) => s.setViolationStatus);
+  const assignViolation = useComplianceStore((s) => s.assignViolation);
   const rawEntries = useTranscriptStore((s) => s.rawEntries);
   const seekAndPlay = usePlayerStore((s) => s.seekAndPlay);
   const taskId = useTaskStore((s) => s.taskId);
   const [imageZoom, setImageZoom] = useState(false);
   const [note, setNote] = useState(violation.review_note ?? "");
+  const [assignee, setAssignee] = useState(violation.assignee ?? "");
+  const [dueAt, setDueAt] = useState(violation.due_at?.slice(0, 10) ?? "");
 
   const imageUrl = resolveEvidenceUrl(violation.evidence_url, taskId);
 
@@ -50,6 +53,17 @@ export function useEvidenceDetail(violation: Violation) {
     setViolationStatus(violation, "pending");
   };
 
+  /** 输入框失焦时才提交：避免指派姓名每敲一个字就发一次请求。 */
+  const commitAssignment = () => {
+    // 截止日期只到天（<input type="date"> 给的就是 yyyy-mm-dd），不强行拼出一个时刻
+    const nextDueAt = dueAt || null;
+    const nextAssignee = assignee.trim() || null;
+    if (nextAssignee === (violation.assignee ?? null) && nextDueAt === (violation.due_at ?? null)) {
+      return; // 没有实际变化，不发请求
+    }
+    assignViolation(violation, nextAssignee, nextDueAt);
+  };
+
   return {
     closeEvidenceDetail,
     seekAndPlay,
@@ -59,6 +73,11 @@ export function useEvidenceDetail(violation: Violation) {
     setImageZoom,
     note,
     setNote,
+    assignee,
+    setAssignee,
+    dueAt,
+    setDueAt,
+    commitAssignment,
     handleConfirm,
     handleReject,
     handleReset,

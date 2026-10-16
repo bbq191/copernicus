@@ -1,9 +1,11 @@
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Plus, Pencil, Trash2, ListChecks } from "lucide-react";
 import { useRuleLibrary } from "../hooks/useRuleLibrary";
+import { useRuleReaudit } from "../hooks/useRuleReaudit";
 import { ThemeToggle } from "../components/shared/ThemeToggle";
 import { RuleFormModal } from "../components/rules/RuleFormModal";
 import { CATEGORY_LABEL, CHECK_MODE_LABEL, EVIDENCE_LABEL, SEVERITY_BADGE, SEVERITY_LABEL } from "../components/rules/ruleLabels";
+import type { CustomRule } from "../types/rules";
 
 export function RuleLibraryPage() {
   const navigate = useNavigate();
@@ -19,6 +21,14 @@ export function RuleLibraryPage() {
     handleDelete,
     handleRuleSaved,
   } = useRuleLibrary();
+  const { prompt, job, checkAfterEdit, confirmReaudit, dismissPrompt, dismissJob } = useRuleReaudit();
+
+  // 只在"编辑已有规则"（而不是新建）保存后才检查受影响的历史任务
+  const wasEditingExisting = editing !== null && editing !== "new";
+  const onRuleSaved = (rule: CustomRule) => {
+    handleRuleSaved(rule);
+    if (wasEditingExisting) void checkAfterEdit(rule.id);
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -52,6 +62,60 @@ export function RuleLibraryPage() {
         {error && (
           <div className="alert alert-error mb-4">
             <span className="text-sm">{error}</span>
+          </div>
+        )}
+
+        {prompt && (
+          <div className="alert alert-info mb-4 flex items-center justify-between gap-2 flex-wrap">
+            <span className="text-sm">
+              该规则已被 {prompt.total} 个历史任务引用，规则内容变了，之前的审核结果可能已经过期——是否重新审核？
+            </span>
+            <div className="flex gap-2 shrink-0">
+              <button className="btn btn-sm" onClick={confirmReaudit}>
+                重新审核
+              </button>
+              <button className="btn btn-sm btn-ghost" onClick={dismissPrompt}>
+                忽略
+              </button>
+            </div>
+          </div>
+        )}
+
+        {job && (
+          <div className="alert mb-4 flex flex-col items-start gap-2">
+            <div className="flex items-center justify-between w-full gap-2">
+              <span className="text-sm">
+                批量重审{job.done ? "已完成" : "进行中"}：{job.completed}/{job.total}
+                {job.failed.length > 0 && `，${job.failed.length} 个失败`}
+              </span>
+              {job.done && (
+                <button className="btn btn-xs btn-ghost" onClick={dismissJob}>
+                  关闭
+                </button>
+              )}
+            </div>
+            {!job.done && (
+              <progress
+                className="progress progress-primary w-full"
+                value={job.completed}
+                max={job.total}
+              />
+            )}
+            {job.done && job.diffs.length > 0 && (
+              <ul className="text-xs text-base-content/70 flex flex-col gap-1">
+                {job.diffs.map((d) => (
+                  <li key={d.task_id}>
+                    <Link to={`/workspace/${d.task_id}`} className="link">
+                      任务 {d.task_id.slice(0, 8)}
+                    </Link>
+                    ：合规分 {d.old_score} → {d.new_score}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {job.done && job.diffs.length === 0 && (
+              <p className="text-xs text-base-content/40">没有任务的合规分发生变化</p>
+            )}
           </div>
         )}
 
@@ -142,7 +206,7 @@ export function RuleLibraryPage() {
         <RuleFormModal
           initial={editing === "new" ? null : editing}
           onClose={() => setEditing(null)}
-          onSaved={handleRuleSaved}
+          onSaved={onRuleSaved}
         />
       )}
     </div>

@@ -24,3 +24,20 @@ export interface CustomRule {
 }
 
 export type CustomRuleInput = Omit<CustomRule, "id" | "created_at" | "updated_at">;
+
+export interface ReauditDiff {
+  task_id: string;
+  old_score: number;
+  new_score: number;
+}
+
+/** 规则变更后批量重审的进度；done 之前前端按固定间隔轮询。 */
+export interface ReauditJobStatus {
+  id: string;
+  rule_id: number;
+  total: number;
+  completed: number;
+  failed: string[];
+  done: boolean;
+  diffs: ReauditDiff[];
+}

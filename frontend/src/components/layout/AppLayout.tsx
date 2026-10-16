@@ -5,7 +5,7 @@ import { RightPanel } from "./RightPanel";
 import { EvidenceDetailPanel } from "../compliance/EvidenceDetailPanel";
 import { useComplianceStore } from "../../stores/complianceStore";
 import { useNavigate, Link } from "react-router-dom";
-import { Activity, FileText, LayoutDashboard, ListChecks } from "lucide-react";
+import { Activity, BarChart3, FileText, LayoutDashboard, ListChecks, ListTodo } from "lucide-react";
 
 /** 移动端（&lt;lg）一次只显示一个面板；桌面端两栏始终同时显示，不受这个状态影响。 */
 type MobilePane = "workspace" | "content";
@@ -28,6 +28,20 @@ export function AppLayout() {
           </button>
         </div>
         <div className="flex-none flex items-center gap-1">
+          <Link
+            to="/analytics"
+            className="btn btn-ghost btn-sm btn-square"
+            title="合规趋势"
+          >
+            <BarChart3 className="h-4 w-4" />
+          </Link>
+          <Link
+            to="/todos"
+            className="btn btn-ghost btn-sm btn-square"
+            title="我的待办"
+          >
+            <ListTodo className="h-4 w-4" />
+          </Link>
           <Link
             to="/rules"
             className="btn btn-ghost btn-sm btn-square"

@@ -26,6 +26,8 @@ const violation = (id: string, over: Partial<Violation> = {}): Violation => ({
   evidence_url: null,
   evidence_text: null,
   rule_ref: null,
+  assignee: null,
+  due_at: null,
   timestamp: "00:01",
   timestamp_ms: 1000,
   end_ms: 2000,
@@ -213,6 +215,56 @@ describe("batchSetStatus", () => {
     expect(s.batchMode).toBe(false);
     expect(persistViolationStatuses).toHaveBeenCalledTimes(1);
     expect(vi.mocked(persistViolationStatuses).mock.calls[0][1].map((u) => u.violation_id)).toEqual(["a", "c"]);
+  });
+});
+
+describe("assignViolation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(persistViolationStatuses).mockReset().mockResolvedValue(80);
+    useTaskStore.setState({ taskId: "task-1" });
+    useComplianceStore.getState().reset();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("sets assignee/due_at locally without touching status", () => {
+    const a = violation("v0001");
+    useComplianceStore.getState().setReport(report([a]), []);
+
+    useComplianceStore.getState().assignViolation(a, "张三", "2026-01-01");
+
+    const updated = useComplianceStore.getState().report!.violations[0];
+    expect(updated.assignee).toBe("张三");
+    expect(updated.due_at).toBe("2026-01-01");
+    expect(updated.status).toBe("pending");
+  });
+
+  it("clears assignment when given null", () => {
+    const a = violation("v0001", { assignee: "张三", due_at: "2026-01-01" });
+    useComplianceStore.getState().setReport(report([a]), []);
+
+    useComplianceStore.getState().assignViolation(a, null, null);
+
+    const updated = useComplianceStore.getState().report!.violations[0];
+    expect(updated.assignee).toBeNull();
+    expect(updated.due_at).toBeNull();
+  });
+
+  it("persists assignee/due_at alongside the current status, so a concurrent review isn't clobbered", async () => {
+    const a = violation("v0001");
+    useComplianceStore.getState().setReport(report([a]), []);
+
+    // 同一防抖窗口内先确认违规，再指派给张三：两次 schedule 落到同一个 key，
+    // 最后一次必须带上当前状态，不然确认会被指派这次请求覆盖掉
+    useComplianceStore.getState().setViolationStatus(a, "confirmed");
+    useComplianceStore.getState().assignViolation(a, "张三", null);
+    await flushPersist();
+
+    expect(persistViolationStatuses).toHaveBeenCalledTimes(1);
+    const [, updates] = vi.mocked(persistViolationStatuses).mock.calls[0];
+    expect(updates).toEqual([
+      { violation_id: "v0001", status: "confirmed", note: undefined, assignee: "张三", due_at: "" },
+    ]);
   });
 });
 

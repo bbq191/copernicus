@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
@@ -93,8 +94,16 @@ class ViolationStatusUpdate(BaseModel):
     index: int | None = Field(
         default=None, description="已废弃：列表下标，请改用 violation_id"
     )
-    status: Literal["pending", "confirmed", "rejected"]
+    status: Literal["pending", "confirmed", "rejected"] | None = Field(
+        default=None, description="不提供时仅更新 assignee/due_at，不触碰复核状态"
+    )
     note: str | None = Field(default=None, max_length=500, description="复核备注（如驳回原因）")
+    assignee: str | None = Field(
+        default=None, max_length=50, description="指派给谁复核；传空字符串清除指派，不提供则不改动"
+    )
+    due_at: str | None = Field(
+        default=None, description="复核截止时间 ISO 8601；传空字符串清除，不提供则不改动"
+    )
 
     @model_validator(mode="after")
     def _require_target(self) -> "ViolationStatusUpdate":
@@ -121,6 +130,7 @@ async def update_violation_statuses(
     通过 `violation_id`（报告内稳定唯一）定位条目；`index`（列表下标）仅为兼容旧客户端保留。
     `status` 取值：`pending`（待审）、`confirmed`（已确认）、`rejected`（已驳回）。
     确认/驳回会记录复核时间 `reviewed_at`，可附 `note` 备注；改回 `pending` 会清空留痕。
+    `status` 可省略，此时仅更新 `assignee`/`due_at`（指派复核人/截止时间），不触碰复核状态。
     合规评分随复核重算（已驳回的条目不再扣分），新分数在响应的 `compliance_score` 中返回。
     更新立即持久化到 `compliance.json`，页面刷新后状态保留。
     未匹配到条目的更新会在 `missing` 中返回，不会中断其余更新。
@@ -144,12 +154,82 @@ async def update_violation_statuses(
         if target is None:
             missing.append(u.violation_id if u.violation_id is not None else str(u.index))
             continue
-        target.apply_review(u.status, u.note)
+        if u.status is not None:
+            target.apply_review(u.status, u.note)
+        if u.assignee is not None:
+            target.assignee = u.assignee.strip() or None
+        if u.due_at is not None:
+            target.due_at = u.due_at.strip() or None
         updated += 1
 
     score = compliance.report.recalculate_score()
     persistence.save_json(task_id, "compliance.json", compliance)
     return {"ok": True, "updated": updated, "missing": missing, "compliance_score": score}
+
+
+@router.get(
+    "/compliance/todos",
+    summary="查询指派给某人的待处理违规",
+)
+async def list_compliance_todos(
+    assignee: str,
+    store: TaskStore = Depends(get_task_store),
+) -> list[dict]:
+    """跨任务聚合"指派给我、还没处理"的违规条目，按截止时间升序（无截止时间排最后）。
+
+    没有账户体系，`assignee` 是自由文本姓名，按完全匹配过滤。
+    一次性全量扫描 upload_dir 下所有任务的 compliance.json，没有另建索引——
+    量级是"一个团队的审核记录"，不是海量数据，扫描足够快，先不为了性能提前做索引。
+    """
+    todos = []
+    for task_id, data in store.persistence.scan_compliance_reports():
+        for v in data.get("report", {}).get("violations", []):
+            if v.get("assignee") == assignee and v.get("status") == "pending":
+                todos.append({**v, "task_id": task_id})
+    todos.sort(key=lambda v: v.get("due_at") or "9999-12-31")
+    return todos
+
+
+@router.get(
+    "/compliance/analytics/trends",
+    summary="合规审核趋势统计",
+)
+async def compliance_trends(
+    store: TaskStore = Depends(get_task_store),
+) -> dict:
+    """跨任务聚合已持久化的合规审核结果：命中最多的规则、严重度分布、平均合规分。
+
+    一次性全量扫描（见 `scan_compliance_reports`），不是实时指标，量级同 `/compliance/todos`。
+    已驳回（人工确认为误报）的条目不计入命中统计，否则高频误报的规则会显得像"高频真实违规"。
+    """
+    reports = store.persistence.scan_compliance_reports()
+
+    rule_hits: Counter[int] = Counter()
+    rule_contents: dict[int, str] = {}
+    severity_counts: Counter[str] = Counter()
+    scores: list[float] = []
+
+    for _task_id, data in reports:
+        report = data.get("report", {})
+        scores.append(report.get("compliance_score", 100.0))
+        for v in report.get("violations", []):
+            if v.get("status") == "rejected":
+                continue
+            rule_id = v["rule_id"]
+            rule_hits[rule_id] += 1
+            rule_contents[rule_id] = v.get("rule_content", "")
+            severity_counts[v.get("severity", "low")] += 1
+
+    top_rules = [
+        {"rule_id": rule_id, "rule_content": rule_contents[rule_id], "count": count}
+        for rule_id, count in rule_hits.most_common(20)
+    ]
+    return {
+        "total_tasks": len(reports),
+        "avg_compliance_score": round(sum(scores) / len(scores), 1) if scores else None,
+        "top_rules": top_rules,
+        "severity_counts": dict(severity_counts),
+    }
 
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

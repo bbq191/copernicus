@@ -15,6 +15,7 @@ import {
 import { ReviewPersister } from "./reviewPersister";
 import { useTaskStore } from "./taskStore";
 import { useToastStore } from "./toastStore";
+import { createAsyncTaskActions, initialAsyncTaskSlice, type AsyncTaskSlice } from "./asyncTaskSlice";
 
 // ---------------------------------------------------------------------------
 // 复核结果持久化（防抖、按任务绑定、失败重试；细节见 ReviewPersister）
@@ -52,13 +53,9 @@ if (typeof document !== "undefined") {
 // ---------------------------------------------------------------------------
 export type RightTab = "transcript" | "violations";
 
-interface ComplianceState {
+interface ComplianceState extends AsyncTaskSlice {
   report: ComplianceReport | null;
   rules: ComplianceRule[] | null;
-  isLoading: boolean;
-  error: string | null;
-  progress: number;
-  progressText: string;
 
   // 选中项与证据面板只保存 id：违规对象在复核后会被替换成新对象，按 id 才能稳定对应
   selectedId: string | null;
@@ -83,6 +80,8 @@ interface ComplianceState {
   setSourceFilter: (filter: SourceFilter) => void;
   setSearchQuery: (q: string) => void;
   setViolationStatus: (v: Violation, status: ViolationStatus, note?: string) => void;
+  /** 指派复核人/截止时间，不改动复核状态；assignee/dueAt 传 null 表示清除。 */
+  assignViolation: (v: Violation, assignee: string | null, dueAt: string | null) => void;
   navigateViolation: (direction: "prev" | "next") => void;
   setActiveTab: (tab: RightTab) => void;
 
@@ -99,12 +98,9 @@ interface ComplianceState {
 }
 
 const initialState = {
+  ...initialAsyncTaskSlice,
   report: null,
   rules: null,
-  isLoading: false,
-  error: null,
-  progress: 0,
-  progressText: "",
   selectedId: null,
   evidenceDetailId: null,
   severityFilter: "all" as SeverityFilter,
@@ -129,8 +125,40 @@ export const useComplianceStore = create<ComplianceState>((set, get) => {
       if (!ids.has(item.id)) return item;
       const reviewNote =
         status === "pending" ? null : (note === undefined ? item.review_note : note.trim()) || null;
-      if (taskId) persister.schedule(taskId, { violation_id: item.id, status, note });
+      if (taskId) {
+        // assignee/due_at 原样回传当前值：防抖队列按 violation_id 合并，同一条目在窗口内
+        // 若还有一次指派操作排队，不带上这两个字段会被那次更新的缺省值覆盖掉
+        persister.schedule(taskId, {
+          violation_id: item.id,
+          status,
+          note,
+          assignee: item.assignee ?? undefined,
+          due_at: item.due_at ?? undefined,
+        });
+      }
       return { ...item, status, reviewed_at: reviewedAt, review_note: reviewNote };
+    });
+    set({ report: { ...report, violations } });
+  };
+
+  /** 指派与复核共用同一条防抖队列，原样回传当前复核状态，理由同上（互不覆盖）。 */
+  const assignViolation = (v: Violation, assignee: string | null, dueAt: string | null) => {
+    const { report } = get();
+    if (!report) return;
+    const taskId = useTaskStore.getState().taskId;
+
+    const violations = report.violations.map((item) => {
+      if (item.id !== v.id) return item;
+      if (taskId) {
+        persister.schedule(taskId, {
+          violation_id: item.id,
+          status: item.status,
+          note: item.review_note ?? undefined,
+          assignee: assignee ?? "",
+          due_at: dueAt ?? "",
+        });
+      }
+      return { ...item, assignee, due_at: dueAt };
     });
     set({ report: { ...report, violations } });
   };
@@ -138,6 +166,7 @@ export const useComplianceStore = create<ComplianceState>((set, get) => {
   return {
     ...initialState,
     selectedIds: new Set(),
+    ...createAsyncTaskActions<ComplianceState>(set),
 
     setReport: (report, rules) => {
       const withDefaults: ComplianceReport = {
@@ -149,14 +178,12 @@ export const useComplianceStore = create<ComplianceState>((set, get) => {
           evidence_url: v.evidence_url ?? null,
           evidence_text: v.evidence_text ?? null,
           rule_ref: v.rule_ref ?? null,
+          assignee: v.assignee ?? null,
+          due_at: v.due_at ?? null,
         })),
       };
       set({ report: withDefaults, rules, isLoading: false, progress: 100, progressText: "" });
     },
-    setLoading: (loading) =>
-      set({ isLoading: loading, progress: 0, progressText: loading ? "提交中..." : "", error: null }),
-    setError: (error) => set({ error, isLoading: false, progress: 0, progressText: "" }),
-    setProgress: (percent, text) => set({ progress: percent, progressText: text }),
 
     selectViolation: (v) => set({ selectedId: v?.id ?? null }),
     setSeverityFilter: (filter) => set({ severityFilter: filter }),
@@ -166,6 +193,7 @@ export const useComplianceStore = create<ComplianceState>((set, get) => {
     setActiveTab: (tab) => set({ activeTab: tab }),
 
     setViolationStatus: (v, status, note) => applyReview(new Set([v.id]), status, note),
+    assignViolation,
 
     navigateViolation: (direction) => {
       const filtered = getFilteredViolations(get());

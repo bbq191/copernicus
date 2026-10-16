@@ -1,4 +1,4 @@
-import { X, Check, RotateCcw, Clock, BookOpen, ZoomIn } from "lucide-react";
+import { X, Check, RotateCcw, Clock, BookOpen, ZoomIn, UserRound } from "lucide-react";
 import { selectEvidenceDetail, useComplianceStore } from "../../stores/complianceStore";
 import { useEvidenceDetail } from "../../hooks/useEvidenceDetail";
 import { formatTime } from "../../utils/formatTime";
@@ -22,6 +22,11 @@ function EvidenceDetail({ violation }: { violation: Violation }) {
     setImageZoom,
     note,
     setNote,
+    assignee,
+    setAssignee,
+    dueAt,
+    setDueAt,
+    commitAssignment,
     handleConfirm,
     handleReject,
     handleReset,
@@ -54,6 +59,29 @@ function EvidenceDetail({ violation }: { violation: Violation }) {
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+        {/* 复核指派：谁来处理、什么时候前处理完，不依赖账户体系的自由文本 */}
+        <div className="flex items-center gap-2">
+          <UserRound className="h-3.5 w-3.5 text-base-content/40 shrink-0" />
+          <input
+            type="text"
+            className="input input-bordered input-xs flex-1 min-w-0"
+            placeholder="指派给谁复核"
+            aria-label="指派给谁复核"
+            maxLength={50}
+            value={assignee}
+            onChange={(e) => setAssignee(e.target.value)}
+            onBlur={commitAssignment}
+          />
+          <input
+            type="date"
+            className="input input-bordered input-xs w-32 shrink-0"
+            aria-label="复核截止日期"
+            value={dueAt}
+            onChange={(e) => setDueAt(e.target.value)}
+            onBlur={commitAssignment}
+          />
+        </div>
+
         {/* Source + timestamp */}
         <div className="flex items-center gap-2 text-sm text-base-content/60">
           <SourceIcon className="h-4 w-4" />

@@ -164,6 +164,7 @@ class TaskExecutor:
             rules=rules,
             report=report,
             processing_time_ms=(time.perf_counter() - start) * 1000,
+            rules_source="library" if use_rule_library else "file",
         )
         task.result = response
         if task.parent_task_id:

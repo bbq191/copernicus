@@ -250,6 +250,31 @@ class PersistenceService:
         d = self.path_of(task_id)
         return self._scan_entry(d) if d.is_dir() else None
 
+    def scan_compliance_reports(self) -> list[tuple[str, dict]]:
+        """扫描所有任务目录，返回已持久化的 compliance.json 原始内容：[(task_id, 数据), ...]。
+
+        供"我的待办"列表、合规趋势统计复用，避免各自重复扫描目录。
+        """
+        results = []
+        for d in self._upload_dir.iterdir():
+            if not d.is_dir() or not _SAFE_TASK_ID.fullmatch(d.name):
+                continue
+            data = self.load_json(d.name, "compliance.json")
+            if data is not None:
+                results.append((d.name, data))
+        return results
+
+    def scan_task_ids_using_rule(self, rule_id: int) -> list[str]:
+        """规则库变更后找受影响的历史任务：审核来源必须是规则库（见 ComplianceResponse.rules_source），
+        且其规则列表里确实包含这条规则 id——一次性上传 CSV 的 rule_id 编号空间不受管理，不纳入。
+        """
+        return [
+            task_id
+            for task_id, data in self.scan_compliance_reports()
+            if data.get("rules_source") == "library"
+            and any(r.get("id") == rule_id for r in data.get("rules", []))
+        ]
+
     def _scan_entry(self, d: Path) -> dict | None:
         meta_path = d / "meta.json"
         if not meta_path.exists():

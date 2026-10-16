@@ -43,7 +43,12 @@ export function useSynthesisPlayback() {
           setPolling(true);
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (!alive) return;
+        // 查询失败会默默退回"未合成"状态：之前已合成的结果不会消失，但用户得知道这次检查没成功，
+        // 不然会以为任务从没合成过而重新点一次
+        useToastStore.getState().addToast("error", errorMessage(err, "查询合成状态失败"));
+      });
     return () => {
       alive = false;
     };

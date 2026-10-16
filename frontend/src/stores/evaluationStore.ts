@@ -1,12 +1,9 @@
 import { create } from "zustand";
 import type { EvaluationResult } from "../types/evaluation";
+import { createAsyncTaskActions, initialAsyncTaskSlice, type AsyncTaskSlice } from "./asyncTaskSlice";
 
-interface EvaluationState {
+interface EvaluationState extends AsyncTaskSlice {
   evaluation: EvaluationResult | null;
-  isLoading: boolean;
-  error: string | null;
-  progress: number; // 0-100
-  progressText: string;
 
   setEvaluation: (result: EvaluationResult) => void;
   setLoading: (loading: boolean) => void;
@@ -16,27 +13,15 @@ interface EvaluationState {
 }
 
 const initialState = {
+  ...initialAsyncTaskSlice,
   evaluation: null,
-  isLoading: false,
-  error: null,
-  progress: 0,
-  progressText: "",
 };
 
 export const useEvaluationStore = create<EvaluationState>((set) => ({
   ...initialState,
+  ...createAsyncTaskActions<EvaluationState>(set),
 
   setEvaluation: (result) =>
     set({ evaluation: result, error: null, isLoading: false, progress: 100, progressText: "" }),
-  // 开始新一轮请求时清除上一次的错误，否则重试成功后错误提示仍会遮住结果
-  setLoading: (loading) =>
-    set({
-      isLoading: loading,
-      ...(loading ? { error: null } : {}),
-      progress: 0,
-      progressText: loading ? "提交中..." : "",
-    }),
-  setError: (error) => set({ error, isLoading: false, progress: 0, progressText: "" }),
-  setProgress: (percent, text) => set({ progress: percent, progressText: text }),
   reset: () => set(initialState),
 }));

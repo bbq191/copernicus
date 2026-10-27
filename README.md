@@ -20,7 +20,7 @@
 
 **本地开发**
 
-1. 后端：进入 `backend/`，按 `.env.example` 准备 `.env`（LLM 地址、ASR 模式等）；模型可用 `scripts/download_models.py` 预下载（ChatTTS、YOLO 权重需手动放入 `models/`）；运行 `python run_dev.py`（端口 8000）。
+1. 后端：进入 `backend/`，按 `.env.example` 准备 `.env`（LLM 地址、ASR 模式等）；模型可用 `scripts/download_models.py` 预下载（ChatTTS、YOLO 权重需手动放入 `models/`）；依赖用 uv 管理：`uv sync --extra cu130 --extra dev --extra tts`（torch 变体按显卡选 `cpu` / `cu126` / `cu130`，必须且只能选一个），同步后运行 `uv run --no-sync python scripts/patch_funasr.py` 重打 FunASR 补丁；用 `uv run --no-sync python run_dev.py` 启动（端口 8000）。不带 `--no-sync` 的 `uv run` 会按"不带 extra"重新同步，把 torch 换成 PyPI 默认构建并卸掉 ChatTTS。
 2. 前端：进入 `frontend/`，`npm install && npm run dev`（端口 3000）。依赖锁只有 `package-lock.json`，本地、CI 与部署脚本统一用 npm。
 3. 检查：后端在 `backend/` 下运行 `ruff check src tests` 与 `pytest -q`（全部用假对象，**不需要 GPU、模型或 LLM**）；前端在 `frontend/` 下运行 `npx tsc -b`、`npm run lint`、`npm test`。GitHub Actions 会在推送与 PR 时运行同样的检查，并对部署脚本做 ShellCheck 与 dry-run。
 

@@ -35,6 +35,50 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
 ]
+# 音频重塑（可选）：缺失时启动预检只警告，合成接口不可用
+tts = ["ChatTTS>=0.2,<0.3"]
+# PyTorch 变体：uv sync 时必须且只能选一个（--extra cpu / cu126 / cu130），否则会装 PyPI 默认构建
+# cpu：CI 与无显卡环境；cu126：驱动较旧（≥ 525）的机器；cu130：需驱动 ≥ 580，生产 RTX 2080 Ti 与开发机 RTX 50 系都用它
+cpu = ["torch", "torchaudio", "torchvision"]
+cu126 = ["torch", "torchaudio", "torchvision"]
+cu130 = ["torch", "torchaudio", "torchvision"]
+
+[tool.uv]
+conflicts = [
+    [{ extra = "cpu" }, { extra = "cu126" }, { extra = "cu130" }],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu126" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu126" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu126" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]

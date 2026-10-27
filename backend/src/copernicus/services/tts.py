@@ -1,7 +1,7 @@
 """ChatTTS 多说话人对话合成服务。
 
 安装依赖：
-    pip install ChatTTS soundfile
+    uv sync --extra tts
 
 VRAM 预估：~4 GB
 推理时需通过 ModelManager.use("tts", exclusive=True) 独占显存，ASR 模型将被自动卸载。

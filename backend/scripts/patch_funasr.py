@@ -8,15 +8,21 @@
 置信度是"跳过高置信度片段、只把可疑片段送 LLM 纠错"的前提；缺少补丁时全部片段都会送 LLM，
 纠错耗时从约 3 分钟退化为 2 小时以上。
 
-每次 `pip install`/升级 funasr 后都要重新执行：
+每次 `uv sync` 重装或升级 funasr 后，补丁都会被覆盖，需要重新执行：
 
-    python scripts/patch_funasr.py
+    uv run python scripts/patch_funasr.py          # 打补丁
+    uv run python scripts/patch_funasr.py --check  # 只检查，不修改
 
-已打过补丁的文件报告"已应用"并正常退出；某处锚点找不到（FunASR 版本变化）时退出码为 1。
-首次修改前会在同目录保存 model.py.orig 备份。
+已打过补丁的文件报告"已应用"并正常退出；某处锚点找不到（FunASR 版本变化）或 --check 发现
+未打补丁时退出码为 1。首次修改前会在同目录保存 model.py.orig 备份。
+
+写入方式是"先写临时文件再改名"：uv 从缓存安装包时会用写时复制或硬链接，原地改写可能
+连带改坏 uv 缓存里的同一份文件。
 """
 
+import argparse
 import importlib.util
+import os
 import shutil
 import sys
 import textwrap
@@ -114,34 +120,52 @@ def find_funasr_root() -> Path:
     return Path(next(iter(spec.submodule_search_locations)))
 
 
-def apply(root: Path, patch: Patch) -> bool:
+def _replace_file(path: Path, text: str) -> None:
+    # 新建 inode 再改名，不与 uv 缓存共享数据块
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    shutil.copymode(path, tmp)
+    os.replace(tmp, path)
+
+
+def apply(root: Path, patch: Patch, check_only: bool = False) -> bool:
     path = root / patch.file
     text = path.read_text(encoding="utf-8")
     name = f"{patch.file} :: {patch.label}"
     if patch.marker in text:
         print(f"  [已应用] {name}")
         return True
+    if check_only:
+        print(f"  [未应用] {name}", file=sys.stderr)
+        return False
     for old, new in patch.anchors:
         if old in text:
             backup = path.with_name(path.name + ".orig")
             if not backup.exists():
                 shutil.copy2(path, backup)
-            path.write_text(text.replace(old, new, 1), encoding="utf-8")
+            _replace_file(path, text.replace(old, new, 1))
             print(f"  [已打补丁] {name}")
             return True
     print(f"  [失败] 找不到锚点（FunASR 版本可能已变化）：{name}", file=sys.stderr)
     return False
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="给已安装的 FunASR 打补丁（幂等）")
+    parser.add_argument("--check", action="store_true", help="只检查补丁是否已应用，不修改文件")
+    args = parser.parse_args(argv)
+
     root = find_funasr_root()
     print(f"FunASR 目录：{root}\n")
     # 不用 all([...])：即使某项失败也要继续，一次性报告全部结果
-    results = [apply(root, patch) for patch in PATCHES]
+    results = [apply(root, patch, check_only=args.check) for patch in PATCHES]
     if all(results):
         print("\n全部补丁就绪。")
         return 0
-    print("\n部分补丁未能应用，置信度过滤将失效，请检查上面的失败项。", file=sys.stderr)
+    if args.check:
+        print("\n补丁未全部应用，运行 scripts/patch_funasr.py（不带 --check）补上。", file=sys.stderr)
+    else:
+        print("\n部分补丁未能应用，置信度过滤将失效，请检查上面的失败项。", file=sys.stderr)
     return 1
 
 

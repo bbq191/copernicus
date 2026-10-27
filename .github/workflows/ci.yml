@@ -8,28 +8,32 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # uv run 默认会先按"不带 extra"重新同步，把 CPU 版 torch 换回 PyPI 的 CUDA 版；环境只由 uv sync 决定
+    env:
+      UV_NO_SYNC: "1"
     defaults:
       run:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # setup-uv 没有 v10 这类浮动标签，只能写完整版本号
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-glob: backend/uv.lock
       # 预处理阶段的测试用真实 ffmpeg 生成小文件验证；缺失时这些测试会被跳过
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      # 测试全部使用 mock，不需要 GPU；先装 CPU 版 torch，避免下载数 GB 的 CUDA 轮子
-      - name: Install CPU-only torch
-        run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+      # 测试全部使用 mock，不需要 GPU；选 CPU 版 torch，避免下载数 GB 的 CUDA 轮子
+      # 先确认 uv.lock 与 pyproject 一致，再用 --frozen 严格按 lock 安装
+      - name: Check lockfile
+        run: uv lock --check
       - name: Install package
-        run: pip install -e ".[dev]"
+        run: uv sync --frozen --extra cpu --extra dev
       - name: Lint
-        run: ruff check src tests
+        run: uv run ruff check src tests scripts
       - name: Test
-        run: pytest -q
+        run: uv run pytest -q
 
   frontend:
     runs-on: ubuntu-latest
@@ -64,5 +68,7 @@ jobs:
         run: shellcheck -x install.sh uninstall.sh lib.sh
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      # install.sh 预检要求能找到 uv
+      - uses: astral-sh/setup-uv@v10.3.2
       - name: Dry run
-        run: sudo deploy/install.sh --dry-run --skip-frontend --no-nginx --python "$(command -v python3)"
+        run: sudo deploy/install.sh --dry-run --skip-frontend --no-nginx --python "$(command -v python3)" --uv "$(command -v uv)"

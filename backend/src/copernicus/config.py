@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     face_missing_threshold_ms: int = 10000
 
     # TTS (ChatTTS — Phase 4: Audio Synthesis)
-    # 安装：pip install ChatTTS pydub soundfile
+    # 安装：uv sync --extra tts（ChatTTS 权重另需手动放入 models/chattts/）
     tts_vram_estimate_gb: float = 4.0
     # 音色池：纯数字字符串直接作为 torch seed，其他字符串通过 MD5 映射
     tts_default_voices: list[str] = ["2222", "3333", "4444", "5555"]

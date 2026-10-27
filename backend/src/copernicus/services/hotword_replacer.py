@@ -91,7 +91,7 @@ class HotwordReplacerService:
         except ImportError:
             logger.warning(
                 "flashtext not installed, HotwordReplacer disabled. "
-                "Install with: pip install flashtext"
+                "Install with: uv sync"
             )
             return False
         except Exception as e:

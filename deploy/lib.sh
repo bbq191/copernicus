@@ -63,7 +63,7 @@ save_state() {
     install -d -m 755 "$(dirname "$STATE_FILE")"
     {
         echo "# 由 deploy/install.sh 生成，deploy/uninstall.sh 读取"
-        for key in APP_DIR SERVICE_USER SERVICE_NAME DATA_DIR WEB_ROOT NGINX_CONF PORT USER_CREATED FIREWALL_OPENED; do
+        for key in APP_DIR SERVICE_USER SERVICE_NAME DATA_DIR WEB_ROOT NGINX_CONF PORT USER_CREATED FIREWALL_OPENED TORCH_VARIANT; do
             printf '%s=%q\n' "$key" "${!key:-}"
         done
     } >"$STATE_FILE"

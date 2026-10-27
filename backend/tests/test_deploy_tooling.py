@@ -87,6 +87,26 @@ class TestPatchFunasr:
         patch = mod.Patch("m.py", "demo", "# done", (("absent", "x"),))
         assert mod.apply(tmp_path, patch) is False
 
+    def test_check_only_does_not_modify(self, mod, tmp_path):
+        patch = mod.Patch("m.py", "demo", "# done", ((" old\n", " old\n # done\n"),))
+        target = tmp_path / "m.py"
+        target.write_text("x\n old\ny\n", encoding="utf-8")
+
+        assert mod.apply(tmp_path, patch, check_only=True) is False
+        assert target.read_text(encoding="utf-8") == "x\n old\ny\n"
+        assert not (tmp_path / "m.py.orig").exists()
+
+    def test_patch_writes_new_inode(self, mod, tmp_path):
+        # uv 从缓存硬链接/写时复制安装包，原地改写会连带改坏缓存里的同一份文件
+        patch = mod.Patch("m.py", "demo", "# done", ((" old\n", " old\n # done\n"),))
+        cached = tmp_path / "cache.py"
+        cached.write_text("x\n old\ny\n", encoding="utf-8")
+        (tmp_path / "m.py").hardlink_to(cached)
+
+        assert mod.apply(tmp_path, patch) is True
+        assert cached.read_text(encoding="utf-8") == "x\n old\ny\n"
+        assert not (tmp_path / "m.py.tmp").exists()
+
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="需要 bash")
 class TestDeployScripts:

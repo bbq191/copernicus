@@ -69,7 +69,7 @@ def _check_tts_paths(settings: Settings) -> list[tuple[str, bool]]:
         import ChatTTS  # noqa: F401
         results.append((_ok("ChatTTS package installed"), True))
     except ImportError:
-        results.append((_warn("ChatTTS not installed — run: pip install ChatTTS"), False))
+        results.append((_warn("ChatTTS not installed — run: uv sync --extra tts"), False))
     chattts_dir = settings.chattts_model_dir
     if chattts_dir.exists() and any(chattts_dir.glob("*.safetensors")):
         results.append((_ok(f"ChatTTS weights : {chattts_dir}"), True))

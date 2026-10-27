@@ -96,6 +96,7 @@ remove_files() {
     remove_dir "$WEB_ROOT" "前端发布目录"
     ((PURGE_ENV)) && {
         remove_dir "$APP_DIR/backend/.venv" "Python 虚拟环境"
+        remove_dir "$APP_DIR/backend/.venv.bak" "install.sh 升级前备份的 Python 环境"
         remove_dir "$APP_DIR/frontend/node_modules" "前端依赖"
         remove_dir "$APP_DIR/frontend/dist" "前端构建产物"
     }

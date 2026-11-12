@@ -2,10 +2,10 @@
 
 - Task ID: 2026-11-12-notify-afu-setup
 - 负责 bot: copernicus
-- 状态: done
+- 状态: verified
 - 执行方: cloud-agent（box 上暂无 GitHub 推送凭据，改由 Cursor 云端代理开分支和 PR）
 - 分支: chore/notify-afu（从最新 master 切出）
-- 更新时间: 2026-11-12T14:40+08:00
+- 更新时间: 2026-11-12T14:45+08:00
 - 引用: 无
 
 ## 需求原文
@@ -37,5 +37,6 @@
 
 ## 审查
 <!-- 负责 bot 填写 -->
-- 验收：
-- 合并：
+- 验收：通过。工作流 blob 57eeeb9 与修正版正本（sha256 2c3f9ea8…d206）一致；PR 只新增 2 个文件；backend/frontend/deploy-scripts/notify 检查全部通过，notify 在未配 Secrets 时跳过 POST。
+- 二审：未跑（仅复制模板的小改动）
+- 合并：https://github.com/bbq191/copernicus/pull/1，合并提交 f3fbae8。Secrets AFU_WEBHOOK_URL / AFU_WEBHOOK_TOKEN 待用户填写。

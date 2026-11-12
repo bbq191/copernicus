@@ -2,10 +2,10 @@
 
 - Task ID: 2026-11-12-notify-afu-setup
 - 负责 bot: copernicus
-- 状态: pending
+- 状态: done
 - 执行方: cloud-agent（box 上暂无 GitHub 推送凭据，改由 Cursor 云端代理开分支和 PR）
 - 分支: chore/notify-afu（从最新 master 切出）
-- 更新时间: 2026-11-12T14:36+08:00
+- 更新时间: 2026-11-12T14:40+08:00
 - 引用: 无
 
 ## 需求原文
@@ -33,8 +33,9 @@
 - 执行方：Cursor 云端代理
 - 偏离：执行方不是 opencode-local / box-agent，原因是 box 暂无 GitHub 推送凭据
 - 未完成：**仓库 Secrets 待用户填写**——在 GitHub 仓库 Settings → Secrets and variables → Actions 新增 `AFU_WEBHOOK_URL`、`AFU_WEBHOOK_TOKEN`，值从 Jarvis「任务单唤醒路由」面板复制（token 为原始值，不含 Bearer 前缀）
+- 模板版本：已替换为修正版正本（sha256 2c3f9ea8…d206），before 不可用时改用与默认分支的 merge-base 做 diff，避免新分支首次 push 误发历史回执
 
 ## 审查
 <!-- 负责 bot 填写 -->
-- 验收：暂停。模板正本存在新分支首次 push 误发历史回执的问题，等 Jarvis 修好正本后更新工作流再验收。
+- 验收：
 - 合并：

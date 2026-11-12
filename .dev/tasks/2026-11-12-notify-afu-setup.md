@@ -2,10 +2,10 @@
 
 - Task ID: 2026-11-12-notify-afu-setup
 - 负责 bot: copernicus
-- 状态: done
+- 状态: pending
 - 执行方: cloud-agent（box 上暂无 GitHub 推送凭据，改由 Cursor 云端代理开分支和 PR）
 - 分支: chore/notify-afu（从最新 master 切出）
-- 更新时间: 2026-11-12T14:45+08:00
+- 更新时间: 2026-11-12T14:36+08:00
 - 引用: 无
 
 ## 需求原文
@@ -36,5 +36,5 @@
 
 ## 审查
 <!-- 负责 bot 填写 -->
-- 验收：
+- 验收：暂停。模板正本存在新分支首次 push 误发历史回执的问题，等 Jarvis 修好正本后更新工作流再验收。
 - 合并：
